@@ -11,6 +11,9 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # Its ref is the toolchain version and must match rust-toolchain.toml.
+      - dependency-name: dtolnay/rust-toolchain
     groups:
       actions:
         patterns: ["*"]
