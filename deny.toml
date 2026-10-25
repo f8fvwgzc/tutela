@@ -1,0 +1,47 @@
+# cargo-deny configuration. CI runs `make deny`, and any failure blocks the merge.
+# https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+all-features = true
+
+[advisories]
+# Every advisory fails the build. An ignore needs an id, a reason and a review date.
+ignore = []
+
+[licenses]
+# Permissive licences only. The SDKs and crates are linked into products in-process.
+# MPL-2.0 is allowed for webauthn-rs (Phase C): changes to its own files must be shared.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.9
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+highlight = "all"
+deny = [
+    # One TLS stack everywhere: rustls on aws-lc-rs. No OpenSSL.
+    { crate = "openssl", reason = "use rustls with aws-lc-rs" },
+    { crate = "openssl-sys", reason = "use rustls with aws-lc-rs" },
+    { crate = "native-tls", reason = "use rustls with aws-lc-rs" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

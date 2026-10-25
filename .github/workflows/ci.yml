@@ -1,0 +1,87 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: short
+
+# Every job blocks the merge. There is no continue-on-error anywhere in this file.
+jobs:
+  lint:
+    name: rust (fmt + clippy + doc)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7 # v7.0.1
+
+      - name: Install Rust 1.99.0
+        uses: dtolnay/rust-toolchain@1.99.0 # branch pinned to the toolchain in rust-toolchain.toml
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2 # v2.9.2
+        with:
+          shared-key: lint
+
+      - name: cargo fmt --check
+        run: make fmt-check
+
+      - name: cargo clippy -D warnings
+        run: make lint
+
+      - name: cargo doc -D warnings
+        run: make doc
+
+  test:
+    name: rust test
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7 # v7.0.1
+
+      - name: Install Rust 1.99.0
+        uses: dtolnay/rust-toolchain@1.99.0 # branch pinned to the toolchain in rust-toolchain.toml
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2 # v2.9.2
+        with:
+          shared-key: test
+
+      - name: cargo test
+        run: make test
+
+  supply-chain:
+    name: supply chain (cargo-deny + cargo-audit)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7 # v7.0.1
+
+      - name: Install Rust 1.99.0
+        uses: dtolnay/rust-toolchain@1.99.0 # branch pinned to the toolchain in rust-toolchain.toml
+
+      - name: Install cargo-deny and cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny,cargo-audit
+
+      - name: cargo deny check
+        run: make deny
+
+      - name: cargo audit
+        run: make audit
