@@ -110,6 +110,12 @@ MUTANTS = [
     ("M21", "filter.rs", "list: the agent's own filter is dropped",
      "            Some(acc) => acc.and(side),",
      "            Some(acc) => {\n                let _ = side;\n                acc\n            }"),
+    ("M23", "data.rs", "a group's own closure costs nothing against the work budget",
+     "                if let Some(set) = above.get(p) {\n                    spend(set.len())?;",
+     "                if let Some(set) = above.get(p) {"),
+    ("M24", "data.rs", "a group in two groups gets only its first holder's groups",
+     "            for &p in inside.get(g).into_iter().flatten() {",
+     "            for &p in inside.get(g).into_iter().flatten().take(1) {"),
 ]
 
 

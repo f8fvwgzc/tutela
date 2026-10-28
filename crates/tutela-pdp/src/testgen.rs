@@ -854,10 +854,19 @@ pub(crate) fn world(seed: u64) -> World {
         )
     }));
     let roles: Vec<String> = spec.roles.iter().map(|r| r.key.clone()).collect();
-    let tenants = vec![
+    let mut tenants = vec![
         tenant_world(&mut rng, 1, &roles),
         tenant_world(&mut rng, 2, &roles),
     ];
+    // Sometimes g3 also holds g2, so g2 can sit in two groups (g1 and g3).
+    // Drawn after everything else, so the rest of each world is unchanged.
+    for t in &mut tenants {
+        if rng.chance(50)
+            && let Some(g3) = t.data.groups.iter_mut().find(|g| g.key.as_str() == "g3")
+        {
+            g3.members.push(Member::Group(GroupKey::parse("g2").unwrap()));
+        }
+    }
     World {
         spec,
         model,

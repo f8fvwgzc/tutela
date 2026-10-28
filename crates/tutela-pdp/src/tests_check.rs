@@ -1259,6 +1259,46 @@ fn a_group_closure_that_takes_too_much_work_is_refused() {
     );
 }
 
+/// `levels` levels of `width` groups, each group holding every group of the
+/// next level. No principal is in any of them.
+fn layered_groups(levels: usize, width: usize) -> Vec<Group> {
+    let key = |l: usize, i: usize| format!("l{l}g{i}");
+    (0..levels)
+        .flat_map(|l| {
+            (0..width).map(move |i| {
+                let held = if l + 1 < levels {
+                    (0..width)
+                        .map(|j| Member::Group(GroupKey::parse(&key(l + 1, j)).unwrap()))
+                        .collect()
+                } else {
+                    vec![]
+                };
+                group(&key(l, i), held)
+            })
+        })
+        .collect()
+}
+
+#[test]
+fn a_closure_of_groups_alone_that_takes_too_much_work_is_refused() {
+    // No principal is in a group, so the budget is spent while the groups'
+    // own closures are gathered. At 32 levels of 25 that is about 7,300,000
+    // steps; at 16 levels about 1,650,000, under the 4,000,000 limit.
+    let model = Arc::new(Model::from_toml(KESTREL).unwrap());
+    let load = |groups: Vec<Group>| {
+        let data = TenantData {
+            groups,
+            ..kestrel_data()
+        };
+        Pdp::new().load(tenant(1), 1, Arc::clone(&model), data)
+    };
+    assert_eq!(load(layered_groups(16, 25)), Ok(()));
+    assert_eq!(
+        load(layered_groups(crate::MAX_GROUP_DEPTH, 25)),
+        Err(LoadError::GroupClosureTooLarge)
+    );
+}
+
 #[test]
 fn tm05_a_refused_reload_changes_nothing() {
     let model = Arc::new(Model::from_toml(KESTREL).unwrap());
@@ -1288,7 +1328,11 @@ fn tm05_a_refused_reload_changes_nothing() {
         orgs: [org_id(1), org_id(2)].into(),
         ..kestrel_data()
     };
-    for bad in [cycle, deep, claims_other] {
+    let closure_too_large = TenantData {
+        groups: layered_groups(crate::MAX_GROUP_DEPTH, 25),
+        ..kestrel_data()
+    };
+    for bad in [cycle, deep, claims_other, closure_too_large] {
         assert!(pdp.load(tenant(1), 2, Arc::clone(&model), bad).is_err());
         // The revision, the decisions and the org claims are as before.
         assert_eq!(pdp.rev(&tenant(1)), Some(1));

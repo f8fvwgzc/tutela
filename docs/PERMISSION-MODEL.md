@@ -817,7 +817,7 @@ If Mina sends `PATCH /api/contracts/C-204 {"budget": 200000}`: `write_check` →
 
 `Pdp::list_filter(Jae, contract:read)`:
 - Deciding scopes for Jae: Procurement (Member → Full), Supplier renewals (private; Viewer → Read), Board pricing review (private; no assignment → None). "Price negotiations" is open, so it inherits Procurement.
-- Filter: `container_in = [Procurement, Supplier renewals]`, condition = `NOT under [Board pricing review]`.
+- Filter: `container_in = [Procurement, Supplier renewals]`, condition = `(under [Procurement] AND NOT under [Board pricing review, Supplier renewals]) OR under [Supplier renewals]`, one term per nesting level ([12.3](#123-how-the-sdk-turns-it-into-sql)). In short: everything under Procurement except Board pricing review.
 - SQL: the query in [12.3](#123-how-the-sdk-turns-it-into-sql). Rows: **C-204, C-207, C-219**. Not C-311. The count says 3, and C-311 never shows up in any count.
 
 For `contract:write` (update) the filter is different: `container_in = [Procurement]`, `NOT under [Supplier renewals, Board pricing review]` (Viewer is below Write there). Rows: C-219 only.

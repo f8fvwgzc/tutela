@@ -777,7 +777,8 @@ JSON form:
 
 A row with more than 32 ancestors never passes: `check` refuses its path (`PathTooLong`), so the SQL adapter adds this bound (for example `cardinality(ancestors) <= 32`).
 
-The rows must also be well formed, because `check` refuses what is not, and the list must never show a row that `check` refuses. The SDK's migration helper makes the database keep these rules (CHECK constraints), or the adapter adds them as predicates:
+The rows must also be well formed, because `check` refuses what is not, and the list must never show a row that `check` refuses. A row that breaks one of these rules never passes. The SDK's migration helper makes the database keep these rules (CHECK constraints), or the adapter adds them as predicates:
+- the ancestors column ends at an org of the row's own tenant and holds no other org (the `path` rules of §6.5);
 - the ancestors column never holds one entry twice, and never the row itself;
 - each field column has its declared type, and the column of a `principal` field holds only valid principal strings or `NULL` (SQL would compare the text, while `check` refuses a value that is not a principal).
 

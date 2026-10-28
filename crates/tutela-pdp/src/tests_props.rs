@@ -574,19 +574,42 @@ fn tm10_the_differential_test_hits_every_case() {
     assert!(seen.reused_ids > 1_000, "{seen:?}");
 }
 
+/// `true` if some group of the tenant sits in two other groups, so its
+/// closure is the union of both holders' closures.
+fn has_a_group_with_two_holders(t: &Tenant) -> bool {
+    t.data.groups.iter().any(|g| {
+        let inner = crate::Member::Group(g.key.clone());
+        t.data
+            .groups
+            .iter()
+            .filter(|h| h.members.contains(&inner))
+            .count()
+            >= 2
+    })
+}
+
 /// The reference comparison and the provider-miss test on fixed seeds, with
 /// counts.
 #[test]
 fn the_reference_and_miss_tests_compare_enough() {
-    let (mut compared, mut failed) = (0, 0);
+    let (mut compared, mut failed, mut two_holders) = (0, 0, 0);
     for seed in 1..=20 {
         let w = world(seed);
         matches_reference(seed, &w, &mut compared);
         provider_misses(seed, &w, &mut failed);
+        two_holders += w
+            .tenants
+            .iter()
+            .filter(|t| has_a_group_with_two_holders(t))
+            .count();
     }
-    eprintln!("reference comparisons {compared}, lists failed by a miss {failed}");
+    eprintln!(
+        "reference comparisons {compared}, lists failed by a miss {failed}, \
+         tenants with a group in two groups {two_holders}"
+    );
     assert!(compared > 50_000, "{compared}");
     assert!(failed > 100, "{failed}");
+    assert!(two_holders >= 3, "{two_holders}");
 }
 
 /// The no-widening property on fixed seeds compares a fair share of
