@@ -21,8 +21,10 @@
 //! about the step. [`AuthError::step`] names the step for the log. Errors
 //! never hold the token.
 
+pub mod cache;
 pub mod http;
 mod jwks;
+pub mod sql;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
@@ -521,3 +523,5 @@ impl Verifier {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_list;

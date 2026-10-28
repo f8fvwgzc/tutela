@@ -122,7 +122,7 @@ Each threat has an id (TM-01 ... TM-23). Its tests carry the id in their name, f
 | TM-07 | Attacks on the own login server | Code + PKCE S256 only; conformance suite | C | No |
 | TM-08 | Privilege escalation by admins and model changes | Narrow-only delegation; impact report; `tutela apply` refuses widening | A, B | **Partly**: the model diff, a property test that a change it does not call widening never widens a decision (`tm08_*`), and `tutela apply`, which refuses a widening diff without an approval token (ADR-0015) |
 | TM-09 | Resource path spoofing | Paths loaded server-side by id | A | No |
-| TM-10 | List and count leaks | SQL filters from the same evaluator | A, B | **Partly**: `list_filter` ≡ `check` in `tutela-pdp`, and scope paths that are current after a move in `tutela-store` (`tm10_*`); the SQL adapter is ROADMAP item 6 |
+| TM-10 | List and count leaks | SQL filters from the same evaluator | A, B | **Partly**: `list_filter` ≡ `check` in `tutela-pdp`, and scope paths that are current after a move in `tutela-store` (`tm10_*`); and the `tutela-sdk` SQL adapter, whose rows equal the rows `check` allows on Postgres, with no other tenant's rows and an exact count (`tm10_*`) |
 | TM-11 | Field leaks into search, vectors, exports, audit, prompts | Field masks on every exit path | A, B | No |
 | TM-12 | UI-only checks | Codegen route guards; SDK refuses to start without them | A | No |
 | TM-13 | Stale permission caches and slow revocation | `rev`, bundle expiry, refuse lower rev, documented delay | A, B | **Partly**: `tutela-pdp` refuses a lower or stale revision (`tm13_*`) |
