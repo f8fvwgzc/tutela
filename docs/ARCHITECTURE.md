@@ -205,8 +205,13 @@ design comes from onto-intelli `crates/onto-control/src/vault.rs`.
 Outbound HTTP that cannot be pointed at internal services. It checks the
 **resolved** IP address at connect time (not only the URL text) and on every
 redirect. Its design comes from onto-intelli `crates/onto-control/src/net.rs`
-and `crates/onto-intelli/src/net.rs`. `tutelad` uses it for webhooks and for
-fetching JWKS.
+and `crates/onto-intelli/src/net.rs`. `tutela-sdk` uses it for JWKS and
+discovery fetches, and `tutelad` for webhooks. Built: the host is resolved once
+in the client's own resolver and every address is checked there, so the
+connection uses exactly the checked addresses; redirects are never followed
+(a redirect is returned, not followed); `https` only (`http` to loopback in dev
+mode); timeouts and a body size limit; an exact allow-list for private hosts
+an operator needs; TLS is rustls on aws-lc-rs.
 
 ### `tutelad` (Phase B; login server Phase C)
 
