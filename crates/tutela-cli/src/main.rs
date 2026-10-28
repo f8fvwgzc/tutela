@@ -34,6 +34,21 @@ enum Command {
         #[arg(long, default_value = DEFAULT_MANIFEST)]
         file: PathBuf,
     },
+    /// Generate Rust and TypeScript constants and the route table.
+    Codegen {
+        /// The manifest.
+        #[arg(long, default_value = DEFAULT_MANIFEST)]
+        file: PathBuf,
+        /// Where to write the Rust module.
+        #[arg(long)]
+        rust: Option<PathBuf>,
+        /// Where to write the TypeScript module.
+        #[arg(long)]
+        ts: Option<PathBuf>,
+        /// Write nothing; fail if a file is missing or out of date (for CI).
+        #[arg(long)]
+        check: bool,
+    },
     /// Create or update the tutela schema (run as the database owner).
     Migrate,
     /// Show the diff against the applied manifest, then apply it. A widening
@@ -138,6 +153,46 @@ async fn run(command: Command, out: &mut dyn Write) -> Result<ExitCode, CliError
         }
         Command::Check { file } => {
             tutela_cli::check(&read(&file)?, out)?;
+        }
+        Command::Codegen {
+            file,
+            rust,
+            ts,
+            check,
+        } => {
+            if rust.is_none() && ts.is_none() {
+                return Err(CliError::Usage("give --rust, --ts or both".into()));
+            }
+            let source = read(&file)?;
+            let model = tutela_cli::check(&source, &mut std::io::sink()).map_err(|_| {
+                CliError::Usage(format!(
+                    "{} does not compile; run tutela check",
+                    file.display()
+                ))
+            })?;
+            let digest = tutela_store::digest(&source);
+            let outputs = [
+                (rust, tutela_cli::codegen::rust(&model, &digest)),
+                (ts, tutela_cli::codegen::typescript(&model, &digest)),
+            ];
+            let mut stale = false;
+            for (path, text) in outputs {
+                let Some(path) = path else { continue };
+                if check {
+                    let current = std::fs::read_to_string(&path).unwrap_or_default();
+                    if current != text {
+                        writeln!(out, "out of date: {}", path.display())?;
+                        stale = true;
+                    }
+                } else {
+                    std::fs::write(&path, text)?;
+                    writeln!(out, "wrote {}", path.display())?;
+                }
+            }
+            if stale {
+                writeln!(out, "run tutela codegen to update")?;
+                return Ok(ExitCode::from(1));
+            }
         }
         Command::Migrate => {
             let mut client = tutela_cli::connect(db().as_deref()).await?;
