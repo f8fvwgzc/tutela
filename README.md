@@ -145,6 +145,8 @@ Dependencies point down only: products → onto-intelli / texc-symphony → atta
 
 ## Status
 
+Phase A, Rust side: built (items 1–9). Phase A is **not done**: the list-query latency gate fails at the filter limits ([#26](https://github.com/f8fvwgzc/tutela/issues/26)); fuzzing, the JS and Python SDKs, the template product and v0.1 are open. Details: [ROADMAP.md, Phase A](docs/ROADMAP.md#phase-a-packages-library-mode).
+
 | Item | State |
 |------|-------|
 | Design docs in `docs/` | In the first commit |
