@@ -864,7 +864,8 @@ pub(crate) fn world(seed: u64) -> World {
         if rng.chance(50)
             && let Some(g3) = t.data.groups.iter_mut().find(|g| g.key.as_str() == "g3")
         {
-            g3.members.push(Member::Group(GroupKey::parse("g2").unwrap()));
+            g3.members
+                .push(Member::Group(GroupKey::parse("g2").unwrap()));
         }
     }
     World {
