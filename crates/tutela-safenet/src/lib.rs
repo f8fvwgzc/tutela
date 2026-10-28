@@ -38,6 +38,7 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
 pub use ip::public_ip;
 pub use reqwest::Url;
+pub use rustls;
 
 /// The default total timeout of one request.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -379,6 +380,25 @@ const RESERVED_HEADERS: [&str; 8] = [
     "baggage",
     "upgrade",
 ];
+
+/// The one TLS client config of Tutela: rustls on aws-lc-rs, the safe
+/// default protocol versions, and the operating system's certificate
+/// verifier (its root store and revocation checks). Other connections (the
+/// CLI's database) use this config, so there is one TLS stack.
+///
+/// # Errors
+///
+/// [`SafenetError::Http`] if the platform verifier cannot be set up.
+pub fn tls_client_config() -> Result<rustls::ClientConfig, SafenetError> {
+    use rustls_platform_verifier::BuilderVerifierExt as _;
+    rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::aws_lc_rs::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .and_then(|b| b.with_platform_verifier())
+    .map(|b| b.with_no_client_auth())
+    .map_err(|e| SafenetError::Http(format!("TLS setup: {e}")))
+}
 
 /// The SSRF-safe HTTP client.
 #[derive(Clone, Debug)]

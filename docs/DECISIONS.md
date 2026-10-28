@@ -595,7 +595,7 @@ Benchmark (`cargo bench -p tutela-pdp`): the tenant has the sizes of the week-1 
    - The token holds no secret and approves one change only, so passing it on the command line or in `TUTELA_APPROVAL` is fine.
    - `apply` checks the key, the signature, the change and the times inside the same transaction that publishes. A change made by someone else in between is refused by the store's version check.
 4. **The first apply** is compared against an empty model of the same app, so it is widening. The refusal prints the exact `tutela approve` command.
-5. **Database connections.** The CLI has no TLS until the rustls stack lands (ROADMAP item 8, step 4). Until then it accepts only a Unix socket or a loopback host, so a password and a manifest never cross a network in clear.
+5. **Database connections.** With `sslmode=require` the CLI connects over TLS on the one stack (rustls on aws-lc-rs, the operating system's verifier, through `tutela_safenet::tls_client_config`) and **always verifies the certificate**, which is stricter than libpq's `require`. Without it, only a Unix socket or a loopback host is accepted; `sslmode=prefer` could fall back to plain text, so it does not count. A password and a manifest never cross a network in plain text.
 
 **Consequences.**
 - Library mode has the full refusal path: diff, class, refusal and approval.

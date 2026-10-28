@@ -496,8 +496,10 @@ tutela approve --app crm --from none --to <digest> --key dana.key   # after read
 tutela apply --approval <token>
 ```
 
-Until TLS lands (ROADMAP item 8), the CLI connects only to a database on the
-same machine (a Unix socket or a loopback address).
+A database that is not on the same machine needs `sslmode=require` in
+`TUTELA_DATABASE_URL`: the CLI then uses TLS and always verifies the
+server's certificate against the operating system's trust store. A Unix
+socket or a loopback address may go without TLS.
 
 Because `tutela codegen` makes typed constants, a renamed action breaks the
 build, not production. The Rust file is a module (`pub mod perms;`) with

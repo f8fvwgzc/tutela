@@ -301,6 +301,15 @@ async fn production_refuses_the_local_server_and_names_through_the_resolver() {
     assert_eq!(fake.total.load(Ordering::SeqCst), 1);
 }
 
+#[test]
+fn the_tls_config_builds_on_aws_lc_rs() {
+    let c = tls_client_config().unwrap();
+    assert!(c.crypto_provider().cipher_suites.iter().all(|s| {
+        let name = format!("{:?}", s.suite());
+        name.contains("AES") || name.contains("CHACHA20")
+    }));
+}
+
 #[tokio::test]
 async fn callers_cannot_set_reserved_headers() {
     let c = dev_client(Policy::new());

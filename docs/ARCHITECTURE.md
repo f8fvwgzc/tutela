@@ -257,7 +257,7 @@ onto-intelli's Keys, Members, Projects and Sessions pages).
 | --- | --- | --- |
 | `tutela init` | Writes a starter `tutela.resources.toml` (never overwrites a file) | A, built |
 | `tutela check` | Compiles a manifest and lists every problem | A, built |
-| `tutela migrate` | Creates or updates the `tutela` schema (`tutela-store`), as the database owner | A, built |
+| `tutela migrate` | Creates or updates the `tutela` schema (`tutela-store`), as the database owner. A remote database needs `sslmode=require` (TLS, certificate always verified) | A, built |
 | `tutela apply` | Applies the manifest. Shows the diff first. Refuses a **widening** diff without an approval token. | A (library mode, built), B (against `tutelad`) |
 | `tutela approve`, `tutela approvers keygen\|add\|list\|revoke` | Approval tokens for widening diffs in library mode ([ADR-0015](DECISIONS.md#adr-0015-approval-tokens-for-tutela-apply-in-library-mode)) | A, built |
 | `tutela codegen` | Generates typed permission constants (Rust and TypeScript), the UI map and the route table for the server's guards from the same manifest entries; `--check` fails when they are out of date | A, built; the generated denied-route test comes with the `tutela-sdk` guard |
