@@ -1863,6 +1863,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tutela-vault"
+version = "0.0.0"
+dependencies = [
+ "aws-lc-rs",
+ "base64 0.23.1",
+ "thiserror",
+ "zeroize",
+]
+
+[[package]]
 name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
