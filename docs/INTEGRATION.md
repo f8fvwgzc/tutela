@@ -521,8 +521,9 @@ LIMIT $5;
 ```
 
 Counts use the same filter. `ancestors` holds the ids on each row's path, so
-`container_in` matches rows at any depth below a scope. Its exact shape
-(array, `ltree` or closure table) is chosen by the week-1 spike.
+`container_in` matches rows at any depth below a scope. It is an array of
+ancestor ids, nearest first, with a GIN index
+([ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator)).
 
 ## Step 6. Strip masked fields everywhere data leaves
 

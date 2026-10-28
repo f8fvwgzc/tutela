@@ -678,7 +678,7 @@ pub struct PathEntry {
 Rules for `ResourceRef`:
 - In JSON, `type_name` is spelled `type` (as in 6.6 and section 7).
 - `id`: the product's own id, 1–256 visible ASCII characters (`%x21-7E`). Numbers are sent as strings.
-- `path`: every ancestor of the resource, **nearest first** (direct parent first), not the resource itself. The last entry is `{type_name: "org", id: "org_<uuidv7>"}`. At most 32 entries (Phase A limit, checked by the week-1 spike). A longer path is an error.
+- `path`: every ancestor of the resource, **nearest first** (direct parent first), not the resource itself. The last entry is `{type_name: "org", id: "org_<uuidv7>"}`. At most 32 entries (Phase A limit, confirmed by the week-1 spike, [ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator)). A longer path is an error.
 - `path` and `attrs` are loaded **server-side by id** from the product's database (SDK helpers do this). They never come from the request body.
 - `attrs`: a JSON object from field name to a string, an integer, a boolean, `null`, or an array of strings.
 
@@ -753,13 +753,14 @@ Rules:
 - `attr` is a field name (2.1) registered for the type. A value is a JSON string, integer or boolean. Types must match: `"5"` is not `5`. A comparison with a null field is false (use `is_null`).
 - Values that depend on the principal are already filled in. For example the condition "assignee is the principal" arrives as `{"op": "eq", "attr": "assignee", "value": "user:usr_…"}`.
 - An SDK that meets an unknown `op` refuses the filter (deny, no rows). New ops come only with SDK support.
-- Limits (Phase A, set by the week-1 spike): the number of nodes, the depth, and the size of `ids_in`.
+- Limits (Phase A, [ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator)): at most 4,096 condition nodes, depth 32, 10,000 entries in `ids_in`, 10,000 in `container_in`, and 20,000 entries in total (`ids_in`, `container_in`, and every `under.scopes`, `id_in.ids` and `in.values` inside the condition: each one is a bound array element). These limits are headroom, not measurements: the week-1 spike's largest filter had 1,150 nodes, on models far smaller than the model limits. A filter that would pass a limit is an error, and the caller fails closed (no rows).
 
 **How the SDK turns it into SQL** (Phase A; details in [PERMISSION-MODEL.md §12](PERMISSION-MODEL.md#12-list-filtering-in-sql)):
 - Every value is a **bound parameter** (`$1`, `$2`, …). Text is never spliced into SQL. `ids_in` is bound as one array parameter (`id = ANY($1)`).
 - Column names come only from the product's manifest mapping, never from the request.
-- The product keeps an ancestors column (array, `ltree` or closure table: chosen by the week-1 spike). Each ancestor must be identified uniquely: by ids that are unique across types in the tenant, or by `type:id` text.
+- The product keeps an ancestors column: an array of ancestor ids, nearest first, with a GIN index ([ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator)). Each ancestor must be identified uniquely: by ids that are unique across types in the tenant, or by `type:id` text.
 - The filter is part of the `WHERE` clause. Counts and page sizes use the same clause. Never load rows and then drop some.
+- The SQL adapter runs every list and count query with a statement timeout. A timeout is an error, and the caller fails closed: no rows and no count, never a partial list ([ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator), F2).
 
 ### 6.7 `write_check`
 
@@ -1320,7 +1321,7 @@ When a credential format or key changes:
 | 2 | The final audience name of the remote check API. | `tutela-authz`. | Phase B |
 | 3 | The final names of admin actions and obligation kinds (2.3, 6.3). | As written in this file. | Phase A |
 | 4 | The env name for the previous key pepper. | `TUTELA_KEY_PEPPER_PREVIOUS`. | Phase A |
-| 5 | Limits of `list_filter`: AST nodes, depth, size of `ids_in`; the ancestors column shape. | Set by the week-1 spike. | Week-1 spike |
+| 5 | Limits of `list_filter`: AST nodes, depth, size of `ids_in`; the ancestors column shape. | **Answered** by [ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator): limits in §6.6; an array of ancestor ids with a GIN index. | Week-1 spike |
 | 6 | The exact AuthZEN 1.0 page field names, and the retry schedule for webhooks. | Follow the final AuthZEN 1.0 text; at least 24 hours of retries. | Phase B |
 
 Answers go into [DECISIONS.md](DECISIONS.md), and this file changes in the same commit.
