@@ -101,19 +101,38 @@ pub fn check(source: &str, out: &mut dyn Write) -> Result<Model, CliError> {
     }
 }
 
-/// Parses a database connection string. Without TLS (it comes with the
-/// rustls stack, ROADMAP item 8), only a Unix socket or a loopback host is
-/// accepted, so a password and the manifest never cross a network in clear.
+/// How the CLI connects to the database.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Transport {
+    /// Plain text: only to a Unix socket or a loopback host.
+    Local,
+    /// TLS with a verified certificate (`sslmode=require`).
+    Tls,
+}
+
+/// Parses a database connection string and picks the transport.
+///
+/// - `sslmode=require` connects over TLS (rustls on aws-lc-rs, the
+///   platform verifier) and **always verifies the certificate**, which is
+///   stricter than libpq's `require`.
+/// - Without it, only a Unix socket or a loopback host is accepted, so a
+///   password and the manifest never cross a network in plain text.
+///   `sslmode=prefer` (the default) could fall back to plain text, so it
+///   does not count.
 ///
 /// # Errors
 ///
-/// [`CliError::Database`] for a string that does not parse, or for a host
-/// that is not loopback.
-pub fn database_config(url: &str) -> Result<Config, CliError> {
+/// [`CliError::Database`] for a string that does not parse, or for a
+/// remote host without `sslmode=require`.
+pub fn database_config(url: &str) -> Result<(Config, Transport), CliError> {
+    use tutela_store::tokio_postgres::config::SslMode;
     let config = Config::from_str(url)
         .map_err(|_| CliError::Database("TUTELA_DATABASE_URL does not parse"))?;
     if config.get_hosts().is_empty() && config.get_hostaddrs().is_empty() {
         return Err(CliError::Database("TUTELA_DATABASE_URL names no host"));
+    }
+    if config.get_ssl_mode() == SslMode::Require {
+        return Ok((config, Transport::Tls));
     }
     let loopback_host = |h: &Host| match h {
         Host::Tcp(name) => {
@@ -132,11 +151,11 @@ pub fn database_config(url: &str) -> Result<Config, CliError> {
             .all(std::net::IpAddr::is_loopback)
     {
         return Err(CliError::Database(
-            "the database must be on this machine (a Unix socket or a loopback address) until \
-             TLS is supported",
+            "a database that is not on this machine needs TLS: add sslmode=require \
+             (the certificate is always verified)",
         ));
     }
-    Ok(config)
+    Ok((config, Transport::Local))
 }
 
 /// Connects to the database in `TUTELA_DATABASE_URL`.
@@ -149,10 +168,27 @@ pub async fn connect(url: Option<&str>) -> Result<Client, CliError> {
     let url = url.filter(|u| !u.is_empty()).ok_or(CliError::Database(
         "set TUTELA_DATABASE_URL to the product's database",
     ))?;
-    let (client, conn) = database_config(url)?.connect(NoTls).await?;
-    tokio::spawn(async move {
-        let _ = conn.await;
-    });
+    let (config, transport) = database_config(url)?;
+    let client = match transport {
+        Transport::Local => {
+            let (client, conn) = config.connect(NoTls).await?;
+            tokio::spawn(async move {
+                let _ = conn.await;
+            });
+            client
+        }
+        Transport::Tls => {
+            let tls = tutela_safenet::tls_client_config()
+                .map_err(|_| CliError::Database("the TLS setup failed"))?;
+            let (client, conn) = config
+                .connect(tokio_postgres_rustls::MakeRustlsConnect::new(tls))
+                .await?;
+            tokio::spawn(async move {
+                let _ = conn.await;
+            });
+            client
+        }
+    };
     Ok(client)
 }
 
@@ -250,7 +286,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_local_databases_are_accepted_without_tls() {
+    fn a_remote_database_needs_tls_and_a_local_one_may_skip_it() {
         for ok in [
             "host=127.0.0.1 port=5432 user=u dbname=d",
             "host=localhost user=u",
@@ -259,10 +295,26 @@ mod tests {
             "postgresql://u@localhost/d",
             "postgresql://u@[::1]:5432/d",
         ] {
-            assert!(database_config(ok).is_ok(), "{ok}");
+            assert!(
+                matches!(database_config(ok), Ok((_, Transport::Local))),
+                "{ok}"
+            );
+        }
+        for tls in [
+            "host=db.example.com user=u sslmode=require",
+            "postgresql://u@db.example.com/d?sslmode=require",
+            "host=127.0.0.1,db.example.com user=u sslmode=require",
+            "host=localhost user=u sslmode=require",
+        ] {
+            assert!(
+                matches!(database_config(tls), Ok((_, Transport::Tls))),
+                "{tls}"
+            );
         }
         for bad in [
             "host=db.example.com user=u",
+            "host=db.example.com user=u sslmode=prefer",
+            "host=db.example.com user=u sslmode=disable",
             "host=10.0.0.5 user=u",
             "host=127.0.0.1,db.example.com user=u",
             "host=localhost hostaddr=10.0.0.5 user=u",
