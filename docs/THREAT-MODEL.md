@@ -113,8 +113,8 @@ Each threat has an id (TM-01 ... TM-23). Its tests carry the id in their name, f
 
 | Id | Threat | Main control | Phase | Built? |
 |---|---|---|---|---|
-| TM-01 | Token audience confusion | Exactly one `aud`; strict verifier | A, B, C | No |
-| TM-02 | Delegated tokens mistaken for user tokens | `typ: agent+jwt`; `delegation_aware` audiences | A, B | No |
+| TM-01 | Token audience confusion | Exactly one `aud`; strict verifier | A, B, C | **Partly**: the `tutela-sdk` verifier refuses no audience, two or more, or another one (`tm01_*`) |
+| TM-02 | Delegated tokens mistaken for user tokens | `typ: agent+jwt`; `delegation_aware` audiences | A, B | **Partly**: the `tutela-sdk` verifier refuses `agent+jwt` unless delegation is on and the audience is `delegation_aware`, refuses an access token with `act`, and checks disabled actors and `cnf` (`tm02_*`); issuing delegated tokens is Phase B |
 | TM-03 | Confused deputy in agent work | Overlap rule for chat, task and scheduled work | A, B | **Partly**: the overlap in `tutela-pdp`, with property tests (`tm03_*`); delegated tokens are Phase B |
 | TM-04 | Account linking across tenant IdPs | `(iss, sub)` keys; DNS-proven domains; local credential to link | B, C | No |
 | TM-05 | Tenant id collision across issuers | `(iss, tid)` tenant key; issuer trust list | A, B | **Partly**: `tutela-pdp` keys bundles by `(iss, tid)` and denies resources of other tenants; `tutela-store` checks `(iss, tid)` and has forced row-level security, tested on a real Postgres (`tm05_*`) |
@@ -127,7 +127,7 @@ Each threat has an id (TM-01 ... TM-23). Its tests carry the id in their name, f
 | TM-12 | UI-only checks | Codegen route guards; SDK refuses to start without them | A | No |
 | TM-13 | Stale permission caches and slow revocation | `rev`, bundle expiry, refuse lower rev, documented delay | A, B | **Partly**: `tutela-pdp` refuses a lower or stale revision (`tm13_*`) |
 | TM-14 | Row-level security mistakes | `FORCE` RLS, `SET LOCAL`, app roles own no tables | A, B | No |
-| TM-15 | Signing key theft and rotation mistakes | `Signer` trait, per-tenant keys, KMS option, rotation timing, kid deny-list | B, C | **Partly**: `tutela-vault` master-key rotation (old blobs open with `TUTELA_MASTER_KEY_PREVIOUS` and are re-wrapped, `tm15_*`) and its KMS trait; token signing keys are Phase B |
+| TM-15 | Signing key theft and rotation mistakes | `Signer` trait, per-tenant keys, KMS option, rotation timing, kid deny-list | B, C | **Partly**: `tutela-vault` master-key rotation (old blobs open with `TUTELA_MASTER_KEY_PREVIOUS` and are re-wrapped, `tm15_*`) and its KMS trait; token signing keys are Phase B; the `tutela-sdk` `kid` deny-list, the rate-limited refetch of an unknown `kid`, and fail-closed stale keys (`tm15_*`) |
 | TM-16 | API key theft | Separate, versioned pepper; hashed keys | B | No |
 | TM-17 | Secrets and personal data in logs, URLs, traces | Redacted types; no tokens in URLs | A, B | **Partly**: the `ApiKey` type in `tutela-contracts` never prints its secret |
 | TM-18 | SSRF through webhooks and JWKS fetches | `tutela-safenet` | A, B, C | **Partly**: the `tutela-safenet` crate with the TM-18 table of bad targets (`tm18_*`); fuzzing the URL parser is a library-gate item; webhooks in `tutelad` are Phase B |

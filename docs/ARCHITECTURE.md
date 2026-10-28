@@ -183,6 +183,10 @@ What a Rust product links to talk to Tutela.
 
 - Verifies access tokens from **any OIDC issuer**, offline, with a cached
   JWKS: alg allow-list, `iss`, exactly one `aud`, `exp`, `nbf`, `epoch`.
+  Built: `Verifier` follows the CONTRACTS §4.2 order; the JWKS comes through
+  `tutela-safenet`, is refreshed after a TTL, refetched at most once per
+  interval for an unknown `kid`, used for at most an hour when the issuer
+  is down, and a `kid` deny-list applies at once.
 - A trust list maps each issuer to the tenants it may speak for. The tenant
   key everywhere is the pair (`iss`, `tid`).
 - Refuses delegated agent tokens (`typ: agent+jwt`) unless delegation support

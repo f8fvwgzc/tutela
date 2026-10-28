@@ -16,6 +16,7 @@ publish = false
 tutela-contracts = { path = "crates/tutela-contracts" }
 tutela-pdp = { path = "crates/tutela-pdp" }
 tutela-safenet = { path = "crates/tutela-safenet" }
+tutela-sdk = { path = "crates/tutela-sdk" }
 tutela-store = { path = "crates/tutela-store" }
 
 # Smaller build folders: full debug info makes target/ several times bigger.
