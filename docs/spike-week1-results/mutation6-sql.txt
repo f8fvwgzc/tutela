@@ -1,0 +1,43 @@
+loaded seed 103: 101536 rows in 0.4s
+loaded seed 104: 103138 rows in 0.4s
+loaded seed 105: 101588 rows in 0.4s
+loaded seed 106: 104381 rows in 0.4s
+loaded seed 107: 102463 rows in 0.4s
+loaded seed 108: 104868 rows in 0.3s
+indexes in 1.6s
+seed 103: containers+rows=101536 private=464 assignments=2478 conditions=11 groups=24 tasks=320 checks=8061400 allowed=20.2% AST mismatches=0 SQL mismatched filters=0 (22.6s)
+seed 104: containers+rows=103138 private=316 assignments=1943 conditions=11 groups=39 tasks=200 checks=8125480 allowed=9.0% AST mismatches=0 SQL mismatched filters=0 (14.6s)
+seed 105: containers+rows=101588 private=132 assignments=1666 conditions=14 groups=31 tasks=280 checks=8063480 allowed=23.8% AST mismatches=0 SQL mismatched filters=0 (13.0s)
+seed 106: containers+rows=104381 private=1461 assignments=567 conditions=27 groups=35 tasks=200 checks=8175200 allowed=17.8% AST mismatches=0 SQL mismatched filters=3 (18.3s)
+seed 107: containers+rows=102463 private=461 assignments=2311 conditions=7 groups=32 tasks=320 checks=8098480 allowed=19.4% AST mismatches=0 SQL mismatched filters=0 (37.9s)
+seed 108: containers+rows=104868 private=607 assignments=1241 conditions=18 groups=0 tasks=200 checks=8194680 allowed=8.1% AST mismatches=0 SQL mismatched filters=0 (10.5s)
+filter form: Levels
+coverage: Coverage {
+    checks: 48718720,
+    allowed: 7971391,
+    path32: 1183680,
+    private_in_private_rows: 5480480,
+    private_stop: 5401533,
+    closer_lower: 364278,
+    via_group: 775075,
+    direct_over_group: 1382727,
+    cond_true: 330678,
+    cond_false: 1085272,
+    cond_with_null_attr: 598332,
+    row_itself: 7293,
+    overlap_deny: 1616717,
+    org_owner: 1441903,
+    filters: 1520,
+    alternation: 637651,
+    max_ast_nodes: 754,
+    max_ast_depth: 7,
+    max_ids_in: 75,
+    max_container_in: 283,
+}
+example: seed 106 task 2 SQL mismatch: got 99916 rows, check allows 99932
+example: seed 106 task 42 SQL mismatch: got 99916 rows, check allows 99932
+example: seed 106 task 52 SQL mismatch: got 99916 rows, check allows 99932
+SQL list query, array column, all seeds (info): n=1520 p50=4899.8us p90=157891.9us p99=748652.5us p99.9=1410196.9us max=1513338.5us
+SQL list query, array column, seed 1 (info): n=0 p50=0.0us p90=0.0us p99=0.0us p99.9=0.0us max=0.0us
+SQL list query, closure table, seed 1 (info): n=0 p50=0.0us p90=0.0us p99=0.0us p99.9=0.0us max=0.0us  mismatched filters=0
+RESULT: row-level AST mismatches=0 SQL mismatched filters=3 SQL row mismatches=48 count mismatches=0 closure-variant mismatched filters=0

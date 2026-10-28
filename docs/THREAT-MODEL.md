@@ -281,8 +281,10 @@ Each threat has an id (TM-01 ... TM-23). Its tests carry the id in their name, f
   - All values are bound as parameters. The compiler never pastes text into SQL.
   - The compiler accepts only condition templates that both paths support, and refuses a model that uses anything else.
   - The remote search endpoints (`/access/v1/search/resource`, `/access/v1/search/subject`) use the same evaluator.
+  - `list_filter` gets scope paths from a provider keyed by (tenant, type, id). An unknown id, a path that does not end at the tenant's own org, or a path longer than 32 is an error, and the list fails closed ([ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator) F1).
+  - List and count queries run with a statement timeout that fails closed, never with a partial result.
 - **Phase.** A (`Pdp::list_filter`). B (AuthZEN search endpoints).
-- **Test.** Differential property test on every commit: for random models, principals and rows, the rows that `list_filter` returns == the rows that `check` allows. Fuzz the SQL filter compiler (library gate). Week-1 spike: `list_filter` correct on 100k rows. Product template test: the total count equals the number of visible rows.
+- **Test.** Differential property test on every commit: for random models, principals and rows, the rows that `list_filter` returns == the rows that `check` allows. Fuzz the SQL filter compiler (library gate). Week-1 spike: `list_filter` correct on 100k rows. The `tutela-pdp` differential tests also cover scope-path provider misses, wrong-tenant paths and ids that are the same across tenants. Product template test: the total count equals the number of visible rows.
 
 #### TM-11. Field leaks into search, vector indexes, exports, audit and prompts
 
