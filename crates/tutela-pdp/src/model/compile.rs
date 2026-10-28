@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use tutela_contracts::claims::Audience;
+use tutela_contracts::encoding::MAX_JSON_INT;
 use tutela_contracts::keys::{
     ActionKey, ActionName, ActionRequirement, FieldKey, FieldName, ResourceType, UiKey,
 };
@@ -13,8 +14,8 @@ use super::raw::{self, MAX_BRANCHES, MAX_TEMPLATE_DEPTH};
 use super::{
     AiReach, AppName, Condition, CustomAction, FieldDef, FieldDisplay, FieldRule, FieldType,
     GroupKey, Issue, Issues, MANIFEST_VERSION, MAX_MANIFEST_BYTES, Method, Model, Role, RoleKey,
-    Route, SeededRole, Sensitivity, Starts, SubjectKind, Template, TypeDef, UiComponent, Value,
-    WhenDenied, is_admin_key,
+    RootCaps, Route, SeededRole, Sensitivity, Starts, SubjectKind, Template, TypeDef, UiComponent,
+    Value, WhenDenied, is_admin_key,
 };
 
 const MAX_TYPES: usize = 512;
@@ -421,10 +422,16 @@ fn build(ctx: &mut Ctx, raw: raw::Manifest) -> Model {
     let field_rules = field_rules(ctx, &types, &roles, raw.field_rules);
     let conditions = conditions(ctx, &types, &roles, raw.conditions);
     let ui = ui(ctx, &types, raw.ui);
-    let rule_caps = field_rules
-        .iter()
-        .map(|r| ((r.field.clone(), r.role.clone()), r.max))
-        .collect();
+    let mut rule_caps: BTreeMap<FieldKey, RootCaps> = BTreeMap::new();
+    for r in &field_rules {
+        let caps = rule_caps.entry(r.field.clone()).or_default();
+        match &r.role {
+            Some(role) => {
+                caps.roles.insert(role.clone(), r.max);
+            }
+            None => caps.all = Some(r.max),
+        }
+    }
     Model {
         app,
         audience,
@@ -1094,7 +1101,17 @@ fn value(ctx: &mut Ctx, at: &str, ft: FieldType, v: raw::Scalar) -> Option<Value
                 None
             }
         }
-        (FieldType::Integer, raw::Scalar::Integer(i)) => Some(Value::Integer(i)),
+        (FieldType::Integer, raw::Scalar::Integer(i)) => {
+            if i.unsigned_abs() <= MAX_JSON_INT {
+                Some(Value::Integer(i))
+            } else {
+                ctx.bad(
+                    at,
+                    "an integer value is from -(2^53 - 1) to 2^53 - 1, so every SDK reads it exactly",
+                );
+                None
+            }
+        }
         (FieldType::Boolean, raw::Scalar::Boolean(b)) => Some(Value::Boolean(b)),
         (FieldType::StringList | FieldType::Principal, _) => {
             ctx.bad(

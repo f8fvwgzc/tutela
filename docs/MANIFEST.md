@@ -1,6 +1,6 @@
 # The manifest: `tutela.resources.toml`
 
-Status: **Phase A.** The format and the model compiler are in `tutela-pdp` (module `model`). The evaluator that uses the compiled model (`Pdp::check` and the others) comes in the next Phase A step. `tutela apply`, `tutela init` and `tutela codegen` come later in Phase A ([ROADMAP.md](ROADMAP.md)).
+Status: **Phase A.** The format and the model compiler are in `tutela-pdp` (module `model`). The evaluator that uses the compiled model (`Pdp::check` and the others) is in `tutela-pdp` too ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)). `tutela apply`, `tutela init` and `tutela codegen` come later in Phase A ([ROADMAP.md](ROADMAP.md)).
 
 This file is the contract for the manifest format, version 1. If code and this file disagree, fix one of them in the same commit ([AGENTS.md](../AGENTS.md)).
 
@@ -79,7 +79,7 @@ Rules:
 | `parent` | One or more types that may be the direct parent: `org` or declared types. A type may list itself (a folder inside a folder). Every type must reach `org` through its parents. A parent other than `org` must be a container. |
 | `container` | `true` if other resources may live inside it. |
 | `starts` | What a new scope of this type starts as: `open` (the blueprint default) or `private`. Containers only. |
-| `ai_reach` | The default `ai_reach` of a new scope of this type: `project` or `team`. Nothing wider exists. Containers only. |
+| `ai_reach` | The default `ai_reach` of a new scope of this type: `project` or `team`. Nothing wider exists. Containers only. In Phase A the evaluator treats `team` like `project`; reach into sibling scopes needs its own ADR ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)). |
 | `features` | Feature names without `@`, for example `ai` for `@ai`. No duplicates. |
 | field name | A name, unique in the type. Fields and features together: at most 256 per type. |
 | `sensitivity` | Required: `public`, `internal`, `confidential` or `secret`. |
@@ -200,7 +200,7 @@ A condition narrows the role's level on one type: when `when` is false, the leve
 Rules:
 - The field is a declared data field of the condition's type (not a feature) and has `grants_access = true`.
 - A comparison with a null field is false. So `not` of a comparison is true on a null field.
-- String values are 1–256 characters. Integers fit in 64 bits.
+- String values are 1–256 characters. Integers are from −(2^53 − 1) to 2^53 − 1, because the list filter sends them as JSON and readers in some languages (JavaScript) lose exact values above that.
 - A template has at most 32 nodes and is at most 4 levels deep.
 - The field must not be confidential or secret. Otherwise people could learn its value from what they may do.
 - String values are checked like labels: no control or invisible (default-ignorable) characters.
@@ -270,7 +270,7 @@ The opposite direction is narrowing. These are neutral: labels, the audience, a 
 
 A manifest over any count limit is refused at once, before any other check.
 
-A valid manifest can still give a `list_filter` above the filter limits of [CONTRACTS.md §6.6](CONTRACTS.md#66-list_filter) for a principal with many deciding scopes, roles with conditions and nesting levels. Such a list fails closed. ROADMAP item 4 measures this and either raises the limits or bounds the inputs ([ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)).
+A valid manifest can still give a `list_filter` above the filter limits of [CONTRACTS.md §6.6](CONTRACTS.md#66-list_filter) for a principal with many deciding scopes, roles with conditions and nesting levels. Such a list fails closed. ROADMAP item 4 measured this and kept the limits: each nesting level of a principal's deciding scopes repeats the conditions of its roles, so the size grows with the bindings, and a limit on the manifest alone cannot bound it ([ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening), [ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)).
 
 | Item | Limit |
 |---|---|

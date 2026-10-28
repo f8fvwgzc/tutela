@@ -1,0 +1,57 @@
+Planted bugs in tutela-pdp, each run against `cargo test -p tutela-pdp --lib`.
+Date: 2026-10-28. Commit: 773f8ba (clean tree). rustc 1.99.0 (b940084d7 2026-09-28).
+Every mutant must be caught. The sources are restored after each run.
+Each line names the tests that failed (the first six).
+
+M01 eval.rs: caught by 2 test(s) - a service account (not only a user) can be the org Owner
+      tests_props::check_matches_the_reference_evaluator, tests_props::the_reference_and_miss_tests_compare_enough
+M02 eval.rs: caught by 8 test(s) - check: a private scope does not stop inheritance
+      tests_check::a_private_scope_stops_inheritance, tests_check::an_agent_assigned_at_the_org_root_is_outside_its_reach, tests_check::every_decision_passes_the_contract_checks, tests_filter::jae_lists_the_contracts_he_may_read, tests_props::check_matches_the_reference_evaluator, tests_props::the_reference_and_miss_tests_compare_enough and 2 more
+M03 eval.rs: caught by 3 test(s) - a direct assignment no longer beats group ones
+      tests_check::the_direct_assignment_beats_group_ones_at_one_scope, tests_props::check_matches_the_reference_evaluator, tests_props::the_reference_and_miss_tests_compare_enough
+M04 eval.rs: caught by 4 test(s) - only the first group role at a scope counts
+      tests_check::group_roles_combine_component_wise_but_grants_are_never_pooled, tests_check::many_group_roles_at_one_scope_give_each_rule_id_once_in_binding_order, tests_props::check_matches_the_reference_evaluator, tests_props::the_reference_and_miss_tests_compare_enough
+M05 eval.rs: caught by 10 test(s) - check: conditions never narrow
+      tests_check::a_delegated_field_write_needs_the_agent_too, tests_check::a_field_that_decides_access_must_be_sent, tests_check::an_unknown_group_makes_the_whole_condition_false_even_under_not, tests_check::the_agent_condition_narrows_when_not_assigned, tests_filter::tm03_delegated_lists_are_the_overlap, tests_filter::tm10_a_valid_manifest_can_pass_the_limits_and_the_list_fails_closed and 4 more
+M06 eval.rs: caught by 3 test(s) - check: an unknown group does not make the condition false
+      tests_check::an_unknown_group_makes_the_whole_condition_false_even_under_not, tests_props::the_reference_and_miss_tests_compare_enough, tests_props::tm10_the_differential_test_hits_every_case
+M07 eval.rs: caught by 4 test(s) - field rules at single scopes are ignored
+      tests_check::a_task_from_omar_may_write_review_notes_and_read_the_budget, tests_check::tm03_clause_for_jae_gets_the_overlap, tests_props::check_matches_the_reference_evaluator, tests_props::the_reference_and_miss_tests_compare_enough
+M08 pdp.rs: caught by 1 test(s) - a delegated request may name a user (not only agents) as an actor
+      tests_check::bad_requests_are_errors_never_allows
+M09 eval.rs: caught by 5 test(s) - an agent assigned at the org root keeps its access
+      tests_check::an_agent_assigned_at_the_org_root_is_outside_its_reach, tests_props::check_matches_the_reference_evaluator, tests_props::the_reference_and_miss_tests_compare_enough, tests_props::tm10_list_filter_returns_exactly_the_rows_check_allows, tests_props::tm10_the_differential_test_hits_every_case
+M10 pdp.rs: caught by 8 test(s) - check: the actors' answers are ignored
+      tests_check::an_agent_assigned_at_the_org_root_is_outside_its_reach, tests_check::delegation_overlap_names_the_actor, tests_filter::tm03_delegated_lists_are_the_overlap, tests_props::check_matches_the_reference_evaluator, tests_props::the_reference_and_miss_tests_compare_enough, tests_props::tm03_delegation_is_at_most_person_and_agent and 2 more
+M11 pdp.rs: caught by 2 test(s) - a resource of another tenant is not refused
+      tests_check::tm05_a_resource_of_another_tenant_is_denied, tests_props::tm05_no_cross_tenant_grant
+M12 pdp.rs: caught by 4 test(s) - the write mask keeps grants_access fields without manage_access
+      tests_check::tm03_an_agent_never_sees_a_grants_access_field_as_writable, tests_props::check_matches_the_reference_evaluator, tests_props::the_reference_and_miss_tests_compare_enough, tests_props::write_check_agrees_with_the_field_mask
+M13 pdp.rs: caught by 2 test(s) - an org claimed by another tenant is accepted
+      tests_check::tm05_a_refused_reload_changes_nothing, tests_check::tm05_an_org_belongs_to_one_tenant_only
+M22 pdp.rs: caught by 1 test(s) - a refused reload already gave up the tenant's org claims
+      tests_check::tm05_a_refused_reload_changes_nothing
+M14 pdp.rs: caught by 2 test(s) - field values of the wrong type act like null
+      tests_check::a_field_integer_must_fit_every_sdk, tests_check::field_values_of_the_wrong_type_are_errors_not_nulls
+M15 filter.rs: caught by 4 test(s) - list: private scopes do not stop inheritance
+      tests_filter::jae_lists_the_contracts_he_may_read, tests_filter::the_json_form_follows_the_contract, tests_props::tm10_list_filter_returns_exactly_the_rows_check_allows, tests_props::tm10_the_differential_test_hits_every_case
+M16 filter.rs: caught by 4 test(s) - list: the next level is not excluded
+      tests_filter::jae_lists_the_contracts_he_may_read, tests_filter::the_json_form_follows_the_contract, tests_props::tm10_list_filter_returns_exactly_the_rows_check_allows, tests_props::tm10_the_differential_test_hits_every_case
+M17 filter.rs: caught by 2 test(s) - list: `under` dropped for a type that is not a container
+      tests_props::tm10_list_filter_returns_exactly_the_rows_check_allows, tests_props::tm10_the_differential_test_hits_every_case
+M18 filter.rs: caught by 1 test(s) - list: a path may repeat an entry or hold the scope itself
+      tests_filter::tm10_a_path_that_breaks_a_rule_fails_the_whole_list
+M19 filter.rs: caught by 2 test(s) - list: paths that disagree are accepted
+      tests_filter::tm10_two_parents_for_an_unplaced_entry_fail_the_whole_list, tests_filter::tm10_two_paths_that_disagree_fail_the_whole_list
+M20 filter.rs: caught by 3 test(s) - list: `not(eq)` becomes `ne`, which is false on null
+      tests_filter::tm10_a_valid_manifest_can_pass_the_limits_and_the_list_fails_closed, tests_props::tm10_list_filter_returns_exactly_the_rows_check_allows, tests_props::tm10_the_differential_test_hits_every_case
+M21 filter.rs: caught by 3 test(s) - list: the agent's own filter is dropped
+      tests_filter::tm03_delegated_lists_are_the_overlap, tests_props::tm10_list_filter_returns_exactly_the_rows_check_allows, tests_props::tm10_the_differential_test_hits_every_case
+M23 data.rs: caught by 2 test(s) - a group's own closure costs nothing against the work budget
+      tests_check::a_closure_of_groups_alone_that_takes_too_much_work_is_refused, tests_check::tm05_a_refused_reload_changes_nothing
+M24 data.rs: caught by 5 test(s) - a group in two groups gets only its first holder's groups
+      tests_check::a_closure_of_groups_alone_that_takes_too_much_work_is_refused, tests_check::a_group_closure_that_takes_too_much_work_is_refused, tests_check::tm05_a_refused_reload_changes_nothing, tests_props::check_matches_the_reference_evaluator, tests_props::the_reference_and_miss_tests_compare_enough
+M25 pdp.rs: caught by 1 test(s) - a field that decides access may be left out (read as null)
+      tests_check::a_field_that_decides_access_must_be_sent
+M26 pdp.rs: caught by 1 test(s) - a field integer above 2^53 - 1 is accepted
+      tests_check::a_field_integer_must_fit_every_sdk

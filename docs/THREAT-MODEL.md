@@ -107,7 +107,7 @@ The boundary rule, written exactly:
 
 ## 5. Threats and controls
 
-Each threat has an id (TM-01 ... TM-23). Its tests carry the id in their name, for example `tm01_refuses_two_audiences`. **None of these tests exist yet.** The "Built" column is honest about the first commit.
+Each threat has an id (TM-01 ... TM-23). Its tests carry the id in their name, for example `tm01_refuses_two_audiences`. Tests exist only where the "Built" column says so. The column is honest: "Partly" names what exists.
 
 ### Summary
 
@@ -115,17 +115,17 @@ Each threat has an id (TM-01 ... TM-23). Its tests carry the id in their name, f
 |---|---|---|---|---|
 | TM-01 | Token audience confusion | Exactly one `aud`; strict verifier | A, B, C | No |
 | TM-02 | Delegated tokens mistaken for user tokens | `typ: agent+jwt`; `delegation_aware` audiences | A, B | No |
-| TM-03 | Confused deputy in agent work | Overlap rule for chat, task and scheduled work | A, B | No |
+| TM-03 | Confused deputy in agent work | Overlap rule for chat, task and scheduled work | A, B | **Partly**: the overlap in `tutela-pdp`, with property tests (`tm03_*`); delegated tokens are Phase B |
 | TM-04 | Account linking across tenant IdPs | `(iss, sub)` keys; DNS-proven domains; local credential to link | B, C | No |
-| TM-05 | Tenant id collision across issuers | `(iss, tid)` tenant key; issuer trust list | A, B | No |
+| TM-05 | Tenant id collision across issuers | `(iss, tid)` tenant key; issuer trust list | A, B | **Partly**: `tutela-pdp` keys bundles by `(iss, tid)` and denies resources of other tenants (`tm05_*`) |
 | TM-06 | Browser token theft | Backend-for-frontend cookies; 5-minute admin token; step-up MFA | A, B, C | No |
 | TM-07 | Attacks on the own login server | Code + PKCE S256 only; conformance suite | C | No |
-| TM-08 | Privilege escalation by admins and model changes | Narrow-only delegation; impact report; `tutela apply` refuses widening | A, B | No |
+| TM-08 | Privilege escalation by admins and model changes | Narrow-only delegation; impact report; `tutela apply` refuses widening | A, B | **Partly**: the model diff, and a property test that a change it does not call widening never widens a decision (`tm08_*`) |
 | TM-09 | Resource path spoofing | Paths loaded server-side by id | A | No |
-| TM-10 | List and count leaks | SQL filters from the same evaluator | A, B | No |
+| TM-10 | List and count leaks | SQL filters from the same evaluator | A, B | **Partly**: `list_filter` ≡ `check` in `tutela-pdp` (`tm10_*`); the SQL adapter is ROADMAP item 6 |
 | TM-11 | Field leaks into search, vectors, exports, audit, prompts | Field masks on every exit path | A, B | No |
 | TM-12 | UI-only checks | Codegen route guards; SDK refuses to start without them | A | No |
-| TM-13 | Stale permission caches and slow revocation | `rev`, bundle expiry, refuse lower rev, documented delay | A, B | No |
+| TM-13 | Stale permission caches and slow revocation | `rev`, bundle expiry, refuse lower rev, documented delay | A, B | **Partly**: `tutela-pdp` refuses a lower or stale revision (`tm13_*`) |
 | TM-14 | Row-level security mistakes | `FORCE` RLS, `SET LOCAL`, app roles own no tables | A, B | No |
 | TM-15 | Signing key theft and rotation mistakes | `Signer` trait, per-tenant keys, KMS option, rotation timing, kid deny-list | B, C | No |
 | TM-16 | API key theft | Separate, versioned pepper; hashed keys | B | No |
@@ -179,7 +179,7 @@ Each threat has an id (TM-01 ... TM-23). Its tests carry the id in their name, f
   - Overlap rule, always: (person allowed) AND (agent allowed), capped by attache's capability limits. It applies to chat, task work and scheduled work.
   - "The person" is whoever caused the work: the assigner or the requester. It is stored with the task or the schedule.
   - When that person is disabled, their scheduled work stops. The person's `epoch` is checked again at every token exchange.
-  - `ai_reach` is project (default) or team (allowed, not recommended). Never the whole workspace (the org) or another team. The model compiler refuses other values.
+  - `ai_reach` is project (default) or team (allowed, not recommended). Never the whole workspace (the org) or another team. The model compiler refuses other values. In Phase A, `team` acts like `project`, and an agent assigned only at the org root gets nothing ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)).
   - Output carries the highest label of its inputs. Readers need that label's level.
   - Narrow-only delegation: nobody grants a permission they do not hold.
 - **Phase.** A (overlap and `ai_reach` in `tutela-pdp` and the compiler). B (delegated tokens carry the person; epoch check at exchange).
