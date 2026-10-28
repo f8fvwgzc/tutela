@@ -1,6 +1,6 @@
 # Week-1 spike: notes written before the run
 
-Result (this line was added after the run; nothing else in this file changed): **go**, see [ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator).
+Result (added after the run): **go**, see [ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator). After the run only this line and the paragraph on keeping the spike code (end of §1) changed; the sizes, machine, thresholds and rules did not.
 
 Status: **notes fixed before any spike code ran.** This file is committed alone, before the spike code, so the sizes, the machine, the thresholds and the go/no-go rules cannot be changed after the numbers are known. The result goes into [ADR-0011 in DECISIONS.md](DECISIONS.md). The plan comes from [ROADMAP.md "Very next steps" §2](ROADMAP.md#2-week-1-spike-gono-go).
 
@@ -14,7 +14,7 @@ Other docs: [ROADMAP](ROADMAP.md) · [PERMISSION-MODEL](PERMISSION-MODEL.md) · 
 | 2 | Are group and path closures fast enough in Postgres at path depth 32? | p99 **< 5 ms** per query (rules in §5). |
 | 3 | Does `list_filter` give exactly the rows that `check` allows? | **Zero** mismatches on 100k rows, random models and principals (rules in §6). |
 
-Spike code is thrown away. It lives in `spike/week1/`, outside the Cargo workspace and outside the CI gates. Only these notes, the numbers and ADR-0011 are kept as the record.
+Spike code lives in `spike/week1/`, outside the Cargo workspace and outside the CI gates. It is kept only until `tutela-pdp` has its own benchmarks and differential tests. These notes, the raw outputs in [`spike-week1-results/`](spike-week1-results/) and ADR-0011 are the record. (Changed after the run: this paragraph first said the code would be thrown away at once.)
 
 ## 2. The machine
 

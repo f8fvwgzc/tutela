@@ -1,6 +1,6 @@
 # Week-1 spike (THROWAWAY)
 
-This folder is **throwaway spike code**. It is not a member of the Cargo workspace, it is not under the CI gates, and nothing in Tutela may depend on it. It is kept only so the numbers in [ADR-0011](../../docs/DECISIONS.md) can be reproduced. The plan, the sizes and the go/no-go rules were fixed before this code ran: [docs/SPIKE-WEEK1.md](../../docs/SPIKE-WEEK1.md). Delete this folder once `tutela-pdp` has its own benchmarks and differential tests.
+This folder is **throwaway spike code**. It is not a member of the Cargo workspace, it is not under the CI gates, and nothing in Tutela may depend on it. It is kept only so the numbers in [ADR-0011](../../docs/DECISIONS.md) can be reproduced. Its outputs live in [`docs/spike-week1-results/`](../../docs/spike-week1-results/). The plan, the sizes and the go/no-go rules were fixed before this code ran: [docs/SPIKE-WEEK1.md](../../docs/SPIKE-WEEK1.md). Delete this folder once `tutela-pdp` has its own benchmarks and differential tests.
 
 ## What is here
 
@@ -14,8 +14,7 @@ This folder is **throwaway spike code**. It is not a member of the Cargo workspa
 | `src/bench.rs` | Question 1: `check` latency |
 | `src/closure.rs` | Question 2: closure latency in Postgres |
 | `src/diff.rs` | Question 3: `list_filter` ≡ `check` on 100k rows |
-| `run.sh` | Waits for a quiet machine, samples `cargo`/`rustc` and load, writes `results/` |
-| `results/` | The outputs used in ADR-0011 |
+| `run.sh` | Waits for a quiet machine, samples `cargo`/`rustc` and load, writes `docs/spike-week1-results/` |
 
 ## How to run
 

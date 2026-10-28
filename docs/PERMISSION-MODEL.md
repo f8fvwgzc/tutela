@@ -913,7 +913,7 @@ These are not decided yet. Each has a proposal so work can start. Final answers 
 | 1 | A direct assignment and a group assignment at the same scope: which wins? | The direct one; else the highest group one. | Phase A |
 | 2 | Where does a library-mode project (no `tutelad`) get an approval token for a widening diff? | A token signed by a tenant admin's key, bound to the diff digest. | Phase A |
 | 3 | How is a reader's clearance per label stored, for labelled output? | Treat each label like a field of that sensitivity in the scope, with the same defaults. | Phase A |
-| 4 | The ancestors column: array, `ltree` or closure table? Maximum path depth? | **Decided** ([ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator)): an array of ancestor ids, nearest first, with a GIN index. Depth cap 32. | Week-1 spike |
+| 4 | The ancestors column: array, `ltree` or closure table? Maximum path depth? | **Decided** ([ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator)): an array of ancestor ids, nearest first, with a GIN index. Depth cap 32. `bigint[]` was measured; the element type (for example UUID) and the query plan are measured again under ADR-0011 F2. | Week-1 spike |
 | 5 | Default max bundle age per action class. | Reads longer, writes shorter, revocation-sensitive actions online. Numbers measured in Phase B. | Phase B |
 | 6 | The list of condition templates in v1. | equals, in-list, attribute == principal, principal in group; and, or, not. | Phase A |
 | 7 | The final names of admin keys and obligation kinds. | As in [5.3](#53-owner-only-admin-actions-blueprint) and [7.3](#73-the-decision-object). | Phase A, in `tutela-contracts` |

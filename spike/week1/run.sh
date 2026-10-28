@@ -2,8 +2,8 @@
 # THROWAWAY week-1 spike runner (docs/SPIKE-WEEK1.md).
 #   ./run.sh <name> <args...>     e.g. ./run.sh check-latency check-latency
 # Waits until no cargo/rustc runs and the 1-minute load is below 4.0, samples
-# both every 2 s while the run goes, and writes results/<name>.txt and
-# results/<name>.sampler.txt. Postgres must listen on 127.0.0.1:5442.
+# both every 2 s while the run goes, and writes docs/spike-week1-results/<name>.txt and
+# docs/spike-week1-results/<name>.sampler.txt. Postgres must listen on 127.0.0.1:5442.
 set -u
 name=$1; shift
 bin=./target/release/tutela-spike-week1
@@ -11,7 +11,7 @@ load1() { sysctl -n vm.loadavg | awk '{print $2}'; }
 while pgrep -x cargo >/dev/null || pgrep -x rustc >/dev/null || [ "$(echo "$(load1) >= 4.0" | bc)" = 1 ]; do
   echo "waiting: load $(load1), cargo/rustc: $(pgrep -x cargo; pgrep -x rustc | tr '\n' ' ')"; sleep 30
 done
-out=results/$name.txt; smp=results/$name.sampler.txt
+out=../../docs/spike-week1-results/$name.txt; smp=../../docs/spike-week1-results/$name.sampler.txt
 : > "$smp"
 ( while :; do echo "$(date '+%H:%M:%S') load=$(load1) cargo=$(pgrep -x cargo | tr '\n' ' ') rustc=$(pgrep -x rustc | tr '\n' ' ')" >> "$smp"; sleep 2; done ) &
 sampler=$!

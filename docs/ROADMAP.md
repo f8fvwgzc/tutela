@@ -26,7 +26,7 @@ A gate is a list of checks. A phase is not done until its gate passes. No produc
 
 | Gate | Covers | Checks |
 |---|---|---|
-| **Library gate** (end of A) | Crates and SDKs: `tutela-pdp`, `tutela-sdk`, `tutela-store`, `tutela-vault`, `tutela-safenet`, `tutela-contracts`, `@f8fvwgzc/tutela-*`, `tutela-py` | Fuzzing of the model compiler, token verifier and SQL filter compiler. Property tests (no cross-tenant grant, no widening, delegation ≤ person AND agent, `list_filter` ≡ `check`). `check` p99 under 1 ms in process. |
+| **Library gate** (end of A) | Crates and SDKs: `tutela-pdp`, `tutela-sdk`, `tutela-store`, `tutela-vault`, `tutela-safenet`, `tutela-contracts`, `@f8fvwgzc/tutela-*`, `tutela-py` | Fuzzing of the model compiler, token verifier and SQL filter compiler. Property tests (no cross-tenant grant, no widening, delegation ≤ person AND agent, `list_filter` ≡ `check`). `check` p99 under 1 ms in process. List-query p99 in Postgres at the `list_filter` limits, with the statement timeout failing closed ([ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator) F2). |
 | **Service gate** (end of B) | `tutelad` and the Tutela Console | Row-level security (a query with no tenant set returns zero rows; a cross-tenant read fails at RLS even with an injected code bug). Group and path closure p99. High availability: 2+ replicas, bundle expiry, a revoked role takes effect within the documented delay. |
 | **Login-server gate** (end of C) | `tutelad` as an OIDC provider | OpenID Foundation Basic OP + Config OP conformance in CI. Fuzzing. An external security review. A key-restore drill. Swapping Keycloak for `tutelad` is a config change only. |
 
@@ -43,9 +43,9 @@ A gate is a list of checks. A phase is not done until its gate passes. No produc
 | 1 | First commit | Repo, docs, `tutela-contracts`, blocking CI. **Done.** See [First-commit checklist](#first-commit-checklist). |
 | 2 | Week-1 spike | Go/no-go numbers before more code. **Done: go** ([ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator)). |
 | 3 | Model language and compiler | Reads `tutela.resources.toml`: tenant-defined resource types, roles, field rules, boundary rules, condition templates, UI keys. Rejects condition templates that the SQL filter cannot express. Detects widening changes. |
-| 4 | `tutela-pdp` | The native evaluator: `Pdp::check`, `Pdp::batch`, `Pdp::list_filter`, `Pdp::write_check`. Resolves the effective level once per (principal, scope). Emits the decision and the SQL filter from the same code. Evaluates delegation as person AND agent. |
+| 4 | `tutela-pdp` | The native evaluator: `Pdp::check`, `Pdp::batch`, `Pdp::list_filter`, `Pdp::write_check`. Resolves the effective level once per (principal, scope). Emits the decision and the SQL filter from the same code. Evaluates delegation as person AND agent. `list_filter` takes a scope-path provider that fails closed ([ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator) F1). |
 | 5 | `tutela-store` | Postgres schema and migrations for bindings, field rules and groups. The same schema `tutelad` uses later. |
-| 6 | `tutela-sdk` | Token verifier for any OIDC issuer, with a trust list that maps each issuer to the tenants it may speak for. axum and tonic layers. Decision cache. Refuses `typ: agent+jwt` unless delegation support is on. |
+| 6 | `tutela-sdk` | Token verifier for any OIDC issuer, with a trust list that maps each issuer to the tenants it may speak for. axum and tonic layers. Decision cache. Refuses `typ: agent+jwt` unless delegation support is on. The SQL adapter for `list_filter`: bound parameters only, a statement timeout that fails closed, and a query plan that is fast at the filter limits ([ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator) F2). |
 | 7 | `tutela-vault` | Envelope encryption with a KMS trait. Ported from the design of onto-intelli `crates/onto-control/src/vault.rs`. |
 | 8 | `tutela-safenet` | SSRF-safe outbound HTTP. Ported from onto-intelli `crates/onto-control/src/net.rs` and `crates/onto-intelli/src/net.rs`. |
 | 9 | Codegen and CLI | `tutela init`, `tutela apply` (library mode: shows the diff and refuses a widening diff without an approval token), `tutela codegen`. Codegen makes the React constants and the server route guards from the same UI-key entry, plus a test that calls each route as a denied principal. |
@@ -177,7 +177,7 @@ Require the CI checks on `main` in the GitHub settings of `f8fvwgzc/tutela`. Wit
 
 ### 2. Week-1 spike: go/no-go
 
-Before the real Phase A code, a short spike proves that the native evaluator can be fast and correct. Spike code is thrown away. Only the numbers and notes are kept.
+Before the real Phase A code, a short spike proves that the native evaluator can be fast and correct. The notes, the numbers and the raw outputs are kept in `docs/`. The spike code is kept in `spike/week1/` only until `tutela-pdp` has its own benchmarks and differential tests.
 
 | Test | Setup | Go if | If no-go |
 |---|---|---|---|
