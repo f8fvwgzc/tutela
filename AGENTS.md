@@ -45,7 +45,7 @@ tutela/
 │   ├── tutela-pdp/          model compiler for tutela.resources.toml                      now (compiler)
 │   │                        embedded decision engine: check, batch, list_filter,          now (evaluator)
 │   │                        write_check
-│   ├── tutela-store/        Postgres schema and migrations: bindings, field rules, groups A
+│   ├── tutela-store/        Postgres schema and migrations: bindings, field rules, groups now
 │   ├── tutela-sdk/          token verifier, axum and tonic layers, decision cache         A
 │   ├── tutela-vault/        envelope encryption with a KMS trait                          A
 │   ├── tutela-safenet/      SSRF-safe outbound HTTP                                       A
@@ -120,6 +120,7 @@ cargo install --locked cargo-deny cargo-audit
 Notes:
 
 - Run `make` before every commit and every pull request.
+- `tutela-store`'s tests need a Postgres. Set `TUTELA_TEST_DATABASE_URL` to a key=value connection string for a role that may create roles and databases, for example `host=127.0.0.1 port=5432 user=postgres password=postgres dbname=postgres`. Without it they print `skipped` and pass; CI sets `TUTELA_REQUIRE_DATABASE=1`, so there a missing database fails.
 - The gates run with `--locked`. When you add a dependency, run `make lint LOCKED=` once, then commit the new `Cargo.lock` with the change.
 - An advisory ignore in `deny.toml` needs an id, a reason and a review date.
 - The later phases add more gates (fuzzing, property tests, latency numbers, RLS tests, conformance). They are listed in [SECURITY.md](SECURITY.md).

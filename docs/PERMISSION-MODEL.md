@@ -912,7 +912,7 @@ Nothing is applied until a person approves that exact diff.
 
 ## 18. Tables
 
-All tables live in `tutela-store` (Phase A). Library mode creates them in the product's own Postgres; `tutelad` uses the same schema (Phase B). Every table has `tenant_id` first. In `tutelad`, every table has `FORCE ROW LEVEL SECURITY`. Tutela stores bindings, groups, field rules, boundary rules and conditions — **never app records**. Resources are referenced only by type and id.
+All tables live in `tutela-store`. Library mode creates them in the product's own Postgres; `tutelad` uses the same schema (Phase B). Every table has `tenant_id` first, and every table with tenant data has `FORCE ROW LEVEL SECURITY`, in both modes. Phase A builds `role_assignment`, `field_rule`, `boundary_rule` (it reads `private` only), `group` + `group_member` and `model_revision`. It also builds four tables that are not in the list below: `tenant_rev` (the revision counter), `org`, `scope_path` (the paths `list_filter` needs), and the tenant directory and applied manifest (no tenant data, so no row-level security). `resource_type`, `role`, `field_registry`, `condition` and `ui_component` come with Phase B: in library mode the model is the applied manifest ([ADR-0014](DECISIONS.md#adr-0014-tutela-store-in-phase-a-the-schema-row-level-security-and-checked-writes)). `audit_event` is in `tutelad` (Phase B). Tutela stores bindings, groups, field rules, boundary rules and conditions — **never app records**. Resources are referenced only by type and id.
 
 The first six table names come from the blueprint. The last five are new.
 

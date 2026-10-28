@@ -701,7 +701,7 @@ pub struct PathEntry {
 }
 ```
 
-`TenantData` is what the evaluator reads about a tenant besides the model: its orgs, role assignments, groups, private scopes and field rules at single scopes. It is `tutela-store` data (ROADMAP Phase A item 5); until the store exists, a product builds it. Its rules are in [ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits).
+`TenantData` is what the evaluator reads about a tenant besides the model: its orgs, role assignments, groups, private scopes and field rules at single scopes. It is `tutela-store` data: `tutela_store::load` reads it, with the revision and the scope paths, in one consistent view ([ADR-0014](DECISIONS.md#adr-0014-tutela-store-in-phase-a-the-schema-row-level-security-and-checked-writes)). A product may also build it itself, for example in tests. Its rules are in [ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits).
 
 Rules for `ResourceRef`:
 - In JSON, `type_name` is spelled `type` (as in 6.6 and section 7).

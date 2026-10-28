@@ -153,6 +153,7 @@ Dependencies point down only: products → onto-intelli / texc-symphony → atta
 | Week-1 spike with go/no-go numbers | Done: **go** ([ADR-0011](docs/DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator)) |
 | Model language and compiler (`tutela-pdp`, module `model`; format in [docs/MANIFEST.md](docs/MANIFEST.md)) | Done (Phase A; [ADR-0012](docs/DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)) |
 | Evaluator (`tutela-pdp`: `check`, `batch`, `list_filter`, `write_check`; [ADR-0013](docs/DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)) | Done (Phase A; [ADR-0013](docs/DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)) |
+| `tutela-store` (Postgres schema, migrations, row-level security, checked writes; [ADR-0014](docs/DECISIONS.md#adr-0014-tutela-store-in-phase-a-the-schema-row-level-security-and-checked-writes)) | Done (Phase A) |
 | Everything else | Planned, see [docs/ROADMAP.md](docs/ROADMAP.md) |
 
 Phases: **A** packages and library mode, **B** `tutelad` service and Tutela Console, **C** own login server (optional), **D** hardening. Honest size for Tutela alone: about 35–45 person-weeks for one strong engineer.

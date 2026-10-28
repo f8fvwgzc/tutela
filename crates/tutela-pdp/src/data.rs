@@ -1,9 +1,9 @@
 //! The tenant data the evaluator reads besides the model: role assignments,
 //! groups, private scopes and field rules at one scope.
 //!
-//! These are `tutela-store` data (ROADMAP Phase A item 5). Until the store
-//! exists, a product builds [`TenantData`] itself. [`crate::Pdp::load`]
-//! checks it and builds an index; it never repairs it.
+//! These are `tutela-store` data: `tutela_store::load` reads them (ADR-0014).
+//! A product may also build [`TenantData`] itself, for example in tests.
+//! [`crate::Pdp::load`] checks it and builds an index; it never repairs it.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
