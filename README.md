@@ -54,13 +54,22 @@ Delivery while the repo is private: Rust crates as git dependencies pinned to a 
 A product declares its resource types, roles and UI keys in `tutela.resources.toml`:
 
 ```toml
-# tutela.resources.toml (planned API; the exact format is fixed in Phase A)
+# tutela.resources.toml (format v1: docs/MANIFEST.md)
+version = 1
+
+[app]
+name = "crm"
+
 [types.project]
-parent = "org"                    # every resource has exactly one parent
+parent    = "org"                 # every resource has exactly one parent
+container = true
 
 [types.invoice]
-parent  = "project"
-actions = ["approve", "export"]
+parent = "project"
+
+[types.invoice.actions]
+approve = { needs = "write" }     # also needs the grant on the role
+export  = { needs = "read" }
 
 [types.invoice.fields]
 number = { sensitivity = "internal" }
@@ -68,7 +77,12 @@ status = { sensitivity = "internal" }
 amount = { sensitivity = "confidential" } # confidential and secret fields start at None
 
 [roles.finance]
-grants = { "invoice" = "write", "invoice.amount" = "read", "invoice:approve" = true }
+grants = { "project" = "read", "invoice" = "write", "invoice.amount" = "read", "invoice:approve" = true, "invoice:export" = true }
+
+[[field_rules]]                   # amount starts hidden; open it for finance
+field = "invoice.amount"
+role  = "finance"
+max   = "read"
 
 [ui."invoices.approve_button"]
 actions     = ["invoice:approve"]
@@ -137,6 +151,7 @@ Dependencies point down only: products → onto-intelli / texc-symphony → atta
 | `tutela-contracts` crate | In the first commit (wire types and their format checks only; no I/O) |
 | Blocking CI (fmt, clippy, tests, docs, cargo-deny, cargo-audit) | In the first commit |
 | Week-1 spike with go/no-go numbers | Next (Phase A) |
+| Model language and compiler (`tutela-pdp`, module `model`; format in [docs/MANIFEST.md](docs/MANIFEST.md)) | In review (Phase A) |
 | Everything else | Planned, see [docs/ROADMAP.md](docs/ROADMAP.md) |
 
 Phases: **A** packages and library mode, **B** `tutelad` service and Tutela Console, **C** own login server (optional), **D** hardening. Honest size for Tutela alone: about 35–45 person-weeks for one strong engineer.
@@ -174,6 +189,7 @@ The repo is under the MIT licence ([LICENSE](LICENSE)). The SDKs, crates and con
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Parts of Tutela and how they fit with the other cores |
 | [docs/PERMISSION-MODEL.md](docs/PERMISSION-MODEL.md) | Levels, inheritance, field rules, agents and delegation |
 | [docs/CONTRACTS.md](docs/CONTRACTS.md) | APIs, tokens, events and audit records |
+| [docs/MANIFEST.md](docs/MANIFEST.md) | The `tutela.resources.toml` format and the model compiler |
 | [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) | Threats and how Tutela answers them |
 | [docs/INTEGRATION.md](docs/INTEGRATION.md) | How cores and products adopt Tutela |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Phases A–D, exit checks and sizes |

@@ -195,7 +195,7 @@ Rules:
 
 ## 2. Permission keys
 
-**First commit:** all grammars of section 2 are in `tutela-contracts`. The manifest that declares types, fields, actions and UI keys (`tutela.resources.toml`) is Phase A.
+**First commit:** all grammars of section 2 are in `tutela-contracts`. The manifest that declares types, fields, actions and UI keys (`tutela.resources.toml`) is Phase A; its format v1 is in [MANIFEST.md](MANIFEST.md), and its compiler is in `tutela-pdp`.
 
 ### 2.1 Names
 
@@ -246,9 +246,9 @@ Exactly one `:`. Example: `invoice:approve`. At most 129 characters.
 
 Notes:
 - [PERMISSION-MODEL.md §5.2](PERMISSION-MODEL.md#52-actions) explains "create" and "update" in words. On the wire both are `write` (create is `write` on the container). A product that needs `archive` apart from `delete` declares a custom action `archive` with level `full`.
-- Other owner-only admin actions use the same grammar (`<type>:<name>`). Proposed names, fixed in Phase A: `manage_fields`, `manage_boundaries`, `manage_agents`, `approve_move`, `read_audit` ([PERMISSION-MODEL.md §5.3](PERMISSION-MODEL.md#53-owner-only-admin-actions-blueprint)). The name is `read_audit`, not `audit.read`, because a `.` marks a field key.
+- Other owner-only admin actions use the same grammar (`<type>:<name>`). The names are fixed by the manifest format ([MANIFEST.md §6](MANIFEST.md#6-admin-keys)): `manage_fields`, `manage_boundaries`, `manage_agents`, `approve_move`, `read_audit` ([PERMISSION-MODEL.md §5.3](PERMISSION-MODEL.md#53-owner-only-admin-actions-blueprint)). A custom action may not use these names. The name is `read_audit`, not `audit.read`, because a `.` marks a field key.
 
-**Custom actions.** A product declares them per type in `tutela.resources.toml`, for example `contract:approve`. Each custom action names the level it needs (`read`, `write` or `full`), or says it is owner-only. A custom action may also need an explicit grant on the role ([PERMISSION-MODEL.md](PERMISSION-MODEL.md)). A custom action name must not be one of the built-in names above.
+**Custom actions.** A product declares them per type in `tutela.resources.toml` ([MANIFEST.md §4](MANIFEST.md#4-resource-types)), for example `contract:approve`. Each custom action names the level it needs (`read`, `write` or `full`), or says it is owner-only. A custom action may also need an explicit grant on the role ([PERMISSION-MODEL.md](PERMISSION-MODEL.md)). A custom action name must not be one of the built-in names above.
 
 ### 2.4 Permission keys
 

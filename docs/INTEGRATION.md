@@ -417,12 +417,14 @@ Every access token must carry **exactly one audience**.
 
 ## Step 3. Write `tutela.resources.toml`
 
-Run `tutela init` for a starter file. The manifest declares resource types,
-fields with their sensitivity, actions, default roles and UI keys.
-Illustrative shape:
+Run `tutela init` for a starter file (planned, Phase A). The manifest
+declares resource types, fields with their sensitivity, actions, roles, field
+rules, conditions and UI keys. The format is fixed in
+[MANIFEST.md](MANIFEST.md). An example:
 
 ```toml
-# tutela.resources.toml  (illustrative; the exact format is fixed in Phase A)
+# tutela.resources.toml  (format v1; full rules in docs/MANIFEST.md)
+version = 1
 
 [app]
 name     = "crm"
@@ -430,11 +432,15 @@ audience = "crm-api"
 
 # Every resource has exactly one parent.
 [types.project]
-parent = "org"
+parent    = "org"
+container = true
 
 [types.invoice]
-parent  = "project"
-actions = ["approve", "export"]
+parent = "project"
+
+[types.invoice.actions]
+approve = { needs = "write" }   # needs Write and the grant on the role
+export  = { needs = "read" }
 
 [types.invoice.fields]
 number       = { sensitivity = "internal" }
@@ -442,12 +448,19 @@ status       = { sensitivity = "internal" }
 amount       = { sensitivity = "confidential" } # new confidential field: starts at None
 bank_account = { sensitivity = "secret" }       # new secret field: starts at None
 
-# Levels: none < read < write < full
+# Levels: none < read < write < full. Seeded roles (owner, member, viewer,
+# guest, agent) exist already; this entry replaces the seeded viewer.
 [roles.finance]
-grants = { "invoice" = "write", "invoice.amount" = "read", "invoice:approve" = true }
+grants = { "project" = "read", "invoice" = "write", "invoice.amount" = "read", "invoice:approve" = true }
 
 [roles.viewer]
-grants = { "invoice" = "read" }
+grants = { "project" = "read", "invoice" = "read" }
+
+# amount starts hidden for every role; open it for finance only.
+[[field_rules]]
+field = "invoice.amount"
+role  = "finance"
+max   = "read"
 
 # Each UI key names the actions AND the API routes behind it.
 [ui."invoices.approve_button"]

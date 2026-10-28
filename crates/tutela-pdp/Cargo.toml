@@ -1,0 +1,22 @@
+[package]
+name = "tutela-pdp"
+description = "Tutela's embedded decision engine; in Phase A it starts with the model language and its compiler"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.21"
+toml = { version = "1.1.4", default-features = false, features = ["parse", "serde", "std"] }
+tutela-contracts = { workspace = true }
+
+[dev-dependencies]
+proptest = { version = "1.12.0", default-features = false, features = ["std"] }

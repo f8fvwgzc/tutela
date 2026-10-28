@@ -208,7 +208,7 @@ Every tenant starts with these roles. Tenants can edit them and add their own.
 | **Member** | Full | No | People added to a new team or project. |
 | **Viewer** | Read | No | |
 | **Guest** | Read, only on what they are invited to | No | Blueprint example: guests see only issues labelled `client-visible` (a condition). |
-| **Agent** | Read; Write only on items assigned to it (a condition) | Never | For AI agents. See [11](#11-ai-agents). |
+| **Agent** | Read. Write only on items assigned to it is a condition on a principal field, so the product declares it (the seeded role has no condition; see [MANIFEST.md §5.1](MANIFEST.md#51-seeded-roles)). | Never | For AI agents. See [11](#11-ai-agents). |
 
 The **org Owner** (the blueprint's workspace owner) is special (Blueprint guardrail): an org Owner keeps Full access everywhere in the org, also inside private scopes. Opening a hidden field this way needs a short reason and is always written to the audit log. This break-glass path is for people only. It never works through an agent (New).
 
@@ -915,5 +915,5 @@ These are not decided yet. Each has a proposal so work can start. Final answers 
 | 3 | How is a reader's clearance per label stored, for labelled output? | Treat each label like a field of that sensitivity in the scope, with the same defaults. | Phase A |
 | 4 | The ancestors column: array, `ltree` or closure table? Maximum path depth? | Decided by the week-1 spike (depth 32, 100k rows). | Week-1 spike |
 | 5 | Default max bundle age per action class. | Reads longer, writes shorter, revocation-sensitive actions online. Numbers measured in Phase B. | Phase B |
-| 6 | The list of condition templates in v1. | equals, in-list, attribute == principal, principal in group; and, or, not. | Phase A |
-| 7 | The final names of admin keys and obligation kinds. | As in [5.3](#53-owner-only-admin-actions-blueprint) and [7.3](#73-the-decision-object). | Phase A, in `tutela-contracts` |
+| 6 | The list of condition templates in v1. | **Fixed** in [MANIFEST.md §8](MANIFEST.md#8-conditions): `eq`, `in`, `contains`, `is_principal`, `in_group`; `and`, `or`, `not`. | Phase A |
+| 7 | The final names of admin keys and obligation kinds. | Admin keys: **fixed** as in [5.3](#53-owner-only-admin-actions-blueprint) ([MANIFEST.md §6](MANIFEST.md#6-admin-keys)). Obligation kinds: as in [7.3](#73-the-decision-object), still open. | Phase A, in `tutela-contracts` |
