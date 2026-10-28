@@ -63,16 +63,33 @@ pub fn run(seed: u64) {
         deep.len()
     );
 
-    for (name, pool, delegated) in [("W1 mixed", &all, false), ("W2 deep", &deep, false), ("W3 delegated", &all, true)] {
+    // Info only, added after the gated run (not in docs/SPIKE-WEEK1.md): W4
+    // uses the users bound at the org root, so most calls are allowed and
+    // build a full field mask. Every workload also reports allowed calls alone.
+    let org_users: Vec<u32> = w
+        .assignments
+        .iter()
+        .filter_map(|a| match a.1 {
+            Subject::User(u) if a.2 == m.org => Some(u),
+            _ => None,
+        })
+        .collect();
+    for (name, pool, delegated, who) in [
+        ("W1 mixed", &all, false, &users),
+        ("W2 deep", &deep, false, &users),
+        ("W3 delegated", &all, true, &users),
+        ("W4 org-root users (info)", &all, false, &org_users),
+    ] {
         let mut rng = Rng::new(seed ^ name.len() as u64 ^ 0xC0FFEE);
         let samples: Vec<(Principal, Option<Principal>, NodeId, Action)> = (0..WARMUP + MEASURED)
             .map(|_| {
-                let p = Principal::User(rng.pick(&users));
+                let p = Principal::User(rng.pick(who));
                 let a = if delegated { Some(Principal::Agent(rng.pick(&agents))) } else { None };
                 (p, a, rng.pick(pool), rng.pick(&Action::ALL))
             })
             .collect();
         let mut ns = Vec::with_capacity(MEASURED);
+        let mut ns_allowed = Vec::new();
         let mut allowed = 0usize;
         let mut fields_read = 0usize;
         let t_all = Instant::now();
@@ -100,6 +117,7 @@ pub fn run(seed: u64) {
                 if let Ok(d) = d {
                     if d.allow {
                         allowed += 1;
+                        ns_allowed.push(e.as_nanos() as u64);
                     }
                     fields_read += d.read.len();
                 }
@@ -112,6 +130,7 @@ pub fn run(seed: u64) {
             fields_read as f64 / MEASURED as f64,
             t_all.elapsed().as_secs_f64()
         );
+        println!("{name}, allowed calls only (info): {}", stats(ns_allowed));
     }
 
     // Information only: one list_filter call on this model.
