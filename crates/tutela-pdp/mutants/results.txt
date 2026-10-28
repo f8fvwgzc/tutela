@@ -1,5 +1,5 @@
 Planted bugs in tutela-pdp, each run against `cargo test -p tutela-pdp --lib`.
-Date: 2026-10-28. Commit: 2801a02 (clean tree). rustc 1.99.0 (b940084d7 2026-09-28).
+Date: 2026-10-28. Commit: 09b5bee (clean tree). rustc 1.99.0 (b940084d7 2026-09-28).
 Every mutant must be caught. The sources are restored after each run.
 Each line names the tests that failed (the first six).
 
@@ -13,8 +13,8 @@ M04 eval.rs: caught by 3 test(s) - only the first group role at a scope counts
       tests_check::group_roles_combine_component_wise_but_grants_are_never_pooled, tests_props::check_matches_the_reference_evaluator, tests_props::the_reference_and_miss_tests_compare_enough
 M05 eval.rs: caught by 9 test(s) - check: conditions never narrow
       tests_check::a_delegated_field_write_needs_the_agent_too, tests_check::an_unknown_group_makes_the_whole_condition_false_even_under_not, tests_check::the_agent_condition_narrows_when_not_assigned, tests_filter::tm03_delegated_lists_are_the_overlap, tests_filter::tm10_a_valid_manifest_can_pass_the_limits_and_the_list_fails_closed, tests_props::check_matches_the_reference_evaluator and 3 more
-M06 eval.rs: caught by 5 test(s) - check: an unknown group does not make the condition false
-      tests_check::an_unknown_group_makes_the_whole_condition_false_even_under_not, tests_props::check_matches_the_reference_evaluator, tests_props::the_reference_and_miss_tests_compare_enough, tests_props::tm10_list_filter_returns_exactly_the_rows_check_allows, tests_props::tm10_the_differential_test_hits_every_case
+M06 eval.rs: caught by 3 test(s) - check: an unknown group does not make the condition false
+      tests_check::an_unknown_group_makes_the_whole_condition_false_even_under_not, tests_props::the_reference_and_miss_tests_compare_enough, tests_props::tm10_the_differential_test_hits_every_case
 M07 eval.rs: caught by 4 test(s) - field rules at single scopes are ignored
       tests_check::a_task_from_omar_may_write_review_notes_and_read_the_budget, tests_check::tm03_clause_for_jae_gets_the_overlap, tests_props::check_matches_the_reference_evaluator, tests_props::the_reference_and_miss_tests_compare_enough
 M08 pdp.rs: caught by 1 test(s) - a delegated request may name a user (not only agents) as an actor
@@ -47,3 +47,7 @@ M20 filter.rs: caught by 3 test(s) - list: `not(eq)` becomes `ne`, which is fals
       tests_filter::tm10_a_valid_manifest_can_pass_the_limits_and_the_list_fails_closed, tests_props::tm10_list_filter_returns_exactly_the_rows_check_allows, tests_props::tm10_the_differential_test_hits_every_case
 M21 filter.rs: caught by 3 test(s) - list: the agent's own filter is dropped
       tests_filter::tm03_delegated_lists_are_the_overlap, tests_props::tm10_list_filter_returns_exactly_the_rows_check_allows, tests_props::tm10_the_differential_test_hits_every_case
+M23 data.rs: caught by 2 test(s) - a group's own closure costs nothing against the work budget
+      tests_check::a_closure_of_groups_alone_that_takes_too_much_work_is_refused, tests_check::tm05_a_refused_reload_changes_nothing
+M24 data.rs: caught by 5 test(s) - a group in two groups gets only its first holder's groups
+      tests_check::a_closure_of_groups_alone_that_takes_too_much_work_is_refused, tests_check::a_group_closure_that_takes_too_much_work_is_refused, tests_check::tm05_a_refused_reload_changes_nothing, tests_props::check_matches_the_reference_evaluator, tests_props::the_reference_and_miss_tests_compare_enough
