@@ -8,7 +8,7 @@
 //! row is at or under a level-`k` scope and not at or under any
 //! level-`k+1` scope.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 use tutela_contracts::keys::{ActionKey, FieldName, ResourceId, ResourceType};
@@ -20,7 +20,7 @@ use crate::data::Index;
 use crate::eval::{
     ActionKind, Ctx, Gate, bindings_at, gate, names_unknown_group, org_owner, role_for,
 };
-use crate::model::{Model, RoleKey, Template, Value};
+use crate::model::{RoleKey, Template, Value};
 
 /// At most this many condition nodes (CONTRACTS.md 6.6).
 pub const MAX_FILTER_NODES: usize = 4096;
@@ -214,11 +214,15 @@ impl FilterExpr {
 
 /// A filter to list rows of one type inside SQL (CONTRACTS.md 6.6).
 ///
-/// A row of the listed type passes if and only if
+/// A row of the listed type and of `tenant` passes if and only if it has at
+/// most 32 ancestors and
 /// `(row.id is in ids_in OR row is under a scope in container_in) AND
 /// condition(row)`. Empty `ids_in` and `container_in` mean no rows.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize)]
 pub struct ListFilter {
+    /// The tenant the rows must belong to: the SQL adapter binds it as the
+    /// tenant predicate.
+    pub tenant: TenantKey,
     /// The listed type.
     #[serde(rename = "type")]
     pub type_name: ResourceType,
@@ -234,8 +238,9 @@ pub struct ListFilter {
 }
 
 impl ListFilter {
-    fn nothing(type_name: ResourceType, rev: u64) -> Self {
+    fn nothing(tenant: TenantKey, type_name: ResourceType, rev: u64) -> Self {
         Self {
+            tenant,
             type_name,
             rev,
             ids_in: Vec::new(),
@@ -265,7 +270,7 @@ impl ListFilter {
         }
     }
 
-    fn check_limits(&self) -> Result<(), PdpError> {
+    pub(crate) fn check_limits(&self) -> Result<(), PdpError> {
         let size = self.size();
         if self.ids_in.len() > MAX_IDS_IN {
             return Err(PdpError::FilterTooLarge("ids_in"));
@@ -331,14 +336,13 @@ fn under(scopes: Vec<PathEntry>) -> FilterExpr {
     }
 }
 
-/// `true` if rows may sit below a scope of this type: an org, a container,
-/// or a type the model does not declare (to be safe).
-fn may_contain(model: &Model, t: &ResourceType) -> bool {
-    *t == ResourceType::ORG || model.types().get(t).is_none_or(|d| d.container)
-}
-
 /// "The row is one of these scopes, or under one of them."
-fn at_or_under(model: &Model, listed: &ResourceType, scopes: &[&PathEntry]) -> FilterExpr {
+///
+/// `under` is kept for every scope, whatever its type's `container` flag:
+/// `check` does not read the flag, and a stored path may run through a type
+/// that is no longer a container. Pruning here would drop an exclusion and
+/// list rows that `check` denies.
+fn at_or_under(listed: &ResourceType, scopes: &[&PathEntry]) -> FilterExpr {
     FilterExpr::or(vec![
         id_in(
             scopes
@@ -347,13 +351,7 @@ fn at_or_under(model: &Model, listed: &ResourceType, scopes: &[&PathEntry]) -> F
                 .map(|s| s.id.clone())
                 .collect(),
         ),
-        under(
-            scopes
-                .iter()
-                .filter(|s| may_contain(model, &s.type_name))
-                .map(|&s| s.clone())
-                .collect(),
-        ),
+        under(scopes.iter().map(|&s| s.clone()).collect()),
     ])
 }
 
@@ -363,7 +361,7 @@ struct Placer<'a, P: ?Sized> {
     provider: &'a P,
     tenant: &'a TenantKey,
     index: &'a Index,
-    cache: HashMap<PathEntry, Vec<PathEntry>>,
+    cache: BTreeMap<PathEntry, Vec<PathEntry>>,
 }
 
 impl<P: ScopePaths + ?Sized> Placer<'_, P> {
@@ -390,6 +388,11 @@ impl<P: ScopePaths + ?Sized> Placer<'_, P> {
         if !last.is_org() || rest.iter().any(PathEntry::is_org) {
             return Err(fail(ScopePathProblem::Malformed));
         }
+        // The scope itself, or any entry twice, is never on its own path.
+        let mut seen = BTreeSet::from([scope]);
+        if !path.iter().all(|e| seen.insert(e)) {
+            return Err(fail(ScopePathProblem::Malformed));
+        }
         if !last.org_id().is_some_and(|o| self.index.orgs.contains(&o)) {
             return Err(fail(ScopePathProblem::WrongTenant));
         }
@@ -397,14 +400,43 @@ impl<P: ScopePaths + ?Sized> Placer<'_, P> {
         Ok(())
     }
 
-    /// The ancestors of a placed scope (empty for an org).
-    fn ancestors(&self, scope: &PathEntry) -> &[PathEntry] {
-        self.cache.get(scope).map_or(&[], Vec::as_slice)
+    /// Checks that the placed paths agree: when a scope on one path was
+    /// placed too, its own path is the rest of that path. This also refuses
+    /// two scopes that are each other's ancestors (a cycle).
+    fn check_consistent(&self) -> Result<(), PdpError> {
+        for (scope, path) in &self.cache {
+            for (i, a) in path.iter().enumerate() {
+                if let Some(own) = self.cache.get(a)
+                    && path.get(i + 1..) != Some(own.as_slice())
+                {
+                    return Err(PdpError::ScopePath {
+                        scope: scope.clone(),
+                        problem: ScopePathProblem::Inconsistent,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The ancestors of a placed scope; empty for an org. An unplaced scope
+    /// is an error, never "no ancestors".
+    fn ancestors(&self, scope: &PathEntry) -> Result<&[PathEntry], PdpError> {
+        if scope.is_org() {
+            return Ok(&[]);
+        }
+        self.cache
+            .get(scope)
+            .map(Vec::as_slice)
+            .ok_or_else(|| PdpError::ScopePath {
+                scope: scope.clone(),
+                problem: ScopePathProblem::NotFound,
+            })
     }
 
     /// The org of a placed scope.
-    fn org_of<'s>(&'s self, scope: &'s PathEntry) -> &'s PathEntry {
-        self.ancestors(scope).last().unwrap_or(scope)
+    fn org_of<'s>(&'s self, scope: &'s PathEntry) -> Result<&'s PathEntry, PdpError> {
+        Ok(self.ancestors(scope)?.last().unwrap_or(scope))
     }
 }
 
@@ -427,18 +459,18 @@ pub(crate) fn list_filter<P: ScopePaths + ?Sized>(
 ) -> Result<ListFilter, PdpError> {
     let listed = l.action.resource_type().clone();
     if l.kind.owner_only() && l.delegated {
-        return Ok(ListFilter::nothing(listed, l.rev));
+        return Ok(ListFilter::nothing(l.tenant.clone(), listed, l.rev));
     }
     let mut placer = Placer {
         provider,
         tenant: l.tenant,
         index: l.ctx.index,
-        cache: HashMap::new(),
+        cache: BTreeMap::new(),
     };
     let mut parts: Option<Parts> = None;
     for p in core::iter::once(subject).chain(actors) {
         let Some(side) = side_parts(l, &listed, p, &mut placer)? else {
-            return Ok(ListFilter::nothing(listed, l.rev));
+            return Ok(ListFilter::nothing(l.tenant.clone(), listed, l.rev));
         };
         parts = Some(match parts {
             None => side,
@@ -446,9 +478,10 @@ pub(crate) fn list_filter<P: ScopePaths + ?Sized>(
         });
     }
     let Some(parts) = parts else {
-        return Ok(ListFilter::nothing(listed, l.rev));
+        return Ok(ListFilter::nothing(l.tenant.clone(), listed, l.rev));
     };
     let filter = ListFilter {
+        tenant: l.tenant.clone(),
         type_name: listed,
         rev: l.rev,
         ids_in: parts.ids_in.into_iter().collect(),
@@ -457,7 +490,11 @@ pub(crate) fn list_filter<P: ScopePaths + ?Sized>(
     };
     filter.check_limits()?;
     if filter.matches_nothing() {
-        return Ok(ListFilter::nothing(filter.type_name, filter.rev));
+        return Ok(ListFilter::nothing(
+            filter.tenant,
+            filter.type_name,
+            filter.rev,
+        ));
     }
     Ok(filter)
 }
@@ -491,6 +528,7 @@ fn side_parts<P: ScopePaths + ?Sized>(
     for x in &index.private {
         placer.place(x)?;
     }
+    placer.check_consistent()?;
     let placer = &*placer;
 
     // 3. The deciding scopes, as `check` finds them: in an org where the
@@ -505,7 +543,7 @@ fn side_parts<P: ScopePaths + ?Sized>(
     let mut assigned: BTreeMap<&PathEntry, Vec<usize>> =
         owner_orgs.iter().map(|(&org, &b)| (org, vec![b])).collect();
     for &s in &scopes {
-        if owner_orgs.contains_key(placer.org_of(s)) {
+        if owner_orgs.contains_key(placer.org_of(s)?) {
             continue;
         }
         if let Some(node) = index.scopes.get(s) {
@@ -517,26 +555,33 @@ fn side_parts<P: ScopePaths + ?Sized>(
     }
     let mut deciding: BTreeSet<&PathEntry> = assigned.keys().copied().collect();
     for x in &index.private {
-        if assigned.contains_key(x) || owner_orgs.contains_key(placer.org_of(x)) {
+        if assigned.contains_key(x) || owner_orgs.contains_key(placer.org_of(x)?) {
             continue;
         }
-        if placer.ancestors(x).iter().any(|a| assigned.contains_key(a)) {
+        if placer
+            .ancestors(x)?
+            .iter()
+            .any(|a| assigned.contains_key(a))
+        {
             deciding.insert(x);
         }
     }
 
-    // 4. The nesting level of each deciding scope.
-    let level_of = |d: &PathEntry| {
-        placer
-            .ancestors(d)
-            .iter()
-            .filter(|a| deciding.contains(a))
-            .count()
-    };
+    // 4. The nesting level of each deciding scope: how many deciding scopes
+    //    sit above it. The paths are checked, so this is its place in the
+    //    chain of deciding scopes on any row's path.
+    let mut level: BTreeMap<&PathEntry, usize> = BTreeMap::new();
     let mut by_level: BTreeMap<usize, Vec<&PathEntry>> = BTreeMap::new();
     for &d in &deciding {
-        by_level.entry(level_of(d)).or_default().push(d);
+        let k = placer
+            .ancestors(d)?
+            .iter()
+            .filter(|a| deciding.contains(a))
+            .count();
+        level.insert(d, k);
+        by_level.entry(k).or_default().push(d);
     }
+    let level_of = |d: &PathEntry| level.get(d).copied().unwrap_or(0);
 
     // 5. Per level: the scopes where some deciding role allows the action
     //    whatever the row, and per role with conditions, the scopes where
@@ -608,14 +653,11 @@ fn side_parts<P: ScopePaths + ?Sized>(
         let mut alts = Vec::new();
         let mut allowed: Vec<&PathEntry> = t.always.clone();
         if !t.always.is_empty() {
-            alts.push(at_or_under(ctx.model, listed, &t.always));
+            alts.push(at_or_under(listed, &t.always));
         }
         for (scopes, e) in t.by_role.into_values() {
             pure = false;
-            alts.push(FilterExpr::and(vec![
-                at_or_under(ctx.model, listed, &scopes),
-                e,
-            ]));
+            alts.push(FilterExpr::and(vec![at_or_under(listed, &scopes), e]));
             allowed.extend(scopes);
         }
         if allowed.is_empty() {
@@ -625,14 +667,12 @@ fn side_parts<P: ScopePaths + ?Sized>(
             if s.type_name == *listed {
                 ids_in.insert(s.id.clone());
             }
-            if may_contain(ctx.model, &s.type_name) {
-                container_in.insert(s.clone());
-            }
+            container_in.insert(s.clone());
         }
         let mut parts = vec![FilterExpr::or(alts)];
         if let Some(next) = by_level.get(&(k + 1)) {
             pure = false;
-            parts.push(FilterExpr::not(at_or_under(ctx.model, listed, next)));
+            parts.push(FilterExpr::not(at_or_under(listed, next)));
         }
         ors.push(FilterExpr::and(parts));
     }

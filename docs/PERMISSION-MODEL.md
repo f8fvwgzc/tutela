@@ -233,6 +233,7 @@ Two assignments can meet at the same scope: one direct, one or more through grou
 - A group belongs to one org. Members are principals or other groups.
 - Tutela keeps a closure table, so "is this principal in that group" is one lookup. The week-1 spike measures this at depth 32 with big groups (see [ROADMAP.md](ROADMAP.md#very-next-steps)).
 - In Phase A, group keys are unique in the tenant, so a binding or an `in_group` condition names one group ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)).
+- Limits, checked when a tenant is loaded: groups nest at most 32 levels deep, and the closure holds at most 1,000,000 (principal, group) pairs. Data above a limit is refused for that tenant only; other tenants keep working.
 - Removing a principal from a group removes its access through that group in the same transaction as the revision bump.
 - Deleting a principal deletes its assignments and group memberships in the same transaction.
 
@@ -291,7 +292,7 @@ These can only lower the result, never raise it:
 **Step 7. Delegation overlap for agents.** (Correction)
 - Only for delegated tokens (`act` present).
 - Run steps 3–6 **again for the agent** with its own assignments. Also apply its `ai_reach`: the agent may only touch resources inside the scope of the work (`project`), or that scope's parent (`team`). Never the org root, never another branch.
-  - In the evaluator ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)): the closest assignment is always on the resource's path, so `project` reach holds by itself. An agent whose closest assignment is at the org root gets None (`outside_ai_reach`). `team` reach never adds access; it only narrows less.
+  - In the evaluator ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)): the closest assignment is always on the resource's path, so `project` reach holds by itself. An agent whose closest assignment is at the org root gets None (`outside_ai_reach`). In Phase A, `team` reach is the same as `project`: it never adds access. Reach into sibling scopes needs its own ADR.
 - **Overlap:** item level = min(person, agent). Each field level = min(person, agent). Custom actions = the **intersection of the allowed-action sets** of the person and the agent (each set as in [6.3](#63-role-assignments): actions some deciding role allows at its own item level after its own conditions), never raw grants. Admin keys and owner-only custom actions = none.
 - If the act chain is nested (an agent acting for an agent acting for a person), every actor must be allowed, and the chain holds at most 4 actors.
 - The person must be the one who caused the work and must still be enabled.
@@ -348,7 +349,7 @@ evaluate(principal, res, model):
   return guardrails(level, fields, actions, admin)         # can only lower
 ```
 
-The engine resolves the effective level **once per (principal, scope)** in each call. The Phase A evaluator keeps no cache across calls: `check` p99 is about 12–17 µs without one ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)). A decision cache, keyed by revision, comes with `tutela-sdk`. The week-1 spike target is `check` p99 < 1 ms in-process with a large per-tenant model.
+The engine resolves the effective level **once per (principal, scope)** in each call. The Phase A evaluator keeps no cache across calls: `check` p99 is about 16–30 µs without one, at the library-gate size ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)). A decision cache, keyed by revision, comes with `tutela-sdk`. The week-1 spike target is `check` p99 < 1 ms in-process with a large per-tenant model.
 
 ### 7.3 The decision object
 
@@ -387,7 +388,7 @@ The wire shape lives in `tutela-contracts`; see [CONTRACTS.md](CONTRACTS.md).
 | The org Owner opening a hidden field | Allowed, with a short reason, always logged. | Blueprint decision |
 | Links from other projects in the same team, or from other teams | On. The owner can turn them off. | Blueprint |
 | A link you cannot follow | Shown as "Restricted item". The owner can choose "disappear" when even existence is sensitive. | Blueprint |
-| An agent reading other projects in the same team | Off. An owner can allow it (`ai_reach = team`) with a warning; not recommended. Other teams: never. | Blueprint |
+| An agent reading other projects in the same team | Off. An owner can allow it (`ai_reach = team`) with a warning; not recommended. Other teams: never. Phase A: `team` acts like `project`, so it stays off ([11.2](#112-ai_reach-blueprint)). | Blueprint |
 | A move into a scope with looser rules | Waits for the source owner's approval. | Blueprint |
 
 ---
@@ -409,7 +410,7 @@ Link and move rules across scopes (Blueprint, with the blueprint's names):
 | Link (refer to) issues and tasks | Yes | Yes. On by default; owner can turn it off. | Yes. On by default; owner can turn it off. |
 | See what a link points to | Following your access | Only if you can open it; otherwise "Restricted item" | Only if you can open it; otherwise "Restricted item" |
 | Move an issue | — | Owners and members; owner can restrict | Owners of both projects only |
-| AI agent reads | Yes | Off. Owner can turn it on; not recommended. | Never |
+| AI agent reads | Yes | Off. Owner can turn it on; not recommended. (Phase A: `ai_reach = team` does not open it yet; see [11.2](#112-ai_reach-blueprint).) | Never |
 
 For other trees, "project" means the scope where the agent is assigned, and "team" means that scope's parent container (Generalised).
 
@@ -444,10 +445,10 @@ AI is the easiest place to leak data by accident, because a model will repeat an
 | Value | Meaning | Default |
 |---|---|---|
 | `project` | The agent reads only inside that scope. | Yes |
-| `team` | The agent may also read other scopes under the same parent. Allowed, **not recommended**; the Console shows a warning. | No |
+| `team` | The agent may also read other scopes under the same parent. Allowed, **not recommended**; the Console shows a warning. **Phase A: the same as `project`.** Reach into sibling scopes needs its own ADR ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)). | No |
 | (anything wider) | **Never.** Not the whole org, never another team. | — |
 
-An agent assigned only at the org root therefore gets nothing (`outside_ai_reach`). `team` never opens a sibling scope where the agent has no assignment: that would widen access through a boundary setting ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)).
+An agent assigned only at the org root therefore gets nothing (`outside_ai_reach`). In Phase A, `team` never opens a sibling scope where the agent has no assignment: that would widen access through a boundary setting, so it needs a decision of its own ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)).
 
 ### 11.3 The overlap rule
 
@@ -529,7 +530,7 @@ How it is computed:
 2. Resolve the effective level of each deciding scope once (closest wins, private stops inheritance, conditions).
 3. A row's level is the level of the **deepest deciding scope** on its path. Turn that into `ids_in`, `container_in` and the AST: one term per nesting level of the deciding scopes ([ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator), "filter shape").
 
-Tutela does not store the product's tree, so `list_filter` gets the paths of the deciding scopes from a **scope-path provider**, keyed by (tenant, type, id). An unknown scope, or a path that does not end at the tenant's own org, is an error, and the list fails closed ([CONTRACTS.md §6.6](CONTRACTS.md#66-list_filter), [ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator) F1).
+Tutela does not store the product's tree, so `list_filter` gets the paths of the deciding scopes from a **scope-path provider**, keyed by (tenant, type, id). An unknown scope, a path that does not end at the tenant's own org, or paths that disagree with each other are an error, and the list fails closed ([CONTRACTS.md §6.6](CONTRACTS.md#66-list_filter), [ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator) F1).
 
 For agents, the same is done for the person and the agent, `ai_reach` is applied, and the two filters are joined with AND.
 
@@ -538,7 +539,7 @@ For agents, the same is done for the person and the agent, `ai_reach` is applied
 - The product keeps each row's parent and an **ancestors** column (the ids on its path) in its own database. The SDK gives a migration helper (Phase A; the exact shape — array, `ltree` or closure table — is chosen in the week-1 spike).
 - **Every value is a bound parameter** (`$1`, `$2`, …). Text is never spliced into SQL.
 - Column names come only from the product's manifest mapping, checked against a fixed list. Never from the request.
-- The **SELECT list** comes from `field_mask.read`. Masked columns are not selected.
+- The **SELECT list** never shows more than each row's own `field_mask.read`. `list_filter` returns no mask, because masks can differ per row; the product masks each returned row with that row's own decision (a `batch` of read checks for the page) before the rows leave the server ([CONTRACTS.md §6.6](CONTRACTS.md#66-list_filter)).
 - The SQL compiler is fuzzed.
 - The product's database also uses row-level security by tenant as a safety net (Blueprint: "with row-level security as a safety net"). The product template sets this up.
 

@@ -15,6 +15,13 @@ pub const MAX_PATH: usize = 32;
 /// The longest `act` chain of a delegated token (CONTRACTS.md 4.5).
 pub const MAX_ACTORS: usize = 4;
 
+/// The most requests in one `batch` (CONTRACTS.md 6.5).
+pub const MAX_BATCH: usize = 1_000;
+
+/// The most entries in `fields`, `attrs` or `new_attrs` of one request. A
+/// type has at most 256 fields and features (MANIFEST.md 11).
+pub const MAX_FIELDS: usize = 512;
+
 /// One node of a resource tree: a type and the product's own id
 /// (CONTRACTS.md 6.5). In JSON: `{"type": "matter", "id": "m-12"}`.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize)]
@@ -199,8 +206,12 @@ pub enum ScopePathProblem {
     TooLong,
     /// The path does not end at an org of this tenant.
     WrongTenant,
-    /// The path is empty, or has an `org` entry before its end.
+    /// The path is empty, has an `org` entry before its end, holds the
+    /// scope itself, or holds one entry twice.
     Malformed,
+    /// Two placed paths disagree: a scope on one path has another path of
+    /// its own (this includes a cycle).
+    Inconsistent,
 }
 
 impl ScopePathProblem {
@@ -210,7 +221,10 @@ impl ScopePathProblem {
             Self::Unavailable => "the scope-path provider could not answer",
             Self::TooLong => "the path is longer than 32 entries",
             Self::WrongTenant => "the path does not end at an org of this tenant",
-            Self::Malformed => "the path is empty or has an org before its end",
+            Self::Malformed => {
+                "the path is empty, has an org before its end, holds the scope itself or repeats an entry"
+            }
+            Self::Inconsistent => "the paths of two scopes disagree",
         }
     }
 }

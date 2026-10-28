@@ -285,9 +285,24 @@ fn tm10_a_provider_miss_fails_the_whole_list() {
 #[test]
 fn tm10_a_path_that_breaks_a_rule_fails_the_whole_list() {
     let other_org = PathEntry::org(&org_id(2)).unwrap();
+    let elsewhere = entry("department", "d-elsewhere");
     assert_eq!(
-        problem(with_jae(&Fixed(Ok(vec![proc(), other_org])))),
+        problem(with_jae(&Fixed(Ok(vec![elsewhere.clone(), other_org])))),
         ScopePathProblem::WrongTenant
+    );
+    // The scope itself on its own path (Jae's first scope is the
+    // department), and an entry twice.
+    assert_eq!(
+        problem(with_jae(&Fixed(Ok(vec![proc(), org()])))),
+        ScopePathProblem::Malformed
+    );
+    assert_eq!(
+        problem(with_jae(&Fixed(Ok(vec![
+            elsewhere.clone(),
+            elsewhere,
+            org()
+        ])))),
+        ScopePathProblem::Malformed
     );
     assert_eq!(
         problem(with_jae(&Fixed(Ok(vec![])))),
@@ -530,4 +545,184 @@ fn tm10_a_valid_manifest_can_pass_the_limits_and_the_list_fails_closed() {
         .unwrap();
     assert_eq!(d.effect, Effect::Deny);
     assert_eq!(d.reason.code(), "condition_failed");
+}
+
+/// A provider that answers like the worked example, but whose paths for the
+/// department and the matter name each other: a cycle.
+struct Cycle;
+
+impl ScopePaths for Cycle {
+    fn ancestors(
+        &self,
+        _: &TenantKey,
+        scope: &PathEntry,
+    ) -> Result<Vec<PathEntry>, ScopePathError> {
+        if *scope == proc() {
+            Ok(vec![sup(), org()])
+        } else if *scope == sup() {
+            Ok(vec![proc(), org()])
+        } else {
+            Ok(path_of(scope))
+        }
+    }
+}
+
+#[test]
+fn tm10_two_paths_that_disagree_fail_the_whole_list() {
+    assert_eq!(problem(with_jae(&Cycle)), ScopePathProblem::Inconsistent);
+}
+
+/// The worked example's tree, without one private scope.
+struct WithoutBoard;
+
+impl ScopePaths for WithoutBoard {
+    fn ancestors(
+        &self,
+        t: &TenantKey,
+        scope: &PathEntry,
+    ) -> Result<Vec<PathEntry>, ScopePathError> {
+        if *scope == crate::tests_check::board() {
+            return Err(ScopePathError::NotFound);
+        }
+        Kestrel::new().ancestors(t, scope)
+    }
+}
+
+#[test]
+fn tm10_a_missing_private_scope_fails_every_list_with_an_assignment() {
+    // Jae is not assigned anywhere near the board matter, and still his
+    // list fails: every private scope of the tenant is placed. Fail closed.
+    assert_eq!(
+        with_jae(&WithoutBoard),
+        Err(PdpError::ScopePath {
+            scope: crate::tests_check::board(),
+            problem: ScopePathProblem::NotFound
+        })
+    );
+    // Nobody with no assignment asks for anything, so nothing fails.
+    let req = ListFilterRequest {
+        tenant: tenant(1),
+        subject: user(0x999),
+        actors: vec![],
+        action: action("contract:read"),
+        at_least_revision: None,
+    };
+    assert!(kestrel().list_filter(&req, &WithoutBoard).is_ok());
+}
+
+fn sized(ids: usize, containers: usize, condition: Option<FilterExpr>) -> ListFilter {
+    ListFilter {
+        tenant: tenant(1),
+        type_name: "contract".parse().unwrap(),
+        rev: 1,
+        ids_in: (0..ids).map(|i| rid(&format!("c{i}"))).collect(),
+        container_in: (0..containers)
+            .map(|i| entry("matter", &format!("m{i}")))
+            .collect(),
+        condition,
+    }
+}
+
+#[test]
+fn tm10_each_filter_limit_fails_closed_on_its_own() {
+    use crate::{MAX_CONTAINER_IN, MAX_FILTER_DEPTH, MAX_FILTER_ENTRIES, MAX_FILTER_NODES};
+    let leaf = || FilterExpr::IsNull {
+        attr: "status".parse().unwrap(),
+    };
+    let at_limit = sized(MAX_IDS_IN, MAX_CONTAINER_IN, None);
+    assert_eq!(at_limit.check_limits(), Ok(()));
+    assert_eq!(
+        sized(MAX_IDS_IN + 1, 1, None).check_limits(),
+        Err(PdpError::FilterTooLarge("ids_in"))
+    );
+    assert_eq!(
+        sized(1, MAX_CONTAINER_IN + 1, None).check_limits(),
+        Err(PdpError::FilterTooLarge("container_in"))
+    );
+    let wide = FilterExpr::Or {
+        args: (0..MAX_FILTER_NODES).map(|_| leaf()).collect(),
+    };
+    assert_eq!(wide.size().nodes, MAX_FILTER_NODES + 1);
+    assert_eq!(
+        sized(1, 1, Some(wide)).check_limits(),
+        Err(PdpError::FilterTooLarge("condition nodes"))
+    );
+    let mut deep = leaf();
+    for _ in 0..MAX_FILTER_DEPTH {
+        deep = FilterExpr::Not {
+            arg: Box::new(deep),
+        };
+    }
+    assert_eq!(deep.size().depth, MAX_FILTER_DEPTH + 1);
+    assert_eq!(
+        sized(1, 1, Some(deep)).check_limits(),
+        Err(PdpError::FilterTooLarge("condition depth"))
+    );
+    // Each list at its own limit, one more entry in the condition.
+    let one_more = FilterExpr::Under {
+        scopes: vec![org()],
+    };
+    assert_eq!(
+        MAX_IDS_IN + MAX_CONTAINER_IN + 1,
+        MAX_FILTER_ENTRIES + 1,
+        "the test assumes the two lists fill the total"
+    );
+    assert_eq!(
+        sized(MAX_IDS_IN, MAX_CONTAINER_IN, Some(one_more)).check_limits(),
+        Err(PdpError::FilterTooLarge("total entries"))
+    );
+}
+
+#[test]
+fn tm10_too_many_scopes_fail_closed_end_to_end() {
+    use crate::{MAX_CONTAINER_IN, MAX_FILTER_ENTRIES};
+    // Department scopes are not of the listed type: only `container_in`
+    // grows.
+    let u = user(0x501);
+    let mut data = kestrel_data();
+    for i in 0..=MAX_CONTAINER_IN {
+        data.bindings.push(binding(
+            &format!("ra_dep_{i}"),
+            direct(&u),
+            "member",
+            entry("department", &format!("d{i}")),
+        ));
+    }
+    assert_eq!(
+        list(&pdp_with(data), &u, vec![], "contract:read"),
+        Err(PdpError::FilterTooLarge("container_in"))
+    );
+    // More assigned scopes than the total limit: refused before any scope
+    // is placed.
+    let mut data = kestrel_data();
+    for i in 0..=MAX_FILTER_ENTRIES {
+        data.bindings.push(binding(
+            &format!("ra_dep_{i}"),
+            direct(&u),
+            "member",
+            entry("department", &format!("d{i}")),
+        ));
+    }
+    let k = Kestrel::new();
+    let req = ListFilterRequest {
+        tenant: tenant(1),
+        subject: u,
+        actors: vec![],
+        action: action("contract:read"),
+        at_least_revision: None,
+    };
+    assert_eq!(
+        pdp_with(data).list_filter(&req, &k),
+        Err(PdpError::FilterTooLarge("total entries"))
+    );
+    assert_eq!(k.calls.get(), 0);
+}
+
+#[test]
+fn the_filter_names_its_tenant() {
+    let f = list(&kestrel(), &user(JAE), vec![], "contract:read").unwrap();
+    assert_eq!(f.tenant, tenant(1));
+    let v = serde_json::to_value(&f).unwrap();
+    assert_eq!(v["tenant"]["iss"], "https://auth.kestrel.test");
+    assert_eq!(v["tenant"]["tid"], tenant(1).tid.to_string());
 }

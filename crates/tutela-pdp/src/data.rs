@@ -16,6 +16,17 @@ use tutela_contracts::tenant::OrgId;
 use crate::api::PathEntry;
 use crate::model::{GroupKey, Model, RoleKey};
 
+/// The most levels of groups inside groups (a group that is in no group is
+/// level 1). Deeper nesting is refused when the bundle is loaded
+/// (ADR-0013).
+pub const MAX_GROUP_DEPTH: usize = 32;
+
+/// The most (principal, group) pairs in the group closure of one tenant:
+/// every group each principal is in, directly or through groups. A bigger
+/// closure is refused when the bundle is loaded, so one tenant's data cannot
+/// make the process allocate without bound (ADR-0013).
+pub const MAX_GROUP_CLOSURE: usize = 1_000_000;
+
 /// Who a role assignment is for.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum Subject {
@@ -123,6 +134,15 @@ pub enum LoadError {
     /// Groups contain each other in a cycle.
     #[error("group `{0}` contains itself through other groups")]
     GroupCycle(GroupKey),
+    /// Groups nest deeper than [`MAX_GROUP_DEPTH`].
+    #[error("group `{0}` is nested more than 32 levels deep")]
+    GroupsTooDeep(GroupKey),
+    /// The group closure is bigger than [`MAX_GROUP_CLOSURE`].
+    #[error("the group closure has more than 1,000,000 (principal, group) pairs")]
+    GroupClosureTooLarge,
+    /// An org that another loaded tenant already claims.
+    #[error("org `{0}` already belongs to another tenant")]
+    OrgClaimed(OrgId),
     /// A field rule at an org root: those come from the manifest.
     #[error("field rule {0} sits at an org root; org-root rules come from the manifest")]
     OrgRootRule(RuleId),
@@ -234,10 +254,19 @@ impl Index {
         if let Some(g) = find_cycle(&inside).and_then(|gi| groups.get(gi)) {
             return Err(LoadError::GroupCycle(g.key.clone()));
         }
-        let member_of = direct_groups
-            .into_iter()
-            .map(|(p, start)| (p, closure(&inside, start)))
-            .collect();
+        if let Some(g) = too_deep(&inside).and_then(|gi| groups.get(gi)) {
+            return Err(LoadError::GroupsTooDeep(g.key.clone()));
+        }
+        let mut member_of = HashMap::with_capacity(direct_groups.len());
+        let mut pairs = 0usize;
+        for (p, start) in direct_groups {
+            let all = closure(&inside, start);
+            pairs = pairs.saturating_add(all.len());
+            if pairs > MAX_GROUP_CLOSURE {
+                return Err(LoadError::GroupClosureTooLarge);
+            }
+            member_of.insert(p, all);
+        }
 
         // Bindings.
         let mut scopes: HashMap<PathEntry, ScopeIndex> = HashMap::new();
@@ -399,6 +428,44 @@ fn find_cycle(inside: &[Vec<usize>]) -> Option<usize> {
                     *s = 2;
                 }
                 stack.pop();
+            }
+        }
+    }
+    None
+}
+
+/// A group nested more than [`MAX_GROUP_DEPTH`] levels deep, if any. The
+/// groups have no cycle.
+fn too_deep(inside: &[Vec<usize>]) -> Option<usize> {
+    // `holds[g]`: the groups that `g` holds. Walk from the groups that are
+    // in no group, parents before children (Kahn's order).
+    let mut holds: Vec<Vec<usize>> = vec![Vec::new(); inside.len()];
+    let mut parents: Vec<usize> = inside.iter().map(Vec::len).collect();
+    for (child, ps) in inside.iter().enumerate() {
+        for &p in ps {
+            if let Some(v) = holds.get_mut(p) {
+                v.push(child);
+            }
+        }
+    }
+    let mut depth = vec![1usize; inside.len()];
+    let mut todo: Vec<usize> = (0..inside.len())
+        .filter(|&g| parents.get(g) == Some(&0))
+        .collect();
+    while let Some(g) = todo.pop() {
+        let d = depth.get(g).copied().unwrap_or(1);
+        if d > MAX_GROUP_DEPTH {
+            return Some(g);
+        }
+        for &c in holds.get(g).into_iter().flatten() {
+            if let Some(dc) = depth.get_mut(c) {
+                *dc = (*dc).max(d + 1);
+            }
+            if let Some(n) = parents.get_mut(c) {
+                *n = n.saturating_sub(1);
+                if *n == 0 {
+                    todo.push(c);
+                }
             }
         }
     }

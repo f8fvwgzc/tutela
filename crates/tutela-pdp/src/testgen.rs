@@ -59,23 +59,30 @@ impl Rng {
     }
 }
 
-pub(crate) const DATA_FIELDS: [&str; 7] = [
-    "status", "prio", "flag", "labels", "owner_p", "title", "secret_f",
+/// Every data field a generated `doc` may have. `extra` comes and goes
+/// with model changes.
+pub(crate) const DATA_FIELDS: [&str; 8] = [
+    "status", "prio", "flag", "labels", "owner_p", "title", "secret_f", "extra",
 ];
-pub(crate) const FEATURES: [&str; 2] = ["@ai", "@chat"];
 pub(crate) const GROUPS: [&str; 3] = ["g1", "g2", "g3"];
-pub(crate) const ACTIONS: [&str; 10] = [
+pub(crate) const BUILTIN_ACTIONS: [&str; 7] = [
     "doc:read",
     "doc:write",
     "doc:delete",
-    "doc:approve",
-    "doc:export",
-    "doc:publish",
-    "doc:seal",
     "doc:manage_access",
     "doc:manage_fields",
     "doc:read_audit",
+    "doc:approve_move",
 ];
+
+/// A data field of `doc`.
+#[derive(Clone, Debug)]
+pub(crate) struct FieldSpec {
+    pub name: &'static str,
+    pub sensitivity: &'static str,
+    pub ty: &'static str,
+    pub grants_access: bool,
+}
 
 /// A custom action of `doc`.
 #[derive(Clone, Debug)]
@@ -115,6 +122,9 @@ pub(crate) struct RuleSpec {
 /// A whole model, before it is rendered as TOML.
 #[derive(Clone, Debug)]
 pub(crate) struct ModelSpec {
+    pub fields: Vec<FieldSpec>,
+    /// Feature names with their `@`.
+    pub features: Vec<&'static str>,
     pub actions: Vec<ActionSpec>,
     pub roles: Vec<RoleSpec>,
     pub conds: Vec<CondSpec>,
@@ -168,119 +178,141 @@ fn template(rng: &mut Rng, depth: usize) -> String {
     }
 }
 
+const ADMIN_GRANTS: [&str; 4] = [
+    "doc:seal",
+    "doc:manage_access",
+    "doc:manage_fields",
+    "doc:read_audit",
+];
+
 impl ModelSpec {
     pub fn generate(rng: &mut Rng) -> Self {
-        let actions = vec![
-            ActionSpec {
-                name: "approve",
-                needs: "write",
-                grant: true,
-            },
-            ActionSpec {
-                name: "export",
-                needs: "read",
-                grant: false,
-            },
-            ActionSpec {
-                name: "publish",
-                needs: "full",
-                grant: true,
-            },
-            ActionSpec {
-                name: "seal",
-                needs: "owner",
-                grant: true,
-            },
+        let field = |name, sensitivity, ty, grants_access| FieldSpec {
+            name,
+            sensitivity,
+            ty,
+            grants_access,
+        };
+        let mut fields = vec![
+            field("status", "internal", "string", true),
+            field("prio", "internal", "integer", true),
+            field("flag", "public", "boolean", true),
+            field("labels", "internal", "string_list", true),
+            field("owner_p", "internal", "principal", true),
+            field("title", "public", "string", false),
+            field("secret_f", "secret", "string", false),
         ];
-        let mut roles = Vec::new();
+        if rng.chance(50) {
+            fields.push(field("extra", "internal", "string", rng.chance(30)));
+        }
+        let mut features = vec!["@ai", "@chat"];
+        if rng.chance(50) {
+            features.push("@files");
+        }
+        let action = |name, needs, grant| ActionSpec { name, needs, grant };
+        let mut actions = vec![
+            action("approve", "write", true),
+            action("export", "read", false),
+            action("publish", "full", true),
+            action("seal", "owner", true),
+        ];
+        if rng.chance(50) {
+            actions.push(action("extra_act", "read", true));
+        }
+        let mut spec = Self {
+            fields,
+            features,
+            actions,
+            roles: Vec::new(),
+            conds: Vec::new(),
+            rules: Vec::new(),
+        };
         let n = 1 + rng.below(5);
         for i in 0..n {
-            roles.push(Self::role(rng, format!("r{i}")));
+            let r = spec.role(rng, format!("r{i}"));
+            spec.roles.push(r);
         }
         if rng.chance(60) {
             // The blueprint's agent: writes the docs it owns.
-            let mut a = Self::role(rng, "agent".to_owned());
-            a.grants
-                .retain(|g| !matches!(*g, "doc:seal" | "doc:manage_access" | "doc:manage_fields"));
+            let mut a = spec.role(rng, "agent".to_owned());
+            a.grants.retain(|g| !ADMIN_GRANTS.contains(g));
             a.assignable = None;
-            roles.push(a);
+            spec.roles.push(a);
         }
-        let mut conds = Vec::new();
         for _ in 0..rng.below(5) {
-            let r = rng.pick(&roles).clone();
+            let r = rng.pick(&spec.roles).clone();
             if r.doc == Level::None {
                 continue;
             }
-            conds.push(CondSpec {
+            spec.conds.push(CondSpec {
                 role: r.key.clone(),
                 when: template(rng, 0),
                 otherwise: rng.level_upto(r.doc),
             });
         }
-        if roles.iter().any(|r| r.key == "agent") && rng.chance(70) {
-            let doc = roles
-                .iter()
-                .find(|r| r.key == "agent")
-                .map_or(Level::None, |r| r.doc);
-            if doc > Level::None {
-                conds.push(CondSpec {
-                    role: "agent".to_owned(),
-                    when: "{ is_principal = \"owner_p\" }".to_owned(),
-                    otherwise: rng.level_upto(doc.min(Level::Read)),
-                });
-            }
+        if let Some(doc) = spec.roles.iter().find(|r| r.key == "agent").map(|r| r.doc)
+            && doc > Level::None
+            && rng.chance(70)
+        {
+            spec.conds.push(CondSpec {
+                role: "agent".to_owned(),
+                when: "{ is_principal = \"owner_p\" }".to_owned(),
+                otherwise: rng.level_upto(doc.min(Level::Read)),
+            });
         }
-        let mut rules = Vec::new();
         let mut seen = BTreeSet::new();
         for _ in 0..rng.below(4) {
             let field = *rng.pick(&["title", "status", "secret_f", "@ai", "labels"]);
             let role = if field == "secret_f" || rng.chance(50) {
-                let mut keys: Vec<String> = roles.iter().map(|r| r.key.clone()).collect();
+                let mut keys: Vec<String> = spec.roles.iter().map(|r| r.key.clone()).collect();
                 keys.extend(["member", "viewer"].map(str::to_owned));
                 Some(rng.pick(&keys).clone())
             } else {
                 None
             };
             if seen.insert((field, role.clone())) {
-                rules.push(RuleSpec {
+                spec.rules.push(RuleSpec {
                     field,
                     role,
                     max: rng.level(),
                 });
             }
         }
-        Self {
-            actions,
-            roles,
-            conds,
-            rules,
-        }
+        spec
     }
 
-    fn role(rng: &mut Rng, key: String) -> RoleSpec {
+    fn has_field(&self, f: &str) -> bool {
+        self.fields.iter().any(|x| x.name == f) || self.features.contains(&f)
+    }
+
+    fn role(&self, rng: &mut Rng, key: String) -> RoleSpec {
         let doc = rng.level();
         let mut fields = BTreeMap::new();
-        for f in DATA_FIELDS {
+        for f in &self.fields {
             if rng.chance(25) {
-                fields.insert(f, rng.level_upto(doc));
+                fields.insert(f.name, rng.level_upto(doc));
             }
         }
         if doc >= Level::Read {
-            for f in FEATURES {
+            for &f in &self.features {
                 if rng.chance(30) {
                     fields.insert(f, rng.level());
                 }
             }
         }
         let mut grants = BTreeSet::new();
-        for g in ["doc:approve", "doc:publish"] {
-            if rng.chance(50) {
-                grants.insert(g);
+        for a in &self.actions {
+            if a.grant && a.needs != "owner" && rng.chance(50) {
+                grants.insert(match a.name {
+                    "approve" => "doc:approve",
+                    "publish" => "doc:publish",
+                    _ => "doc:extra_act",
+                });
             }
         }
         let admin = rng.chance(20);
         if admin {
-            grants.insert(*rng.pick(&["doc:seal", "doc:manage_access", "doc:manage_fields"]));
+            grants.insert(*rng.pick(&ADMIN_GRANTS));
         }
         let assignable = if admin {
             None
@@ -306,17 +338,26 @@ impl ModelSpec {
         let mut s = String::from(
             "version = 1\n[app]\nname = \"gen\"\n\n\
              [types.node]\nparent = [\"org\", \"node\"]\ncontainer = true\n\n\
-             [types.doc]\nparent = [\"node\", \"doc\"]\ncontainer = true\nfeatures = [\"ai\", \"chat\"]\n\n\
-             [types.doc.fields]\n\
-             status   = { sensitivity = \"internal\", grants_access = true }\n\
-             prio     = { sensitivity = \"internal\", type = \"integer\", grants_access = true }\n\
-             flag     = { sensitivity = \"public\", type = \"boolean\", grants_access = true }\n\
-             labels   = { sensitivity = \"internal\", type = \"string_list\", grants_access = true }\n\
-             owner_p  = { sensitivity = \"internal\", type = \"principal\", grants_access = true }\n\
-             title    = { sensitivity = \"public\" }\n\
-             secret_f = { sensitivity = \"secret\" }\n\n\
-             [types.doc.actions]\n",
+             [types.box]\nparent = [\"org\", \"node\"]\n\n",
         );
+        let feats: Vec<String> = self
+            .features
+            .iter()
+            .map(|f| format!("\"{}\"", f.trim_start_matches('@')))
+            .collect();
+        let _ = write!(
+            s,
+            "[types.doc]\nparent = [\"node\", \"doc\"]\ncontainer = true\nfeatures = [{}]\n\n[types.doc.fields]\n",
+            feats.join(", ")
+        );
+        for f in &self.fields {
+            let _ = writeln!(
+                s,
+                "{} = {{ sensitivity = \"{}\", type = \"{}\", grants_access = {} }}",
+                f.name, f.sensitivity, f.ty, f.grants_access
+            );
+        }
+        s.push_str("\n[types.doc.actions]\n");
         for a in &self.actions {
             let _ = writeln!(
                 s,
@@ -361,16 +402,27 @@ impl ModelSpec {
         s
     }
 
+    /// Removes a field or feature and everything that names it.
+    fn drop_field(&mut self, f: &str) {
+        self.fields.retain(|x| x.name != f);
+        self.features.retain(|x| *x != f);
+        for r in &mut self.roles {
+            r.fields.remove(f);
+        }
+        self.rules.retain(|r| r.field != f);
+    }
+
     /// One random change. The result may not compile, or may widen; the
     /// caller checks both.
+    #[allow(clippy::too_many_lines)]
     pub fn mutate(&self, rng: &mut Rng) -> Self {
         let mut m = self.clone();
         let ri = rng.below(m.roles.len());
-        match rng.below(11) {
+        match rng.below(17) {
             0 => m.roles[ri].doc = rng.level(),
             1 => m.roles[ri].node = rng.level(),
             2 => {
-                let f = *rng.pick(&DATA_FIELDS);
+                let f = rng.pick(&m.fields).name;
                 let max = m.roles[ri].doc;
                 m.roles[ri].fields.insert(f, rng.level_upto(max));
             }
@@ -414,22 +466,103 @@ impl ModelSpec {
                     m.actions[a].needs = rng.pick(&["read", "write", "full"]);
                 }
             }
-            _ => {
+            10 => {
                 m.roles[ri].assignable = match rng.below(3) {
                     0 => Some(vec!["user"]),
                     1 => Some(vec!["agent"]),
                     _ => Some(vec!["user", "agent", "group", "sa"]),
                 };
-                if m.roles[ri]
-                    .grants
-                    .iter()
-                    .any(|g| matches!(*g, "doc:seal" | "doc:manage_access" | "doc:manage_fields"))
-                {
+                if m.roles[ri].grants.iter().any(|g| ADMIN_GRANTS.contains(g)) {
                     m.roles[ri].assignable = None;
+                }
+            }
+            11 => {
+                // A field's sensitivity. A field that conditions read may not
+                // become confidential: that change does not compile.
+                let i = rng.below(m.fields.len());
+                m.fields[i].sensitivity =
+                    rng.pick(&["public", "internal", "confidential", "secret"]);
+            }
+            12 => {
+                // An action's grant flag. With `grant = false`, no role may
+                // hold the grant.
+                let i = rng.below(m.actions.len());
+                if m.actions[i].needs != "owner" {
+                    m.actions[i].grant = !m.actions[i].grant;
+                    if !m.actions[i].grant {
+                        let key = format!("doc:{}", m.actions[i].name);
+                        for r in &mut m.roles {
+                            r.grants.retain(|g| *g != key);
+                        }
+                    }
+                }
+            }
+            13 => {
+                // A feature level. It may be above the type level, but the
+                // type level must be at least Read.
+                let f = *rng.pick(&m.features);
+                if m.roles[ri].doc >= Level::Read {
+                    m.roles[ri].fields.insert(f, rng.level());
+                } else {
+                    m.roles[ri].fields.remove(f);
+                }
+            }
+            14 => {
+                if m.has_field("extra") {
+                    m.drop_field("extra");
+                } else {
+                    m.fields.push(FieldSpec {
+                        name: "extra",
+                        sensitivity: rng.pick(&["internal", "confidential"]),
+                        ty: "string",
+                        grants_access: rng.chance(50),
+                    });
+                }
+            }
+            15 => {
+                if m.actions.iter().any(|a| a.name == "extra_act") {
+                    m.actions.retain(|a| a.name != "extra_act");
+                    for r in &mut m.roles {
+                        r.grants.remove("doc:extra_act");
+                    }
+                } else {
+                    m.actions.push(ActionSpec {
+                        name: "extra_act",
+                        needs: rng.pick(&["read", "write"]),
+                        grant: rng.chance(50),
+                    });
+                }
+            }
+            _ => {
+                if m.has_field("@files") {
+                    m.drop_field("@files");
+                } else {
+                    m.features.push("@files");
                 }
             }
         }
         m
+    }
+
+    /// Every action the model declares on `doc`, built-in and custom.
+    pub fn actions(&self) -> Vec<String> {
+        BUILTIN_ACTIONS
+            .iter()
+            .map(|a| (*a).to_owned())
+            .chain(self.actions.iter().map(|a| format!("doc:{}", a.name)))
+            .collect()
+    }
+
+    /// A value of the right type for each declared data field.
+    pub fn sample_value(&self, f: &str) -> Option<AttrValue> {
+        let spec = self.fields.iter().find(|x| x.name == f)?;
+        Some(match spec.ty {
+            "integer" => AttrValue::Integer(1),
+            "boolean" => AttrValue::Boolean(true),
+            "string_list" => AttrValue::Strings(vec!["a".into()]),
+            "principal" => AttrValue::String(user(1).to_string()),
+            _ => AttrValue::String("v".into()),
+        })
     }
 }
 
@@ -486,6 +619,13 @@ pub(crate) fn principals() -> Vec<Principal> {
 
 /// A tenant's tree and data. `n` makes the org id and tenant key; the
 /// resource ids are the same in every tenant.
+///
+/// Some scopes are of type `box`, which is not a container: rows stored
+/// below them stand for paths that were stored before the type stopped
+/// being a container (a neutral manifest change). Some rows reuse the id of
+/// a scope of another type. A few rows have 33 ancestors, one more than
+/// `check` accepts; they are never scopes.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn tenant_world(rng: &mut Rng, n: u32, roles: &[String]) -> Tenant {
     let key = tenant(n);
     let org = PathEntry::org(&org_id(n)).unwrap();
@@ -501,15 +641,21 @@ pub(crate) fn tenant_world(rng: &mut Rng, n: u32, roles: &[String]) -> Tenant {
             Some(rng.below(i))
         };
         let path = parent.map_or_else(|| vec![org.clone()], |p| path_below(&nodes[p]));
+        let t = if !deep && rng.chance(15) {
+            "box"
+        } else {
+            "node"
+        };
         nodes.push(Node {
-            entry: entry("node", &format!("n{i}")),
+            entry: entry(t, &format!("n{i}")),
             path,
             attrs: Attrs::new(),
         });
     }
     if deep {
-        // A chain to the depth limit: 31 nodes and a row at path length 32.
-        while nodes.last().is_some_and(|n| n.path.len() < 30) {
+        // A chain to the depth limit: rows at path length 32, and below
+        // them rows with 33 ancestors.
+        while nodes.last().is_some_and(|n| n.path.len() < 31) {
             let i = nodes.len();
             let path = path_below(&nodes[i - 1]);
             nodes.push(Node {
@@ -522,23 +668,46 @@ pub(crate) fn tenant_world(rng: &mut Rng, n: u32, roles: &[String]) -> Tenant {
     let ps = principals();
     let row_count = 8 + rng.below(30);
     let first_row = nodes.len();
+    let mut doc_ids = BTreeSet::new();
     for i in 0..row_count {
         let made = nodes.len() - first_row;
         let parent = if made > 0 && rng.chance(25) {
-            first_row + rng.below(made)
+            // Below a row; in a deep world often below the deepest one.
+            if deep && rng.chance(50) {
+                nodes.len() - 1
+            } else {
+                first_row + rng.below(made)
+            }
+        } else if deep && rng.chance(30) {
+            first_row - 1
         } else {
             rng.below(first_row)
         };
         let path = path_below(&nodes[parent]);
-        if path.len() > crate::MAX_PATH {
+        if path.len() > crate::MAX_PATH + 1 {
             continue;
         }
+        // Sometimes the id of a scope of another type.
+        let reuse = format!("n{}", rng.below(first_row));
+        let id = if rng.chance(10) && doc_ids.insert(reuse.clone()) {
+            reuse
+        } else {
+            let own = format!("d{i}");
+            doc_ids.insert(own.clone());
+            own
+        };
         nodes.push(Node {
-            entry: entry("doc", &format!("d{i}")),
+            entry: entry("doc", &id),
             path,
             attrs: attrs(rng, &ps),
         });
     }
+    // Scopes: every node `check` accepts, so up to 32 ancestors. Rows below
+    // a scope with 32 ancestors have 33 and match no filter.
+    let scope_nodes: Vec<&Node> = nodes
+        .iter()
+        .filter(|n| n.path.len() <= crate::MAX_PATH)
+        .collect();
 
     let groups = vec![
         Group {
@@ -555,7 +724,7 @@ pub(crate) fn tenant_world(rng: &mut Rng, n: u32, roles: &[String]) -> Tenant {
         },
     ];
     let mut scopes: Vec<PathEntry> = vec![org.clone()];
-    scopes.extend(nodes.iter().map(|n| n.entry.clone()));
+    scopes.extend(scope_nodes.iter().map(|n| n.entry.clone()));
     let mut role_keys: Vec<String> = roles.to_vec();
     role_keys.extend(["owner", "member", "viewer", "guest", "agent", "ghost"].map(str::to_owned));
     let mut bindings = Vec::new();
@@ -586,7 +755,7 @@ pub(crate) fn tenant_world(rng: &mut Rng, n: u32, roles: &[String]) -> Tenant {
             scope,
         });
     }
-    let private_scopes = nodes
+    let private_scopes = scope_nodes
         .iter()
         .filter(|_| rng.chance(25))
         .map(|n| n.entry.clone())
@@ -594,8 +763,8 @@ pub(crate) fn tenant_world(rng: &mut Rng, n: u32, roles: &[String]) -> Tenant {
     let mut field_rules = Vec::new();
     let mut rule_keys = BTreeSet::new();
     for i in 0..rng.below(5) {
-        let scope = rng.pick(&nodes).entry.clone();
-        let field = *rng.pick(&["title", "status", "secret_f", "@ai"]);
+        let scope = rng.pick(&scope_nodes).entry.clone();
+        let field = *rng.pick(&["title", "status", "secret_f", "@ai", "extra"]);
         let role = rng
             .chance(60)
             .then(|| RoleKey::parse(rng.pick(&role_keys)).unwrap());
@@ -745,7 +914,9 @@ impl ScopePaths for Paths {
 pub(crate) fn row_matches(f: &ListFilter, row: &Node) -> bool {
     let positive =
         f.ids_in.contains(&row.entry.id) || row.path.iter().any(|a| f.container_in.contains(a));
-    positive && f.condition.as_ref().is_none_or(|c| expr_holds(c, row))
+    row.path.len() <= crate::MAX_PATH
+        && positive
+        && f.condition.as_ref().is_none_or(|c| expr_holds(c, row))
 }
 
 fn value_eq(a: Option<&AttrValue>, v: &FilterValue) -> bool {

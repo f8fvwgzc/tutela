@@ -1,10 +1,15 @@
-//! Latency of the evaluator on a large generated tenant: `check` (mixed,
+//! Latency of the evaluator at the library-gate size: `check` (mixed,
 //! allowed only, allowed delegated calls), `write_check` and `list_filter`.
 //!
-//! Run with `cargo bench -p tutela-pdp`. It prints p50, p99, p99.9 and the
-//! slowest call per workload, and the largest list filter it saw. The
-//! library gate asks for `check` p99 under 1 ms in process (ROADMAP Phase A).
-//! Run it on a quiet machine: no other build at the same time.
+//! The tenant has the sizes of the week-1 spike (SPIKE-WEEK1.md 4.1, the
+//! model the library gate names): 200 types, 100 roles, 5,000 field rules,
+//! 10,000 role assignments, 10,000 users and 100 agents, 500 groups nested
+//! 8 deep, 20,000 scopes (10% private) and 200,000 items with paths up to
+//! 32. The gate: `check` p99 under 1 ms in process (ROADMAP Phase A). The
+//! run fails (exit code 1) when a `check` workload is above it.
+//!
+//! Run with `cargo bench -p tutela-pdp`, on a quiet machine: no other build
+//! at the same time.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::error::Error;
@@ -13,6 +18,7 @@ use std::hint::black_box;
 use std::sync::Arc;
 use std::time::Instant;
 
+use tutela_contracts::decision::Effect;
 use tutela_contracts::keys::{ActionKey, FieldKey, FieldName, ResourceId, ResourceType};
 use tutela_contracts::level::Level;
 use tutela_contracts::principal::Principal;
@@ -26,19 +32,26 @@ use tutela_pdp::{
 
 type Res<T> = Result<T, Box<dyn Error>>;
 
-const USERS: u32 = 5_000;
-const AGENTS: u32 = 50;
-const GROUPS: usize = 200;
+const USERS: usize = 10_000;
+const AGENTS: usize = 100;
+const GROUPS: usize = 500;
+const GROUP_LEVELS: usize = 8;
 const DEPTS: usize = 100;
-const PROJECTS: usize = 2_000;
-const ITEMS: usize = 20_000;
-const BINDINGS: usize = 10_000;
-const PRIVATE: usize = 300;
-const SCOPE_RULES: usize = 500;
-const ROLES: usize = 60;
-const FILLER_TYPES: usize = 40;
+const SCOPES: usize = 20_000;
+const ITEMS: usize = 200_000;
+const USER_BINDINGS: usize = 8_000;
+const ROOT_BINDINGS: usize = 300;
+const GROUP_BINDINGS: usize = 1_500;
+const AGENT_BINDINGS: usize = 500;
+const ROLES: usize = 95;
+const FILLER_TYPES: usize = 196;
+const ROOT_RULES: usize = 1_000;
+const SCOPE_RULES: usize = 4_000;
+const CONDITIONS: usize = 200;
 const CHECKS: usize = 200_000;
-const LISTS: usize = 2_000;
+const LISTS: usize = 500;
+/// The library gate: `check` p99 under 1 ms, in microseconds.
+const GATE_P99_US: f64 = 1_000.0;
 
 /// SplitMix64.
 struct Rng(u64);
@@ -61,14 +74,40 @@ impl Rng {
     }
 }
 
-fn level_name(l: Level) -> &'static str {
-    l.as_str()
-}
-
-const FIELDS: [&str; 12] = [
-    "status", "prio", "owner_p", "labels", "title", "summary", "notes", "due", "cost", "budget",
-    "region", "tags2",
+/// 20 fields: 3 public, 14 internal, 2 confidential, 1 secret.
+const FIELDS: [(&str, &str); 20] = [
+    ("status", "internal"),
+    ("prio", "internal"),
+    ("owner_p", "internal"),
+    ("labels", "internal"),
+    ("title", "public"),
+    ("code", "public"),
+    ("kind", "public"),
+    ("summary", "internal"),
+    ("notes", "internal"),
+    ("due", "internal"),
+    ("region", "internal"),
+    ("team", "internal"),
+    ("phase", "internal"),
+    ("score", "internal"),
+    ("tags2", "internal"),
+    ("source", "internal"),
+    ("link", "internal"),
+    ("cost", "confidential"),
+    ("budget", "confidential"),
+    ("salary", "secret"),
 ];
+
+fn field_line(name: &str, sensitivity: &str) -> String {
+    let ty = match name {
+        "prio" => ", type = \"integer\", grants_access = true",
+        "owner_p" => ", type = \"principal\", grants_access = true",
+        "labels" => ", type = \"string_list\", grants_access = true",
+        "status" => ", grants_access = true",
+        _ => "",
+    };
+    format!("{name} = {{ sensitivity = \"{sensitivity}\"{ty} }}\n")
+}
 
 fn manifest(rng: &mut Rng) -> String {
     let mut s = String::from(
@@ -76,20 +115,13 @@ fn manifest(rng: &mut Rng) -> String {
          [types.dept]\nparent = \"org\"\ncontainer = true\n\n\
          [types.proj]\nparent = [\"dept\", \"proj\"]\ncontainer = true\n\n\
          [types.item]\nparent = \"proj\"\nfeatures = [\"ai\", \"chat\", \"files\"]\n\n\
-         [types.item.fields]\n\
-         status  = { sensitivity = \"internal\", grants_access = true }\n\
-         prio    = { sensitivity = \"internal\", type = \"integer\", grants_access = true }\n\
-         owner_p = { sensitivity = \"internal\", type = \"principal\", grants_access = true }\n\
-         labels  = { sensitivity = \"internal\", type = \"string_list\", grants_access = true }\n\
-         title   = { sensitivity = \"public\" }\n\
-         summary = { sensitivity = \"internal\" }\n\
-         notes   = { sensitivity = \"internal\" }\n\
-         due     = { sensitivity = \"internal\" }\n\
-         cost    = { sensitivity = \"confidential\", type = \"integer\" }\n\
-         budget  = { sensitivity = \"confidential\", type = \"integer\" }\n\
-         region  = { sensitivity = \"internal\" }\n\
-         tags2   = { sensitivity = \"internal\" }\n\n\
-         [types.item.actions]\napprove = { needs = \"write\" }\nexport = { needs = \"read\", grant = false }\n",
+         [types.item.fields]\n",
+    );
+    for (f, sens) in FIELDS {
+        s.push_str(&field_line(f, sens));
+    }
+    s.push_str(
+        "\n[types.item.actions]\napprove = { needs = \"write\" }\nexport = { needs = \"read\" }\n",
     );
     for t in 0..FILLER_TYPES {
         let _ = write!(
@@ -98,49 +130,59 @@ fn manifest(rng: &mut Rng) -> String {
         );
     }
     let levels = [Level::Read, Level::Write, Level::Full, Level::Read];
+    let mut role_item = Vec::new();
     for r in 0..ROLES {
         let item = levels[rng.below(levels.len())];
+        role_item.push(item);
         let mut g = vec![
-            format!("dept = \"{}\"", level_name(levels[rng.below(4)])),
-            format!("proj = \"{}\"", level_name(levels[rng.below(4)])),
-            format!("item = \"{}\"", level_name(item)),
+            format!("dept = \"{}\"", levels[rng.below(4)]),
+            format!("proj = \"{}\"", levels[rng.below(4)]),
+            format!("item = \"{item}\""),
         ];
         for t in 0..FILLER_TYPES {
-            if rng.chance(30) {
-                g.push(format!("filler{t} = \"read\""));
-            }
+            g.push(format!("filler{t} = \"{}\"", levels[rng.below(4)]));
         }
-        for f in FIELDS {
-            if rng.chance(20) {
+        for (f, _) in FIELDS {
+            if rng.chance(10) {
                 g.push(format!("\"item.{f}\" = \"read\""));
             }
         }
         if rng.chance(40) {
             g.push("\"item.@ai\" = \"write\"".to_owned());
         }
-        if rng.chance(30) {
-            g.push("\"item:approve\" = true".to_owned());
+        for a in ["approve", "export"] {
+            if rng.chance(30) {
+                g.push(format!("\"item:{a}\" = true"));
+            }
         }
         let _ = write!(
             s,
             "\n[roles.r{r}]\ngrants = {{ {} }}\nassignable_to = [\"user\", \"group\"]\n",
             g.join(", ")
         );
-        if rng.chance(30) {
-            let when = match rng.below(3) {
-                0 => "{ eq = { field = \"status\", value = \"open\" } }",
-                1 => "{ is_principal = \"owner_p\" }",
-                _ => "{ not = { contains = { field = \"labels\", value = \"locked\" } } }",
-            };
+    }
+    for c in 0..CONDITIONS {
+        let r = c % ROLES;
+        let when = match rng.below(4) {
+            0 => "{ eq = { field = \"status\", value = \"open\" } }",
+            1 => "{ is_principal = \"owner_p\" }",
+            2 => "{ not = { contains = { field = \"labels\", value = \"locked\" } } }",
+            _ => "{ in = { field = \"prio\", values = [1, 2] } }",
+        };
+        let _ = write!(
+            s,
+            "\n[[conditions]]\nrole = \"r{r}\"\ntype = \"item\"\nwhen = {when}\nelse = \"read\"\n"
+        );
+    }
+    let mut taken = BTreeSet::new();
+    while taken.len() < ROOT_RULES {
+        let r = rng.below(ROLES);
+        let (f, _) = FIELDS[rng.below(FIELDS.len())];
+        if taken.insert((r, f)) {
             let _ = write!(
                 s,
-                "\n[[conditions]]\nrole = \"r{r}\"\ntype = \"item\"\nwhen = {when}\nelse = \"read\"\n"
-            );
-        }
-        if rng.chance(20) {
-            let _ = write!(
-                s,
-                "\n[[field_rules]]\nfield = \"item.budget\"\nrole = \"r{r}\"\nmax = \"read\"\n"
+                "\n[[field_rules]]\nfield = \"item.{f}\"\nrole = \"r{r}\"\nmax = \"{}\"\n",
+                levels[rng.below(4)]
             );
         }
     }
@@ -151,11 +193,11 @@ fn manifest(rng: &mut Rng) -> String {
     s
 }
 
-fn user(n: u32) -> Res<Principal> {
+fn user(n: usize) -> Res<Principal> {
     Ok(format!("user:usr_0193a1b2-c3d4-7a11-8b22-{n:012x}").parse()?)
 }
 
-fn agent(n: u32) -> Res<Principal> {
+fn agent(n: usize) -> Res<Principal> {
     Ok(format!("agent:agt_0193a1b2-c3d4-7b33-9c44-{n:012x}").parse()?)
 }
 
@@ -185,14 +227,55 @@ impl ScopePaths for Tree {
     }
 }
 
+/// An item, kept small: its parent scope and its field values.
+struct Item {
+    parent: usize,
+    attrs: Attrs,
+}
+
 struct World {
     pdp: Pdp,
     tree: Tree,
-    items: Vec<ResourceRef>,
-    /// Items below each project.
-    by_proj: HashMap<PathEntry, Vec<usize>>,
-    /// (agent, the users bound with it, its project).
-    agent_teams: Vec<(Principal, Vec<Principal>, PathEntry)>,
+    scopes: Vec<PathEntry>,
+    items: Vec<Item>,
+    item_type: ResourceType,
+    /// Items below each project scope.
+    by_scope: HashMap<usize, Vec<usize>>,
+    /// (agent, the users bound with it, its scope).
+    agent_teams: Vec<(Principal, Vec<Principal>, usize)>,
+}
+
+impl World {
+    fn resource(&self, i: usize) -> Res<ResourceRef> {
+        let item = self.items.get(i).ok_or("no such item")?;
+        let parent = self.scopes.get(item.parent).ok_or("no such scope")?;
+        let mut path = vec![parent.clone()];
+        path.extend(self.tree.paths.get(parent).cloned().unwrap_or_default());
+        Ok(ResourceRef {
+            type_name: self.item_type.clone(),
+            id: ResourceId::parse(&format!("i{i}"))?,
+            path,
+            attrs: item.attrs.clone(),
+        })
+    }
+
+    fn check(
+        &self,
+        subject: Principal,
+        actors: Vec<Principal>,
+        act: &str,
+        i: usize,
+    ) -> Res<CheckRequest> {
+        Ok(CheckRequest {
+            tenant: self.tree.tenant.clone(),
+            subject,
+            actors,
+            action: ActionKey::parse(act)?,
+            resource: self.resource(i)?,
+            fields: None,
+            at_least_revision: None,
+        })
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -207,54 +290,51 @@ fn build() -> Res<World> {
         "ten_0193a1b2-c3d4-7e5f-8a6b-000000000001".parse()?,
     );
 
-    // The tree: departments, projects (some in deep chains), items.
+    // 20,000 scopes: departments, then projects in chains up to depth 31.
     let mut paths: HashMap<PathEntry, Vec<PathEntry>> = HashMap::new();
-    let mut depts = Vec::new();
+    let mut scopes: Vec<PathEntry> = Vec::with_capacity(SCOPES);
     for d in 0..DEPTS {
         let e = entry("dept", &format!("d{d}"))?;
         paths.insert(e.clone(), vec![org.clone()]);
-        depts.push(e);
+        scopes.push(e);
     }
-    let mut projects: Vec<PathEntry> = Vec::new();
-    for p in 0..PROJECTS {
+    while scopes.len() < SCOPES {
+        let p = scopes.len();
         let e = entry("proj", &format!("p{p}"))?;
-        let parent = if p > 0 && rng.chance(60) {
-            // Deep chains: the previous project, up to path length 30.
-            let prev = &projects[if rng.chance(70) { p - 1 } else { rng.below(p) }];
-            if paths.get(prev).is_some_and(|v| v.len() < 30) {
-                prev.clone()
-            } else {
-                depts[rng.below(DEPTS)].clone()
-            }
+        let parent = if rng.chance(70) { p - 1 } else { rng.below(p) };
+        let parent = if paths.get(&scopes[parent]).is_some_and(|v| v.len() < 30) {
+            parent
         } else {
-            depts[rng.below(DEPTS)].clone()
+            rng.below(DEPTS)
         };
-        let mut path = vec![parent.clone()];
-        path.extend(paths.get(&parent).cloned().unwrap_or_default());
+        let mut path = vec![scopes[parent].clone()];
+        path.extend(paths.get(&scopes[parent]).cloned().unwrap_or_default());
         paths.insert(e.clone(), path);
-        projects.push(e);
+        scopes.push(e);
     }
-    let mut items = Vec::new();
-    let mut by_proj: HashMap<PathEntry, Vec<usize>> = HashMap::new();
+    let projects: Vec<usize> = (DEPTS..SCOPES).collect();
+
+    // 200,000 items below projects.
+    let mut items = Vec::with_capacity(ITEMS);
+    let mut by_scope: HashMap<usize, Vec<usize>> = HashMap::new();
+    let status = FieldName::parse("status")?;
+    let owner_p = FieldName::parse("owner_p")?;
+    let labels = FieldName::parse("labels")?;
+    let prio = FieldName::parse("prio")?;
     for i in 0..ITEMS {
-        let parent = projects[rng.below(PROJECTS)].clone();
-        let mut path = vec![parent.clone()];
-        path.extend(paths.get(&parent).cloned().unwrap_or_default());
+        let parent = projects[rng.below(projects.len())];
         let mut attrs = Attrs::new();
         if rng.chance(70) {
             let s = if rng.chance(50) { "open" } else { "done" };
-            attrs.insert(FieldName::parse("status")?, AttrValue::String(s.to_owned()));
+            attrs.insert(status.clone(), AttrValue::String(s.to_owned()));
         }
         if rng.chance(60) {
             let owner = if rng.chance(50) {
-                agent(u32::try_from(rng.below(AGENTS as usize))?)?
+                agent(rng.below(AGENTS))?
             } else {
-                user(u32::try_from(rng.below(USERS as usize))?)?
+                user(rng.below(USERS))?
             };
-            attrs.insert(
-                FieldName::parse("owner_p")?,
-                AttrValue::String(owner.to_string()),
-            );
+            attrs.insert(owner_p.clone(), AttrValue::String(owner.to_string()));
         }
         if rng.chance(50) {
             let l = if rng.chance(20) {
@@ -262,18 +342,20 @@ fn build() -> Res<World> {
             } else {
                 vec![]
             };
-            attrs.insert(FieldName::parse("labels")?, AttrValue::Strings(l));
+            attrs.insert(labels.clone(), AttrValue::Strings(l));
         }
-        by_proj.entry(parent).or_default().push(i);
-        items.push(ResourceRef {
-            type_name: ResourceType::parse("item")?,
-            id: ResourceId::parse(&format!("i{i}"))?,
-            path,
-            attrs,
-        });
+        if rng.chance(50) {
+            attrs.insert(
+                prio.clone(),
+                AttrValue::Integer(i64::try_from(rng.below(3))?),
+            );
+        }
+        by_scope.entry(parent).or_default().push(i);
+        items.push(Item { parent, attrs });
     }
 
-    // Groups nested 6 deep, users in them.
+    // 500 groups in 8 levels; each group below the top is in 1-2 groups of
+    // the level above. Users in 1-3 groups; one big group holds them all.
     let mut groups: Vec<Group> = (0..GROUPS)
         .map(|g| -> Res<Group> {
             Ok(Group {
@@ -282,83 +364,114 @@ fn build() -> Res<World> {
             })
         })
         .collect::<Res<_>>()?;
-    for g in 1..GROUPS {
-        if g % 6 != 0 {
+    let per_level = GROUPS / GROUP_LEVELS;
+    for g in per_level..GROUPS - 1 {
+        let level = g / per_level;
+        let above = (level - 1) * per_level;
+        for _ in 0..1 + rng.below(2) {
+            let parent = above + rng.below(per_level);
             let child = groups[g].key.clone();
-            groups[g - 1].members.push(Member::Group(child));
+            groups[parent].members.push(Member::Group(child));
         }
     }
+    let big = GROUPS - 1;
     for u in 0..USERS {
-        let g = rng.below(GROUPS);
-        groups[g].members.push(Member::Principal(user(u)?));
+        let p = user(u)?;
+        groups[big].members.push(Member::Principal(p.clone()));
+        for _ in 0..1 + rng.below(3) {
+            let g = rng.below(GROUPS - 1);
+            groups[g].members.push(Member::Principal(p.clone()));
+        }
     }
 
-    // Bindings: users and groups at random scopes, agents with teams.
+    // 10,000 role assignments.
     let roles: Vec<String> = (0..ROLES).map(|r| format!("r{r}")).collect();
     let mut bindings = Vec::new();
     let mut taken = BTreeSet::new();
-    let mut scopes: Vec<PathEntry> = depts.clone();
-    scopes.extend(projects.iter().cloned());
-    for i in 0..BINDINGS {
-        let subject = if rng.chance(20) {
-            Subject::Group(groups[rng.below(GROUPS)].key.clone())
-        } else {
-            Subject::Principal(user(u32::try_from(rng.below(USERS as usize))?)?)
-        };
-        let scope = if rng.chance(1) {
-            org.clone()
-        } else {
-            scopes[rng.below(scopes.len())].clone()
-        };
-        if !taken.insert((subject.clone(), scope.clone())) {
-            continue;
+    let mut push = |subject: Subject, role: &str, scope: PathEntry, id: String| -> Res<()> {
+        if taken.insert((subject.clone(), scope.clone())) {
+            bindings.push(Binding {
+                id: rule(&id)?,
+                subject,
+                role: RoleKey::parse(role)?,
+                scope,
+            });
         }
-        bindings.push(Binding {
-            id: rule(&format!("ra_{i}"))?,
-            subject,
-            role: RoleKey::parse(&roles[rng.below(ROLES)])?,
+        Ok(())
+    };
+    for i in 0..ROOT_BINDINGS {
+        let r = &roles[rng.below(ROLES)];
+        push(
+            Subject::Principal(user(rng.below(USERS))?),
+            r,
+            org.clone(),
+            format!("ra_root_{i}"),
+        )?;
+    }
+    for i in 0..USER_BINDINGS - ROOT_BINDINGS {
+        let r = &roles[rng.below(ROLES)];
+        let scope = scopes[rng.below(SCOPES)].clone();
+        push(
+            Subject::Principal(user(rng.below(USERS))?),
+            r,
             scope,
-        });
+            format!("ra_u_{i}"),
+        )?;
+    }
+    for i in 0..GROUP_BINDINGS {
+        let r = &roles[rng.below(ROLES)];
+        let scope = scopes[rng.below(SCOPES)].clone();
+        let g = groups[rng.below(GROUPS)].key.clone();
+        push(Subject::Group(g), r, scope, format!("ra_g_{i}"))?;
     }
     let mut agent_teams = Vec::new();
-    for a in 0..AGENTS {
+    for i in 0..AGENT_BINDINGS {
+        let a = i % AGENTS;
         let ag = agent(a)?;
-        let proj = projects[rng.below(PROJECTS)].clone();
-        let mut team = Vec::new();
-        for k in 0..3 {
-            let u = user(u32::try_from(rng.below(USERS as usize))?)?;
-            if taken.insert((Subject::Principal(u.clone()), proj.clone())) {
-                bindings.push(Binding {
-                    id: rule(&format!("ra_team_{a}_{k}"))?,
-                    subject: Subject::Principal(u.clone()),
-                    role: RoleKey::parse("member")?,
-                    scope: proj.clone(),
-                });
+        let s = projects[rng.below(projects.len())];
+        let scope = scopes[s].clone();
+        push(
+            Subject::Principal(ag.clone()),
+            "agent",
+            scope.clone(),
+            format!("ra_a_{i}"),
+        )?;
+        if i < AGENTS {
+            let mut team = Vec::new();
+            for k in 0..3 {
+                let u = user(rng.below(USERS))?;
+                push(
+                    Subject::Principal(u.clone()),
+                    "member",
+                    scope.clone(),
+                    format!("ra_t_{i}_{k}"),
+                )?;
                 team.push(u);
             }
+            agent_teams.push((ag, team, s));
         }
-        bindings.push(Binding {
-            id: rule(&format!("ra_agent_{a}"))?,
-            subject: Subject::Principal(ag.clone()),
-            role: RoleKey::parse("agent")?,
-            scope: proj.clone(),
-        });
-        agent_teams.push((ag, team, proj));
     }
-    let private_scopes = (0..PRIVATE)
-        .map(|_| projects[rng.below(PROJECTS)].clone())
+
+    let private_scopes = (0..SCOPES / 10)
+        .map(|_| scopes[DEPTS + rng.below(SCOPES - DEPTS)].clone())
         .collect();
-    let field_rules = (0..SCOPE_RULES)
-        .map(|i| -> Res<ScopeFieldRule> {
-            Ok(ScopeFieldRule {
-                id: rule(&format!("fr_{i}"))?,
-                scope: projects[i % PROJECTS].clone(),
-                field: FieldKey::parse(&format!("item.{}", FIELDS[i % FIELDS.len()]))?,
-                role: Some(RoleKey::parse(&roles[i % ROLES])?),
-                max: Level::Read,
-            })
-        })
-        .collect::<Res<_>>()?;
+    let mut field_rules = Vec::new();
+    let mut rule_keys = BTreeSet::new();
+    while field_rules.len() < SCOPE_RULES {
+        let scope = scopes[rng.below(SCOPES)].clone();
+        let (f, _) = FIELDS[rng.below(FIELDS.len())];
+        let role = rng.chance(70).then(|| roles[rng.below(ROLES)].clone());
+        if !rule_keys.insert((scope.clone(), f, role.clone())) {
+            continue;
+        }
+        field_rules.push(ScopeFieldRule {
+            id: rule(&format!("fr_{}", field_rules.len()))?,
+            scope,
+            field: FieldKey::parse(&format!("item.{f}"))?,
+            role: role.map(|r| RoleKey::parse(&r)).transpose()?,
+            max: [Level::None, Level::Read, Level::Write][rng.below(3)],
+        });
+    }
     let data = TenantData {
         orgs: [org_id].into(),
         bindings,
@@ -368,170 +481,164 @@ fn build() -> Res<World> {
     };
     let mut pdp = Pdp::new();
     pdp.load(tenant.clone(), 1, model, data)?;
-    println!("built the tenant in {:.2?}", started.elapsed());
+    println!("built and loaded the tenant in {:.2?}", started.elapsed());
     Ok(World {
         pdp,
         tree: Tree { tenant, paths },
+        scopes,
         items,
-        by_proj,
+        item_type: ResourceType::parse("item")?,
+        by_scope,
         agent_teams,
     })
 }
 
-fn report(name: &str, mut ns: Vec<u128>, allowed: Option<usize>) {
+/// Prints one line and returns the p99 in microseconds.
+fn report(name: &str, mut ns: Vec<u128>, allowed: Option<usize>) -> f64 {
     ns.sort_unstable();
     let at = |q: f64| {
         let i = ((ns.len() as f64) * q) as usize;
         ns.get(i.min(ns.len().saturating_sub(1)))
             .copied()
-            .unwrap_or(0)
+            .unwrap_or(0) as f64
+            / 1000.0
     };
     let allowed = allowed.map_or_else(
         || "     -".to_owned(),
         |a| format!("{:>5.1}%", 100.0 * a as f64 / ns.len().max(1) as f64),
     );
     println!(
-        "{name:<28} n={:>7} allowed={allowed}  p50={:>7.1}us  p99={:>7.1}us  p99.9={:>7.1}us  max={:>8.1}us",
+        "{name:<28} n={:>7} allowed={allowed}  p50={:>8.1}us  p99={:>8.1}us  p99.9={:>8.1}us  max={:>9.1}us",
         ns.len(),
-        at(0.50) as f64 / 1000.0,
-        at(0.99) as f64 / 1000.0,
-        at(0.999) as f64 / 1000.0,
+        at(0.50),
+        at(0.99),
+        at(0.999),
         ns.last().copied().unwrap_or(0) as f64 / 1000.0,
     );
+    at(0.99)
 }
 
-fn check_req(
+/// Times `check` on requests made by `next` (made outside the timed part).
+fn time_checks(
     w: &World,
-    subject: Principal,
-    actors: Vec<Principal>,
-    act: &str,
-    item: usize,
-) -> Res<CheckRequest> {
-    let resource = w.items.get(item).cloned().ok_or("no such item")?;
-    Ok(CheckRequest {
-        tenant: w.tree.tenant.clone(),
-        subject,
-        actors,
-        action: ActionKey::parse(act)?,
-        resource,
-        fields: None,
-        at_least_revision: None,
-    })
-}
-
-fn time_checks(w: &World, name: &str, reqs: &[CheckRequest]) -> Res<()> {
-    let mut ns = Vec::with_capacity(reqs.len());
+    name: &str,
+    n: usize,
+    mut next: impl FnMut(usize) -> Res<CheckRequest>,
+) -> Res<f64> {
+    let mut ns = Vec::with_capacity(n);
     let mut allowed = 0;
-    for r in reqs {
+    for k in 0..n {
+        let r = next(k)?;
         let t = Instant::now();
-        let d = black_box(w.pdp.check(black_box(r)))?;
+        let d = black_box(w.pdp.check(black_box(&r)))?;
         ns.push(t.elapsed().as_nanos());
         if d.is_allowed() {
             allowed += 1;
         }
     }
-    report(name, ns, Some(allowed));
-    Ok(())
+    Ok(report(name, ns, Some(allowed)))
 }
 
+#[allow(clippy::too_many_lines)]
 fn main() -> Res<()> {
     let w = build()?;
     let mut rng = Rng(42);
     let actions = ["item:read", "item:write", "item:approve", "item:export"];
+    let mut p99s = Vec::new();
 
-    // W1: random users, random items, random actions (mostly denies).
-    let mut mixed = Vec::with_capacity(CHECKS);
+    // W1: random users, items and actions (mostly denies).
+    let mut picks = Vec::with_capacity(CHECKS);
     for _ in 0..CHECKS {
-        let u = user(u32::try_from(rng.below(USERS as usize))?)?;
-        mixed.push(check_req(
-            &w,
-            u,
-            vec![],
-            actions[rng.below(4)],
-            rng.below(ITEMS),
-        )?);
+        picks.push((rng.below(USERS), rng.below(ITEMS), rng.below(4)));
     }
-    time_checks(&w, "check, mixed", &mixed)?;
+    p99s.push(time_checks(&w, "check, mixed", CHECKS, |k| {
+        let (u, i, a) = picks[k];
+        w.check(user(u)?, vec![], actions[a], i)
+    })?);
 
-    // W2: allowed calls only.
-    let allowed: Vec<CheckRequest> = mixed
-        .into_iter()
-        .filter(|r| w.pdp.check(r).is_ok_and(|d| d.is_allowed()))
-        .collect();
-    let mut many = Vec::with_capacity(CHECKS);
-    while many.len() < CHECKS && !allowed.is_empty() {
-        many.extend(allowed.iter().take(CHECKS - many.len()).cloned());
+    // W2: allowed calls only: users bound near the items they ask for.
+    let mut allowed = Vec::new();
+    let mut tries = 0;
+    while allowed.len() < 20_000 && tries < 2_000_000 {
+        tries += 1;
+        let (u, a) = (rng.below(USERS), rng.below(4));
+        let i = rng.below(ITEMS);
+        let r = w.check(user(u)?, vec![], actions[a], i)?;
+        if w.pdp.check(&r)?.is_allowed() {
+            allowed.push((u, i, a));
+        }
     }
-    time_checks(&w, "check, allowed only", &many)?;
+    if allowed.is_empty() {
+        return Err("no allowed calls found".into());
+    }
+    p99s.push(time_checks(&w, "check, allowed only", CHECKS, |k| {
+        let (u, i, a) = allowed[k % allowed.len()];
+        w.check(user(u)?, vec![], actions[a], i)
+    })?);
 
     // W3: allowed delegated calls: a user and an agent bound at the same
     // project, on items below it.
     let mut delegated = Vec::new();
-    for (ag, team, proj) in &w.agent_teams {
-        for u in team {
-            for &i in w.by_proj.get(proj).into_iter().flatten() {
-                for act in ["item:read", "item:write"] {
-                    let r = check_req(&w, u.clone(), vec![ag.clone()], act, i)?;
-                    if w.pdp.check(&r).is_ok_and(|d| d.is_allowed()) {
-                        delegated.push(r);
+    for (t, (ag, team, s)) in w.agent_teams.iter().enumerate() {
+        for (m, u) in team.iter().enumerate() {
+            for &i in w.by_scope.get(s).into_iter().flatten() {
+                for (a, act) in actions.iter().enumerate().take(2) {
+                    let r = w.check(u.clone(), vec![ag.clone()], act, i)?;
+                    if w.pdp.check(&r)?.is_allowed() {
+                        delegated.push((t, m, i, a));
                     }
                 }
             }
         }
     }
-    let base = delegated.clone();
-    while delegated.len() < CHECKS && !base.is_empty() {
-        delegated.extend(base.iter().take(CHECKS - delegated.len()).cloned());
+    if delegated.is_empty() {
+        return Err("no allowed delegated calls found".into());
     }
-    time_checks(&w, "check, delegated allowed", &delegated)?;
+    p99s.push(time_checks(&w, "check, delegated allowed", CHECKS, |k| {
+        let (t, m, i, a) = delegated[k % delegated.len()];
+        let (ag, team, _) = &w.agent_teams[t];
+        w.check(team[m].clone(), vec![ag.clone()], actions[a], i)
+    })?);
 
     // write_check of two fields on allowed delegated writes.
-    let mut writes = Vec::new();
-    for r in base
-        .iter()
-        .filter(|r| r.action.action().as_str() == "write")
-    {
+    let writes: Vec<_> = delegated.iter().filter(|d| d.3 == 1).collect();
+    let mut ns = Vec::new();
+    let mut ok = 0;
+    let notes = FieldName::parse("notes")?;
+    let title = FieldName::parse("title")?;
+    for k in 0..CHECKS.min(writes.len() * 10) {
+        let &(t, m, i, _) = writes[k % writes.len()];
+        let (ag, team, _) = &w.agent_teams[t];
         let mut new_attrs = Attrs::new();
-        new_attrs.insert(FieldName::parse("notes")?, AttrValue::String("n".into()));
-        new_attrs.insert(FieldName::parse("title")?, AttrValue::String("t".into()));
-        writes.push(WriteCheckRequest {
-            tenant: r.tenant.clone(),
-            subject: r.subject.clone(),
-            actors: r.actors.clone(),
-            resource: r.resource.clone(),
+        new_attrs.insert(notes.clone(), AttrValue::String("n".into()));
+        new_attrs.insert(title.clone(), AttrValue::String("t".into()));
+        let r = WriteCheckRequest {
+            tenant: w.tree.tenant.clone(),
+            subject: team[m].clone(),
+            actors: vec![ag.clone()],
+            resource: w.resource(i)?,
             new_attrs,
             new_path: None,
             at_least_revision: None,
-        });
-    }
-    let mut ns = Vec::new();
-    let mut ok = 0;
-    for _ in 0..(CHECKS / writes.len().max(1)).max(1) {
-        for r in &writes {
-            let t = Instant::now();
-            let d = black_box(w.pdp.write_check(black_box(r)))?;
-            ns.push(t.elapsed().as_nanos());
-            if d.effect == tutela_contracts::decision::Effect::Allow {
-                ok += 1;
-            }
+        };
+        let t0 = Instant::now();
+        let d = black_box(w.pdp.write_check(black_box(&r)))?;
+        ns.push(t0.elapsed().as_nanos());
+        if d.effect == Effect::Allow {
+            ok += 1;
         }
     }
     report("write_check, delegated", ns, Some(ok));
 
-    // W4: list filters for random users, and for users with their agent.
+    // W4: list filters for random users, and users with their agent.
     let mut largest = (0, 0, 0);
-    let mut sizes: BTreeMap<&str, Vec<u128>> = BTreeMap::new();
+    let mut times: BTreeMap<&str, Vec<u128>> = BTreeMap::new();
     for k in 0..LISTS {
         let (subject, actors, name) = if k % 2 == 0 {
-            (
-                user(u32::try_from(rng.below(USERS as usize))?)?,
-                vec![],
-                "list_filter",
-            )
+            (user(rng.below(USERS))?, vec![], "list_filter")
         } else {
             let (ag, team, _) = &w.agent_teams[rng.below(w.agent_teams.len())];
-            let u = team.first().cloned().unwrap_or(user(0)?);
-            (u, vec![ag.clone()], "list_filter, delegated")
+            (team[0].clone(), vec![ag.clone()], "list_filter, delegated")
         };
         let req = ListFilterRequest {
             tenant: w.tree.tenant.clone(),
@@ -540,9 +647,9 @@ fn main() -> Res<()> {
             action: ActionKey::parse(actions[k % 2])?,
             at_least_revision: None,
         };
-        let t = Instant::now();
+        let t0 = Instant::now();
         let f = black_box(w.pdp.list_filter(black_box(&req), &w.tree))?;
-        sizes.entry(name).or_default().push(t.elapsed().as_nanos());
+        times.entry(name).or_default().push(t0.elapsed().as_nanos());
         let s = f.size();
         largest = (
             largest.0.max(s.nodes),
@@ -550,12 +657,20 @@ fn main() -> Res<()> {
             largest.2.max(s.entries),
         );
     }
-    for (name, ns) in sizes {
+    for (name, ns) in times {
         report(name, ns, None);
     }
     println!(
         "largest list filter seen: {} condition nodes, depth {}, {} entries (each the max over all filters)",
         largest.0, largest.1, largest.2
     );
+
+    let worst = p99s.iter().copied().fold(0.0_f64, f64::max);
+    if worst >= GATE_P99_US {
+        return Err(
+            format!("check p99 {worst:.1} us is not under the gate of {GATE_P99_US} us").into(),
+        );
+    }
+    println!("gate: check p99 {worst:.1} us < {GATE_P99_US} us: pass");
     Ok(())
 }

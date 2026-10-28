@@ -30,6 +30,8 @@ mod pdp;
 #[cfg(test)]
 mod testgen;
 #[cfg(test)]
+mod testref;
+#[cfg(test)]
 mod tests_check;
 #[cfg(test)]
 mod tests_filter;
@@ -37,11 +39,14 @@ mod tests_filter;
 mod tests_props;
 
 pub use api::{
-    AttrValue, Attrs, CheckRequest, FieldVerdict, ListFilterRequest, MAX_ACTORS, MAX_PATH,
-    PathEntry, PdpError, ResourceRef, ScopePathError, ScopePathProblem, ScopePaths,
-    WriteCheckRequest, WriteDecision,
+    AttrValue, Attrs, CheckRequest, FieldVerdict, ListFilterRequest, MAX_ACTORS, MAX_BATCH,
+    MAX_FIELDS, MAX_PATH, PathEntry, PdpError, ResourceRef, ScopePathError, ScopePathProblem,
+    ScopePaths, WriteCheckRequest, WriteDecision,
 };
-pub use data::{Binding, Group, LoadError, Member, ScopeFieldRule, Subject, TenantData};
+pub use data::{
+    Binding, Group, LoadError, MAX_GROUP_CLOSURE, MAX_GROUP_DEPTH, Member, ScopeFieldRule, Subject,
+    TenantData,
+};
 pub use filter::{
     FilterExpr, FilterSize, FilterValue, ListFilter, MAX_CONTAINER_IN, MAX_FILTER_DEPTH,
     MAX_FILTER_ENTRIES, MAX_FILTER_NODES, MAX_IDS_IN,

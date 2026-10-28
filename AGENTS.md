@@ -43,7 +43,7 @@ tutela/
 │   ├── tutela-contracts/    wire types: ids, claims, Decision, audit.v1, event envelope   now (wire types)
 │   │                        (protos tutela.authz.v1, tutela.admin.v1: B)
 │   ├── tutela-pdp/          model compiler for tutela.resources.toml                      now (compiler)
-│   │                        embedded decision engine: check, batch, list_filter,          A
+│   │                        embedded decision engine: check, batch, list_filter,          now (in review)
 │   │                        write_check
 │   ├── tutela-store/        Postgres schema and migrations: bindings, field rules, groups A
 │   ├── tutela-sdk/          token verifier, axum and tonic layers, decision cache         A

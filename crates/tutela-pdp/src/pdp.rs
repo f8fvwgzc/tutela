@@ -11,11 +11,12 @@ use tutela_contracts::encoding::MAX_JSON_INT;
 use tutela_contracts::keys::{ActionKey, BuiltinAction, FieldKey, FieldName, ResourceType};
 use tutela_contracts::level::Level;
 use tutela_contracts::principal::{Principal, PrincipalKind};
-use tutela_contracts::tenant::TenantKey;
+use tutela_contracts::tenant::{OrgId, TenantKey};
 
 use crate::api::{
-    CheckRequest, FieldVerdict, ListFilterRequest, MAX_ACTORS, MAX_PATH, PathEntry, PdpError,
-    ResourceRef, ScopePaths, WriteCheckRequest, WriteDecision,
+    AttrValue, Attrs, CheckRequest, FieldVerdict, ListFilterRequest, MAX_ACTORS, MAX_BATCH,
+    MAX_FIELDS, MAX_PATH, PathEntry, PdpError, ResourceRef, ScopePaths, WriteCheckRequest,
+    WriteDecision,
 };
 use crate::data::{Index, LoadError, TenantData};
 use crate::eval::{
@@ -23,7 +24,7 @@ use crate::eval::{
     deny_reason, field_levels, reason, resolve, rule_nodes, side_allows,
 };
 use crate::filter::{ListFilter, Listing};
-use crate::model::Model;
+use crate::model::{FieldType, Model};
 
 /// One tenant's model and data at one revision.
 struct Bundle {
@@ -52,6 +53,8 @@ pub struct Pdp {
     tenants: HashMap<TenantKey, Bundle>,
     /// The highest revision loaded per tenant. A lower one is refused.
     highest: HashMap<TenantKey, u64>,
+    /// The tenant that claims each org. An org belongs to one tenant only.
+    org_claims: HashMap<OrgId, TenantKey>,
 }
 
 /// The two kinds of principals in a request, checked.
@@ -104,8 +107,10 @@ impl Pdp {
     /// # Errors
     ///
     /// A [`LoadError`] when the revision is lower than one loaded before (no
-    /// going back, PERMISSION-MODEL.md 16), above the JSON integer range, or
-    /// when the data breaks a rule. The old bundle stays in place.
+    /// going back, PERMISSION-MODEL.md 16), above the JSON integer range,
+    /// when an org already belongs to another loaded tenant, or when the data
+    /// breaks a rule. The old bundle stays in place, and other tenants are
+    /// never touched.
     pub fn load(
         &mut self,
         tenant: TenantKey,
@@ -121,7 +126,19 @@ impl Pdp {
         {
             return Err(LoadError::LowerRevision { have, got: rev });
         }
+        if let Some(org) = data
+            .orgs
+            .iter()
+            .find(|o| self.org_claims.get(o).is_some_and(|owner| *owner != tenant))
+        {
+            return Err(LoadError::OrgClaimed(*org));
+        }
+        let orgs: Vec<OrgId> = data.orgs.iter().copied().collect();
         let index = Index::build(&model, data)?;
+        self.org_claims.retain(|_, owner| *owner != tenant);
+        for o in orgs {
+            self.org_claims.insert(o, tenant.clone());
+        }
         self.highest.insert(tenant.clone(), rev);
         self.tenants.insert(tenant, Bundle { rev, model, index });
         Ok(())
@@ -162,13 +179,17 @@ impl Pdp {
             ));
         }
         let kind = action_kind(&b.model, &req.action)?;
+        if req.fields.as_ref().is_some_and(|f| f.len() > MAX_FIELDS) {
+            return Err(PdpError::invalid("more than 512 names in `fields`"));
+        }
         let this = this_entry(&req.resource)?;
+        let ty = &req.resource.type_name;
+        check_attrs(&b.model, ty, &req.resource.attrs)?;
         if !in_tenant(&b.index, &req.resource) {
             return Ok(tenant_mismatch(b.rev));
         }
         let ctx = b.ctx();
         let walk = Walk::new(&b.index, &this, &req.resource.path);
-        let ty = &req.resource.type_name;
         let sides: Vec<Side<'_, '_>> = who
             .all()
             .map(|p| resolve(ctx, &walk, ty, &req.resource.attrs, p))
@@ -192,7 +213,19 @@ impl Pdp {
             }
         }
         let level = sides.iter().map(Side::item).min().unwrap_or(Level::None);
-        let mask = mask(&keys, &levels, level);
+        // A `grants_access` field is writable only with `manage_access` on
+        // every side, as `write_check` asks (never for agents or through
+        // delegation).
+        let manage = ActionKey::builtin(ty.clone(), BuiltinAction::ManageAccess);
+        let manage_ok = sides
+            .iter()
+            .all(|s| side_allows(ctx, s, &manage, ActionKind::Admin, who.delegated()));
+        let def = b.model.types().get(ty);
+        let guarded = |k: &FieldKey| {
+            def.and_then(|d| d.fields.get(k.field()))
+                .is_some_and(|f| f.grants_access)
+        };
+        let mask = mask(&keys, &levels, level, |k| manage_ok || !guarded(k));
 
         let allowed: Vec<bool> = sides
             .iter()
@@ -244,6 +277,9 @@ impl Pdp {
     /// The first request's error; for [`PdpError::InvalidInput`], `index`
     /// names the request.
     pub fn batch(&self, reqs: &[CheckRequest]) -> Result<Vec<Decision>, PdpError> {
+        if reqs.len() > MAX_BATCH {
+            return Err(PdpError::invalid("a batch has at most 1,000 requests"));
+        }
         reqs.iter()
             .enumerate()
             .map(|(i, r)| {
@@ -314,12 +350,17 @@ impl Pdp {
         if req.new_attrs.is_empty() {
             return Err(PdpError::invalid("a write must change at least one field"));
         }
+        if req.new_attrs.len() > MAX_FIELDS {
+            return Err(PdpError::invalid("more than 512 changed fields"));
+        }
         let ty = &req.resource.type_name;
         let write = ActionKey::builtin(ty.clone(), BuiltinAction::Write);
         let manage = ActionKey::builtin(ty.clone(), BuiltinAction::ManageAccess);
         let write_kind = action_kind(&b.model, &write)?;
         let manage_kind = action_kind(&b.model, &manage)?;
         let this = this_entry(&req.resource)?;
+        check_attrs(&b.model, ty, &req.resource.attrs)?;
+        check_attrs(&b.model, ty, &req.new_attrs)?;
         let ctx = b.ctx();
         let changed: Vec<&FieldName> = req.new_attrs.keys().collect();
         let def = b.model.types().get(ty);
@@ -446,13 +487,23 @@ impl Pdp {
 }
 
 /// The resource as the first node of its walk, after checking its path:
-/// at most [`MAX_PATH`] ancestors, the last one an org, no other org. An org
-/// itself has no ancestors.
+/// at most [`MAX_PATH`] ancestors, the last one an org, no other org, and no
+/// entry twice (the resource itself included). An org itself has no
+/// ancestors.
 fn this_entry(res: &ResourceRef) -> Result<PathEntry, PdpError> {
     if res.path.len() > MAX_PATH {
         return Err(PdpError::PathTooLong);
     }
     let this = PathEntry::new(res.type_name.clone(), res.id.clone());
+    let repeats = {
+        let mut seen = BTreeSet::from([&this]);
+        !res.path.iter().all(|e| seen.insert(e))
+    };
+    if repeats {
+        return Err(PdpError::invalid(
+            "the path holds the resource itself or one entry twice",
+        ));
+    }
     if this.is_org() {
         if !res.path.is_empty() || this.org_id().is_none() {
             return Err(PdpError::invalid("an org has no path and an org id"));
@@ -510,9 +561,14 @@ fn output_keys<'i>(
     }
 }
 
-/// The field mask: Read and above is readable, Write and above writable.
-/// Empty at item level None.
-fn mask(keys: &[&FieldKey], levels: &[Level], item: Level) -> FieldMask {
+/// The field mask: Read and above is readable; Write and above is writable
+/// when `writable` also holds. Empty at item level None.
+fn mask(
+    keys: &[&FieldKey],
+    levels: &[Level],
+    item: Level,
+    writable: impl Fn(&FieldKey) -> bool,
+) -> FieldMask {
     if item == Level::None {
         return FieldMask::empty();
     }
@@ -520,9 +576,46 @@ fn mask(keys: &[&FieldKey], levels: &[Level], item: Level) -> FieldMask {
         keys.iter()
             .zip(levels)
             .filter(move |(_, l)| l.satisfies(min))
-            .map(|(k, _)| k.field().clone())
+            .map(|(k, _)| *k)
     };
-    FieldMask::new(at(Level::Read), at(Level::Write)).unwrap_or_default()
+    let read = at(Level::Read).map(|k| k.field().clone());
+    let write = at(Level::Write)
+        .filter(|k| writable(k))
+        .map(|k| k.field().clone());
+    FieldMask::new(read, write).unwrap_or_default()
+}
+
+/// Checks field values against the declared field types. A value of the
+/// wrong type is an error, never treated as null: under `not`, null makes a
+/// comparison true, while SQL compares the real column (ADR-0013). Names the
+/// type does not declare are not read and not checked.
+fn check_attrs(model: &Model, ty: &ResourceType, attrs: &Attrs) -> Result<(), PdpError> {
+    if attrs.len() > MAX_FIELDS {
+        return Err(PdpError::invalid("more than 512 field values"));
+    }
+    let Some(def) = model.types().get(ty) else {
+        return Ok(());
+    };
+    for (name, value) in attrs {
+        let Some(f) = def.fields.get(name) else {
+            continue;
+        };
+        let ok = match (f.field_type, value) {
+            (_, AttrValue::Null)
+            | (FieldType::String, AttrValue::String(_))
+            | (FieldType::Integer, AttrValue::Integer(_))
+            | (FieldType::Boolean, AttrValue::Boolean(_))
+            | (FieldType::StringList, AttrValue::Strings(_)) => true,
+            (FieldType::Principal, AttrValue::String(p)) => p.parse::<Principal>().is_ok(),
+            _ => false,
+        };
+        if !ok {
+            return Err(PdpError::invalid(format!(
+                "the value of field `{name}` does not have its declared type"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// The highest label among the readable data fields (PERMISSION-MODEL.md

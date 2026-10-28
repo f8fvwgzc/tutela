@@ -179,7 +179,7 @@ Each threat has an id (TM-01 ... TM-23). Its tests carry the id in their name, f
   - Overlap rule, always: (person allowed) AND (agent allowed), capped by attache's capability limits. It applies to chat, task work and scheduled work.
   - "The person" is whoever caused the work: the assigner or the requester. It is stored with the task or the schedule.
   - When that person is disabled, their scheduled work stops. The person's `epoch` is checked again at every token exchange.
-  - `ai_reach` is project (default) or team (allowed, not recommended). Never the whole workspace (the org) or another team. The model compiler refuses other values.
+  - `ai_reach` is project (default) or team (allowed, not recommended). Never the whole workspace (the org) or another team. The model compiler refuses other values. In Phase A, `team` acts like `project`, and an agent assigned only at the org root gets nothing ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)).
   - Output carries the highest label of its inputs. Readers need that label's level.
   - Narrow-only delegation: nobody grants a permission they do not hold.
 - **Phase.** A (overlap and `ai_reach` in `tutela-pdp` and the compiler). B (delegated tokens carry the person; epoch check at exchange).

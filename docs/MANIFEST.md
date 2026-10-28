@@ -79,7 +79,7 @@ Rules:
 | `parent` | One or more types that may be the direct parent: `org` or declared types. A type may list itself (a folder inside a folder). Every type must reach `org` through its parents. A parent other than `org` must be a container. |
 | `container` | `true` if other resources may live inside it. |
 | `starts` | What a new scope of this type starts as: `open` (the blueprint default) or `private`. Containers only. |
-| `ai_reach` | The default `ai_reach` of a new scope of this type: `project` or `team`. Nothing wider exists. Containers only. |
+| `ai_reach` | The default `ai_reach` of a new scope of this type: `project` or `team`. Nothing wider exists. Containers only. In Phase A the evaluator treats `team` like `project`; reach into sibling scopes needs its own ADR ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)). |
 | `features` | Feature names without `@`, for example `ai` for `@ai`. No duplicates. |
 | field name | A name, unique in the type. Fields and features together: at most 256 per type. |
 | `sensitivity` | Required: `public`, `internal`, `confidential` or `secret`. |

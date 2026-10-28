@@ -552,7 +552,7 @@ Rotation is in section 10.4.
 |---|---|---|
 | `effect` | `"allow"` or `"deny"` | The answer for the requested action. Any other value is an error, which means deny. |
 | `level` | level string (section 3) | The principal's effective level on the item, after the delegation overlap. It can be above `none` when `effect` is `deny` (for example `read` when the action needs `write`). |
-| `field_mask` | object | `{"read": [...], "write": [...]}`. Field names and feature names (`@ai`) of the item's type. **Allow-lists: a field not in `read` is masked.** `write` is a subset of `read`. Sorted, no duplicates. If the request named `fields`, only those appear; otherwise every registered field and feature of the type. Both lists are empty when `level` is `none`. |
+| `field_mask` | object | `{"read": [...], "write": [...]}`. Field names and feature names (`@ai`) of the item's type. **Allow-lists: a field not in `read` is masked.** `write` is a subset of `read`. A field marked `grants_access` is in `write` only when `manage_access` also holds for the person and every actor, as `write_check` asks (6.7); so never for an agent or a delegated request. Sorted, no duplicates. If the request named `fields`, only those appear; otherwise every registered field and feature of the type. Both lists are empty when `level` is `none`. |
 | `rule_ids` | array of strings | The stored rules that decided: role assignments, field rules, conditions, boundary rules. Opaque strings, 1–128 visible ASCII characters each. For explain and audit only; never parse them. Empty for a default deny. |
 | `reason` | string | `<code>` or `<code>: <detail>`. The code is from 6.2. The detail is short English (at most 512 characters in total) for logs and the Console's explain view. The detail is not empty and has no control characters (no line breaks). The detail uses ids, never names, e-mails or field values. |
 | `rev` | integer | The tenant revision of the bundle that was used. |
@@ -708,14 +708,16 @@ Rules for `ResourceRef`:
 - `path`: every ancestor of the resource, **nearest first** (direct parent first), not the resource itself. The last entry is `{type_name: "org", id: "org_<uuidv7>"}`, and no other entry is an `org`. At most 32 entries (Phase A limit, checked by the week-1 spike). A longer path is an error. An `org` itself has an empty path.
 - A resource whose path ends at an org that is not one of the tenant's orgs is denied with `tenant_mismatch`. There is no cross-tenant grant.
 - `path` and `attrs` are loaded **server-side by id** from the product's database (SDK helpers do this). They never come from the request body.
-- `attrs`: a JSON object from field name to a string, an integer, a boolean, `null`, or an array of strings.
+- `path` holds no entry twice, and not the resource itself; otherwise the request is invalid.
+- `attrs`: a JSON object from field name to a string, an integer, a boolean, `null`, or an array of strings. A value of a declared field must have that field's type (MANIFEST.md §4; a `principal` field holds a valid principal string); otherwise the request is invalid. It is never read as null.
+- Size bounds: at most 1,000 requests in a `batch`, and at most 512 entries in `fields`, `attrs` and `new_attrs`. More is an invalid request.
 
 ### 6.6 `list_filter`
 
 `list_filter` comes from the **same evaluator** as `check`. A differential property test proves on every commit: **the rows `list_filter` returns == the rows `check` allows**.
 
 ```rust
-// Phase A, planned.
+// Phase A.
 pub struct ListFilterRequest {
     pub tenant: TenantKey,
     pub subject: Principal,
@@ -725,6 +727,7 @@ pub struct ListFilterRequest {
 }
 
 pub struct ListFilter {
+    pub tenant: TenantKey,               // the rows' tenant: the SQL adapter's tenant predicate
     pub type_name: ResourceType,
     pub rev: u64,
     pub ids_in: Vec<ResourceId>,         // rows allowed by an assignment on the row itself
@@ -743,13 +746,15 @@ pub trait ScopePaths {
 **Scope paths** ([ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator) F1, [ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)). Tutela does not store the product's tree, but the filter must know how the deciding scopes nest: the scopes where the principal has an assignment, and the private scopes inside them. So `list_filter` takes a scope-path provider:
 - It is keyed by **(tenant, type, id)** and returns the ancestors, nearest first, or an error. With ids that are the same across tenants, it must answer with the asking tenant's scope.
 - `list_filter` asks it for every scope where the principal (or the person and each actor) has an assignment, and for every private scope of the tenant, each at most once per call.
-- An unknown scope, a provider that cannot answer, a path that does not end at the tenant's own org, a path with an `org` before its end, or a path longer than 32 is an error (`PdpError::ScopePath`). The caller fails closed: no rows. A missing path is never treated as "no ancestors".
+- These are errors (`PdpError::ScopePath`): an unknown scope; a provider that cannot answer; a path that does not end at the tenant's own org; a path with an `org` before its end; a path longer than 32; a path that holds the scope itself or one entry twice (`Malformed`); two placed paths that disagree, for example two scopes that are each other's ancestors (`Inconsistent`). The caller fails closed: no rows. A missing path is never treated as "no ancestors".
 - The paths must be current. A stale path makes `list_filter` and `check` disagree, so a cache of paths needs a test that a move changes list results at once.
+- Every private scope of the tenant is placed, so **one private scope the provider does not know fails every list** of a principal with any assignment. That fails closed, but it is an outage. So a deleted scope must leave `TenantData` (assignments, private flag, field rules) in the same revision as the delete ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)).
 
 JSON form:
 
 ```json
 {
+  "tenant": { "iss": "https://auth.example.test", "tid": "ten_0193a1b2-c3d4-7e5f-8a6b-7c8d9e0f1a2b" },
   "type": "invoice",
   "rev": 42,
   "ids_in": ["inv-881"],
@@ -764,11 +769,13 @@ JSON form:
 }
 ```
 
-**Meaning.** A row of the listed type passes if and only if:
+**Meaning.** A row of the listed type and of `tenant` passes if and only if it has **at most 32 ancestors** and:
 
 ```
 ( row.id is in ids_in  OR  row is under a scope in container_in )  AND  condition(row)
 ```
+
+A row with more than 32 ancestors never passes: `check` refuses its path (`PathTooLong`), so the SQL adapter adds this bound (for example `cardinality(ancestors) <= 32`).
 
 - "Row is under scope S" means S is one of the row's ancestors, at any depth. A row is not under itself.
 - `condition` missing means true.
@@ -804,11 +811,14 @@ Rules:
 - Column names come only from the product's manifest mapping, never from the request.
 - The product keeps an ancestors column (array, `ltree` or closure table: chosen by the week-1 spike). Each ancestor must be identified uniquely: by ids that are unique across types in the tenant, or by `type:id` text.
 - The filter is part of the `WHERE` clause. Counts and page sizes use the same clause. Never load rows and then drop some.
+- The adapter binds `tenant` as the tenant predicate (the tenant columns), and adds the 32-ancestor bound above.
+
+**Field masks of listed rows.** `list_filter` decides which rows a list holds; it returns no field mask, because the mask can differ per row (field rules at single scopes, roles with conditions). Before rows leave the server, the product masks each row with **that row's own** decision: a `batch` of `<type>:read` checks for the rows of the page (at most 1,000 per batch). It may select fewer columns up front, but never shows a column a row's mask does not hold ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)).
 
 ### 6.7 `write_check`
 
 ```rust
-// Phase A, planned.
+// Phase A.
 pub struct WriteCheckRequest {
     pub tenant: TenantKey,
     pub subject: Principal,
@@ -855,7 +865,9 @@ pub enum PdpError {
     UnknownAction(ActionKey),
     PathTooLong,
     InvalidInput { index: Option<usize>, detail: String },
-    ScopePath { scope: PathEntry, problem: ScopePathProblem }, // list_filter cannot place a scope (6.6)
+    ScopePath { scope: PathEntry, problem: ScopePathProblem }, // list_filter cannot place a scope (6.6):
+                                                 // NotFound, Unavailable, TooLong, WrongTenant,
+                                                 // Malformed or Inconsistent
     FilterTooLarge(&'static str),                // the list filter would pass a limit (6.6)
 }
 ```

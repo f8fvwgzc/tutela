@@ -276,9 +276,18 @@ fn names(v: &[FieldName]) -> Vec<&str> {
     v.iter().map(FieldName::as_str).collect()
 }
 
+/// A value of the declared type of a contract field.
+fn value_for(field: &str) -> AttrValue {
+    match field {
+        "budget" => AttrValue::Integer(1),
+        "assignee" => AttrValue::String(user(0x42).to_string()),
+        _ => AttrValue::String("x".into()),
+    }
+}
+
 fn write_req(p: &Principal, actors: Vec<Principal>, field: &str) -> WriteCheckRequest {
     let mut new_attrs = Attrs::new();
-    new_attrs.insert(fname(field), AttrValue::String("x".into()));
+    new_attrs.insert(fname(field), value_for(field));
     WriteCheckRequest {
         tenant: tenant(1),
         subject: p.clone(),
@@ -310,7 +319,9 @@ fn mina_reads_c204_without_the_budget() {
             "title"
         ]
     );
-    assert_eq!(names(d.field_mask.write()), ["review_notes", "status"]);
+    // `status` decides access (`grants_access`): writing it also needs
+    // `manage_access`, which Mina does not hold, so it is not writable.
+    assert_eq!(names(d.field_mask.write()), ["review_notes"]);
     assert_eq!(d.reason.code(), "allowed");
     assert_eq!(d.rev, 42);
     assert!(d.rule_ids.contains(&rule("ra_mina_sup")));
@@ -1029,4 +1040,188 @@ fn every_decision_passes_the_contract_checks() {
     ] {
         assert!(seen.contains(code), "{code} never came up: {seen:?}");
     }
+}
+
+// ---------- Review round 1: load guards, request checks, the write mask ----------
+
+#[test]
+fn tm05_an_org_belongs_to_one_tenant_only() {
+    let model = Arc::new(Model::from_toml(KESTREL).unwrap());
+    let mut pdp = Pdp::new();
+    pdp.load(tenant(1), 1, Arc::clone(&model), kestrel_data())
+        .unwrap();
+    // Tenant 2 claims tenant 1's org: refused, tenant 1 untouched.
+    let theirs = TenantData {
+        orgs: [org_id(1), org_id(2)].into(),
+        ..TenantData::default()
+    };
+    assert_eq!(
+        pdp.load(tenant(2), 1, Arc::clone(&model), theirs),
+        Err(LoadError::OrgClaimed(org_id(1)))
+    );
+    assert_eq!(pdp.rev(&tenant(2)), None);
+    // Tenant 1 may reload its own org; once it lets the org go, tenant 2
+    // may take it.
+    pdp.load(tenant(1), 2, Arc::clone(&model), kestrel_data())
+        .unwrap();
+    let moved = TenantData {
+        orgs: [org_id(3)].into(),
+        ..TenantData::default()
+    };
+    pdp.load(tenant(1), 3, Arc::clone(&model), moved).unwrap();
+    let now = TenantData {
+        orgs: [org_id(1)].into(),
+        ..TenantData::default()
+    };
+    pdp.load(tenant(2), 1, model, now).unwrap();
+}
+
+fn chain_of_groups(n: usize) -> Vec<Group> {
+    (0..n)
+        .map(|i| {
+            let members = if i + 1 < n {
+                vec![Member::Group(
+                    GroupKey::parse(&format!("g{}", i + 1)).unwrap(),
+                )]
+            } else {
+                vec![]
+            };
+            group(&format!("g{i}"), members)
+        })
+        .collect()
+}
+
+#[test]
+fn groups_nested_too_deep_are_refused() {
+    use crate::MAX_GROUP_DEPTH;
+    let model = Arc::new(Model::from_toml(KESTREL).unwrap());
+    let load = |groups: Vec<Group>| {
+        let data = TenantData {
+            groups,
+            ..kestrel_data()
+        };
+        Pdp::new().load(tenant(1), 1, Arc::clone(&model), data)
+    };
+    assert_eq!(load(chain_of_groups(MAX_GROUP_DEPTH)), Ok(()));
+    assert!(matches!(
+        load(chain_of_groups(MAX_GROUP_DEPTH + 1)),
+        Err(LoadError::GroupsTooDeep(_))
+    ));
+}
+
+#[test]
+fn a_group_closure_above_the_limit_is_refused() {
+    use crate::MAX_GROUP_CLOSURE;
+    // 40,000 users in the innermost of 26 nested groups: 1,040,000 pairs.
+    let mut groups = chain_of_groups(26);
+    let users = MAX_GROUP_CLOSURE / 26 + 1;
+    if let Some(inner) = groups.last_mut() {
+        inner.members = (0..users)
+            .map(|i| Member::Principal(user(0x10_0000 + u32::try_from(i).unwrap())))
+            .collect();
+    }
+    let data = TenantData {
+        groups,
+        ..kestrel_data()
+    };
+    let model = Arc::new(Model::from_toml(KESTREL).unwrap());
+    assert_eq!(
+        Pdp::new().load(tenant(1), 1, model, data),
+        Err(LoadError::GroupClosureTooLarge)
+    );
+}
+
+#[test]
+fn field_values_of_the_wrong_type_are_errors_not_nulls() {
+    let pdp = kestrel();
+    let mut r = req(&user(MINA), "contract:read", c204());
+    r.resource
+        .attrs
+        .insert(fname("assignee"), AttrValue::Integer(5));
+    assert!(matches!(pdp.check(&r), Err(PdpError::InvalidInput { .. })));
+    r.resource.attrs.insert(
+        fname("assignee"),
+        AttrValue::String("not a principal".into()),
+    );
+    assert!(matches!(pdp.check(&r), Err(PdpError::InvalidInput { .. })));
+    r.resource.attrs.insert(fname("assignee"), AttrValue::Null);
+    assert!(pdp.check(&r).is_ok());
+    // A name the type does not declare is not read and not checked.
+    r.resource
+        .attrs
+        .insert(fname("not_a_field"), AttrValue::Integer(5));
+    assert!(pdp.check(&r).is_ok());
+    // In a write, too.
+    let mut w = write_req(&user(OMAR), vec![], "budget");
+    w.new_attrs
+        .insert(fname("budget"), AttrValue::String("lots".into()));
+    assert!(matches!(
+        pdp.write_check(&w),
+        Err(PdpError::InvalidInput { .. })
+    ));
+}
+
+#[test]
+fn requests_have_size_bounds() {
+    use crate::{MAX_BATCH, MAX_FIELDS};
+    let pdp = kestrel();
+    let many = vec![req(&user(MINA), "contract:read", c204()); MAX_BATCH + 1];
+    assert!(matches!(
+        pdp.batch(&many),
+        Err(PdpError::InvalidInput { index: None, .. })
+    ));
+    let mut r = req(&user(MINA), "contract:read", c204());
+    r.fields = Some(vec![fname("title"); MAX_FIELDS + 1]);
+    assert!(matches!(pdp.check(&r), Err(PdpError::InvalidInput { .. })));
+}
+
+#[test]
+fn a_path_with_a_repeat_or_the_resource_itself_is_refused() {
+    let pdp = kestrel();
+    let mut twice = req(&user(MINA), "contract:read", c204());
+    twice.resource.path = vec![sup(), sup(), proc(), org()];
+    assert!(matches!(
+        pdp.check(&twice),
+        Err(PdpError::InvalidInput { .. })
+    ));
+    let mut itself = req(&user(MINA), "contract:read", c204());
+    itself.resource.path = vec![entry("contract", "c-204"), sup(), proc(), org()];
+    assert!(matches!(
+        pdp.check(&itself),
+        Err(PdpError::InvalidInput { .. })
+    ));
+}
+
+#[test]
+fn tm03_an_agent_never_sees_a_grants_access_field_as_writable() {
+    let pdp = kestrel();
+    // Clause is C-204's assignee: Write on the item and on its fields, but
+    // `assignee` and `status` decide access and need `manage_access`.
+    let d = pdp
+        .check(&req(&agent(CLAUSE), "contract:read", c204()))
+        .unwrap();
+    assert_eq!(d.level, Level::Write);
+    assert!(d.field_mask.can_write(&fname("review_notes")));
+    assert!(!d.field_mask.can_write(&fname("assignee")));
+    assert!(!d.field_mask.can_write(&fname("status")));
+    assert!(d.field_mask.can_read(&fname("assignee")));
+    let w = pdp
+        .write_check(&write_req(&agent(CLAUSE), vec![], "assignee"))
+        .unwrap();
+    assert_eq!(w.effect, Effect::Deny);
+    // Omar holds manage_access: alone he may; through Clause he may not.
+    let omar = pdp
+        .check(&req(&user(OMAR), "contract:read", c204()))
+        .unwrap();
+    assert!(omar.field_mask.can_write(&fname("assignee")));
+    let both = pdp
+        .check(&delegated(
+            &user(OMAR),
+            &agent(CLAUSE),
+            "contract:read",
+            c204(),
+        ))
+        .unwrap();
+    assert!(!both.field_mask.can_write(&fname("assignee")));
+    assert!(both.field_mask.can_write(&fname("review_notes")));
 }
