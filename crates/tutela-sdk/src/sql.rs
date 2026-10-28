@@ -239,9 +239,12 @@ pub fn where_clause(
     let p_in = b.bind(Param::TextArray(
         filter.container_in.iter().map(entry_text).collect(),
     ));
+    // The top-level test stays bare, so a GIN index on the ancestors can
+    // serve it: here a NULL can only exclude a row, never let one through.
+    // Inside the condition (under `not`) every test keeps its `coalesce`.
     let mut sql = format!(
         "{iss} = {p_iss} AND {tid} = {p_tid} AND cardinality({ancestors}) <= {MAX_PATH} \
-         AND ({id} = ANY({p_ids}) OR coalesce({ancestors} && {p_in}, false))"
+         AND ({id} = ANY({p_ids}) OR {ancestors} && {p_in})"
     );
     if let Some(c) = &filter.condition {
         sql.push_str(" AND ");

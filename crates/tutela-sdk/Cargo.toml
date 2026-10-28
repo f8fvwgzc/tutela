@@ -30,3 +30,7 @@ tutela-safenet = { workspace = true }
 [dev-dependencies]
 aws-lc-rs = { version = "1.18.2", default-features = false, features = ["aws-lc-sys", "alloc", "ring-io"] }
 tokio = { version = "1.54.1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+
+[[bench]]
+name = "list_query"
+harness = false
