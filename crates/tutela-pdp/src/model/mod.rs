@@ -665,9 +665,30 @@ impl Model {
         })
     }
 
-    /// `true` if the role may use a custom action, by level and grant.
+    /// `true` if the role may use a custom action with its full level on
+    /// the item.
     #[must_use]
     pub fn allows_custom(&self, role: &RoleKey, key: &ActionKey) -> bool {
+        let item = self
+            .roles
+            .get(role)
+            .map_or(Level::None, |r| r.level(key.resource_type()));
+        self.allows_custom_at(role, key, item)
+    }
+
+    /// `true` if the role may use a custom action when its level on the
+    /// item is `item` (after conditions). The diff and the evaluator share
+    /// this function.
+    ///
+    /// - A level action: `item` meets `needs`, and the role holds the grant
+    ///   when the action asks for one.
+    /// - An owner-only custom action (`needs = "owner"`): `item` is Full and
+    ///   the role holds the grant.
+    ///
+    /// Admin keys are not custom actions: they need the key only (see
+    /// [`Role::holds`]).
+    #[must_use]
+    pub fn allows_custom_at(&self, role: &RoleKey, key: &ActionKey, item: Level) -> bool {
         let (Some(r), Some(def)) = (
             self.roles.get(role),
             self.types
@@ -677,13 +698,8 @@ impl Model {
             return false;
         };
         match def.needs {
-            // Owner-only: Full on the item and the grant (MANIFEST.md §4).
-            ActionRequirement::OwnerOnly => {
-                r.level(key.resource_type()) == Level::Full && r.holds(key)
-            }
-            ActionRequirement::Level(l) => {
-                r.level(key.resource_type()).satisfies(l) && (!def.grant || r.holds(key))
-            }
+            ActionRequirement::OwnerOnly => item == Level::Full && r.holds(key),
+            ActionRequirement::Level(l) => item.satisfies(l) && (!def.grant || r.holds(key)),
         }
     }
 }

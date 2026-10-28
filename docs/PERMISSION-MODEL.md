@@ -218,7 +218,7 @@ A tenant defines a role as a list of levels and grants. In Phase A it comes from
 
 A role entry can set a level for:
 - a resource type (`contract = "write"`);
-- a single field of a type (`"contract.title" = "read"`). If the role does not set a field, the field uses the role's level for the type;
+- a single field of a type (`"contract.title" = "read"`). If the role does not set a field, the field uses the role's item level **after conditions** (step 4), and a field is never above that item level;
 - a feature of a type (`"contract.@ai" = "write"`);
 - custom action grants (`contract:approve`) and admin keys.
 
@@ -226,7 +226,7 @@ A role entry can set a level for:
 
 A role assignment gives one principal or one group one role at one scope. There is at most one direct assignment per principal per scope.
 
-Two assignments can meet at the same scope: one direct, one or more through groups. Proposed rule (New, see [Open points](#19-open-points)): **the direct assignment wins**; if there is none, the **highest** of the group assignments wins. This lets an owner narrow one person who sits in a wide group.
+Two assignments can meet at the same scope: one direct, one or more through groups. Proposed rule (New, see [Open points](#19-open-points)): **the direct assignment wins**; this lets an owner narrow one person who sits in a wide group. If there is none, **every** group role at that scope counts: each role is evaluated on its own (its own conditions and field rules), and the results are combined **component-wise**: the highest item level, the highest level per field and feature, and the union of grants. The model diff relies on this ([ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)).
 
 ### 6.4 Groups (New)
 
@@ -259,14 +259,14 @@ Inputs: the verified token, the action, the resource `{type, id}` and, for write
 **Step 3. Walk the parent path. The closest assignment wins. A private scope stops inheritance.** (Blueprint)
 - If the principal is the org Owner, the level is Full. Go to step 4. (Blueprint guardrail; people only.)
 - Otherwise start at the resource itself and walk up: resource → parent → … → org.
-- At each node, look for an assignment for the principal: direct first, then through its groups (see [6.3](#63-role-assignments)).
-- **The first node with an assignment wins.** Its role is the deciding role. Stop walking.
+- At each node, look for assignments for the principal: direct first, then through its groups (see [6.3](#63-role-assignments)).
+- **The first node with an assignment wins.** Its roles are the deciding roles: the direct one, or else every group role there. Stop walking.
 - If the node is **private** and has no assignment for the principal, stop: nothing above it counts. The level is None.
 - If you reach the org with no assignment, the level is None. Default deny.
-- The item level is the deciding role's level for this resource type.
+- For each deciding role, the item level is that role's level for this resource type.
 
 **Step 4. Apply conditions.** (Blueprint)
-- The deciding role may carry conditions at that scope, for example `resource.assignee == principal` or `"client-visible" in resource.labels`.
+- Each deciding role may carry conditions at that scope, for example `resource.assignee == principal` or `"client-visible" in resource.labels`. Each role's own conditions lower only that role's item level.
 - Each condition has a level to use when it is false (for example Write when true, Read when false). That level is never higher than the role's level. Conditions only narrow.
 - Conditions come from a small list of **vetted templates** that compile both to Rust and to SQL. A model with anything else is rejected when it is compiled, not at request time.
 - A condition that names a group that does not exist is **false as a whole**, even under `not` (fail closed): the level drops to its `else` level ([MANIFEST.md §8](MANIFEST.md#8-conditions)).
@@ -318,17 +318,21 @@ check(token, action, res_ref):
   return decide(d, action)                                 # step 8
 
 evaluate(principal, res, model):
-  if is_org_owner(principal): role = Owner; level = Full    # people only
+  if is_org_owner(principal): roles = [Owner]                # people only
   else:
-      level = None
+      roles = []
       for node in res.path:                                # resource ... org
-          role = assignment(principal, node)               # direct, then groups
-          if role: level = role.level(res.type); break
+          roles = assignments(principal, node)             # direct, else all group roles
+          if roles: break
           if node.private: break                           # stops inheritance
-  level  = apply_conditions(role, res, principal, level)   # can only lower
-  fields = { f: min(effective_field_level(role, f, level),     # capped by `level`
-                    closest_field_rule(f, role, res.path))     # for data fields
-             for f in res.type.fields_and_features }
+  results = []
+  for role in roles:                                       # each role on its own
+      level  = apply_conditions(role, res, principal, role.level(res.type))  # only lowers
+      fields = { f: min(effective_field_level(role, f, level),   # capped by `level`
+                        closest_field_rule(f, role, res.path))   # for data fields
+                 for f in res.type.fields_and_features }
+      results.append((level, fields, role.grants))
+  level, fields = componentwise_max(results)               # highest per item, field, feature; union of grants
   return guardrails(level, fields)                         # can only lower
 ```
 
@@ -912,7 +916,7 @@ These are not decided yet. Each has a proposal so work can start. Final answers 
 
 | # | Question | Proposal | When |
 |---|---|---|---|
-| 1 | A direct assignment and a group assignment at the same scope: which wins? | The direct one; else the group roles combine component-wise: the highest item level, the highest level per field and feature, and the union of grants (the model diff relies on this, [ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)). Closed when the evaluator lands. | Phase A |
+| 1 | A direct assignment and a group assignment at the same scope: which wins? | The direct one; else every group role there counts, each with its own conditions and field rules, combined component-wise: the highest item level, the highest level per field and feature, and the union of grants (§6.3, §7.1; the model diff relies on this, [ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)). Closed when the evaluator lands. | Phase A |
 | 2 | Where does a library-mode project (no `tutelad`) get an approval token for a widening diff? | A token signed by a tenant admin's key, bound to the diff digest. | Phase A |
 | 3 | How is a reader's clearance per label stored, for labelled output? | Treat each label like a field of that sensitivity in the scope, with the same defaults. | Phase A |
 | 4 | The ancestors column: array, `ltree` or closure table? Maximum path depth? | Decided by the week-1 spike (depth 32, 100k rows). | Week-1 spike |

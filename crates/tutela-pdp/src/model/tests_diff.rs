@@ -42,7 +42,7 @@ fn classes(old: &str, new: &str) -> (Class, Vec<String>) {
     let d = diff(&model(old), &model(new)).unwrap();
     (
         d.class(),
-        d.changes.iter().map(ToString::to_string).collect(),
+        d.changes().iter().map(ToString::to_string).collect(),
     )
 }
 
@@ -50,7 +50,7 @@ fn classes(old: &str, new: &str) -> (Class, Vec<String>) {
 fn the_same_model_has_no_changes() {
     let m = model(&tracker("confidential", ""));
     let d = diff(&m, &m).unwrap();
-    assert!(d.changes.is_empty());
+    assert!(d.changes().is_empty());
     assert_eq!(d.class(), Class::Neutral);
 }
 
@@ -113,7 +113,7 @@ fn levels_grants_and_conditions() {
     assert!(
         lines
             .iter()
-            .any(|l| l.contains("role `member` on `contract:approve`: now allowed"))
+            .any(|l| l.contains("role `member` on `contract:approve`") && l.contains("now allowed"))
     );
 
     let cond = "[[conditions]]\nrole = \"reviewer\"\ntype = \"contract\"\nwhen = { is_principal = \"assignee\" }\nelse = \"read\"\n";
@@ -427,7 +427,7 @@ proptest! {
         let old = Model::from_toml(&render(&roles, &rules)).unwrap();
         let new = Model::from_toml(&render(&lowered, &lowered_rules)).unwrap();
         let d = diff(&old, &new).unwrap();
-        prop_assert!(!d.is_widening(), "{:?}", d.changes);
+        prop_assert!(!d.is_widening(), "{:?}", d.changes());
     }
 
     /// Raising one role's level on one type is always widening, and the
@@ -448,7 +448,7 @@ proptest! {
     #[test]
     fn a_model_equals_itself(roles in levels()) {
         let m = Model::from_toml(&render(&roles, &[])).unwrap();
-        prop_assert!(diff(&m, &m).unwrap().changes.is_empty());
+        prop_assert!(diff(&m, &m).unwrap().changes().is_empty());
     }
 }
 
@@ -523,9 +523,9 @@ fn diff_lines_are_capped_but_the_class_is_exact() {
         }
     }
     let d = diff(&model(&small), &model(&big)).unwrap();
-    assert_eq!(d.changes.len(), crate::model::MAX_DIFF_LINES);
-    assert!(d.omitted > 0);
+    assert_eq!(d.changes().len(), crate::model::MAX_DIFF_LINES);
+    assert!(d.omitted() > 0);
     assert_eq!(d.class(), Class::Widening);
     // Widening lines come first.
-    assert_eq!(d.changes[0].class, Class::Widening);
+    assert_eq!(d.changes()[0].class, Class::Widening);
 }

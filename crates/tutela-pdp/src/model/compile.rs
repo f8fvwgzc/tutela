@@ -40,14 +40,35 @@ const MAX_UI_ENTRIES: usize = 256;
 
 struct Ctx {
     issues: Vec<Issue>,
+    /// Problems beyond [`MAX_ISSUES`]: counted, not kept.
+    more: usize,
 }
 
 impl Ctx {
     fn bad(&mut self, at: impl Into<String>, message: impl Into<String>) {
+        if self.issues.len() == MAX_ISSUES {
+            self.more += 1;
+            return;
+        }
         self.issues.push(Issue {
             at: clean(&at.into(), 256),
             message: clean(&message.into(), 512),
         });
+    }
+
+    fn failed(&self) -> bool {
+        !self.issues.is_empty()
+    }
+
+    /// At most [`MAX_ISSUES`] problems, then one "and N more".
+    fn into_issues(mut self) -> Issues {
+        if self.more > 0 {
+            self.issues.push(Issue {
+                at: String::new(),
+                message: format!("and {} more", self.more),
+            });
+        }
+        Issues(self.issues)
     }
 }
 
@@ -80,25 +101,32 @@ fn text_ok(s: &str, max: usize) -> bool {
     !s.is_empty() && s.chars().count() <= max && !s.chars().any(hidden)
 }
 
-/// Control characters, and format characters that change how text shows
-/// without being seen: bidi controls (U+202A-202E, U+2066-2069, U+061C,
-/// U+200E-200F), zero-width ones (U+200B-200D, U+2060-2064, U+FEFF, U+180E),
-/// the soft hyphen, line and paragraph separators (U+2028-2029),
-/// interlinear annotations (U+FFF9-FFFB) and tag characters (U+E0000-E007F).
+/// Control characters, every Unicode `Default_Ignorable_Code_Point` (bidi
+/// controls, zero-width characters, variation selectors, fillers, tags and
+/// the rest of that set), line and paragraph separators (U+2028-2029) and
+/// interlinear annotations (U+FFF9-FFFB). They change how text shows, or
+/// hide text, without being seen.
 fn hidden(c: char) -> bool {
     c.is_control()
         || matches!(
             c,
             '\u{00AD}'
+                | '\u{034F}'
                 | '\u{061C}'
-                | '\u{180E}'
+                | '\u{115F}'..='\u{1160}'
+                | '\u{17B4}'..='\u{17B5}'
+                | '\u{180B}'..='\u{180F}'
                 | '\u{200B}'..='\u{200F}'
                 | '\u{2028}'..='\u{202E}'
-                | '\u{2060}'..='\u{2064}'
-                | '\u{2066}'..='\u{2069}'
+                | '\u{2060}'..='\u{206F}'
+                | '\u{3164}'
+                | '\u{FE00}'..='\u{FE0F}'
                 | '\u{FEFF}'
-                | '\u{FFF9}'..='\u{FFFB}'
-                | '\u{E0000}'..='\u{E007F}'
+                | '\u{FFA0}'
+                | '\u{FFF0}'..='\u{FFFB}'
+                | '\u{1BCA0}'..='\u{1BCA3}'
+                | '\u{1D173}'..='\u{1D17A}'
+                | '\u{E0000}'..='\u{E0FFF}'
         )
 }
 
@@ -108,13 +136,39 @@ fn check_label(ctx: &mut Ctx, at: &str, l: Option<String>) -> Option<String> {
     {
         ctx.bad(
             at,
-            "a label is 1 to 128 characters with no control characters",
+            "a label is 1 to 128 characters with no control or invisible characters",
         );
     }
     l
 }
 
+/// The stack of the compiler thread. The `toml` crate builds and drops its
+/// tree recursively. Its own limits (80 nested brackets, 80 parts per key)
+/// keep the deepest tree it accepts far inside this stack, whatever the
+/// pre-scan lets through. This thread is the real bound; the pre-scan is a
+/// cheap early refusal.
+const COMPILER_STACK: usize = 32 * 1024 * 1024;
+
 pub(super) fn compile(source: &str) -> Result<Model, Issues> {
+    let one = |message: String| {
+        Issues(vec![Issue {
+            at: String::new(),
+            message,
+        }])
+    };
+    std::thread::scope(|s| {
+        let handle = std::thread::Builder::new()
+            .name("tutela-manifest".into())
+            .stack_size(COMPILER_STACK)
+            .spawn_scoped(s, || compile_here(source))
+            .map_err(|e| one(format!("could not start the compiler thread: {e}")))?;
+        handle
+            .join()
+            .map_err(|_| one("the compiler stopped unexpectedly".into()))?
+    })
+}
+
+fn compile_here(source: &str) -> Result<Model, Issues> {
     if source.len() > MAX_MANIFEST_BYTES {
         return Err(Issues(vec![Issue {
             at: String::new(),
@@ -133,31 +187,21 @@ pub(super) fn compile(source: &str) -> Result<Model, Issues> {
             message: clean(e.message(), 512) + &location(source, e.span()),
         }])
     })?;
-    let mut ctx = Ctx { issues: Vec::new() };
+    let mut ctx = Ctx {
+        issues: Vec::new(),
+        more: 0,
+    };
     // Over a count limit: stop at once, before any work that grows with it.
     counts(&mut ctx, &raw);
-    if !ctx.issues.is_empty() {
-        return Err(capped(ctx.issues));
+    if ctx.failed() {
+        return Err(ctx.into_issues());
     }
     let model = build(&mut ctx, raw);
-    if ctx.issues.is_empty() {
-        Ok(model)
+    if ctx.failed() {
+        Err(ctx.into_issues())
     } else {
-        Err(capped(ctx.issues))
+        Ok(model)
     }
-}
-
-/// At most [`MAX_ISSUES`] problems, then one "and N more".
-fn capped(mut issues: Vec<Issue>) -> Issues {
-    if issues.len() > MAX_ISSUES {
-        let more = issues.len() - MAX_ISSUES;
-        issues.truncate(MAX_ISSUES);
-        issues.push(Issue {
-            at: String::new(),
-            message: format!("and {more} more"),
-        });
-    }
-    Issues(issues)
 }
 
 /// A conservative scan before parsing. The `toml` crate builds and drops its
@@ -170,18 +214,27 @@ fn capped(mut issues: Vec<Issue>) -> Issues {
 ///   would hide the rest of the line from this scan);
 /// - a single-line string that does not end on its line (also after `\`).
 ///
-/// So no input that passes can nest much more than 32 × 9 levels. Templates
-/// also have their own depth limit in `raw`, and every other value is read
-/// flat.
+/// It is a cheap early refusal, not the stack guard: the compiler runs on its
+/// own thread with a large fixed stack ([`COMPILER_STACK`]). Templates also
+/// have their own depth limit in `raw`, and every other value is read flat.
 fn prescan(source: &str) -> Result<(), &'static str> {
     let b = source.as_bytes();
-    let (mut i, mut depth, mut dots) = (0usize, 0usize, 0usize);
+    // A leading byte-order mark is not part of the text.
+    let mut i = if b.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        3
+    } else {
+        0
+    };
+    let mut dots = 0usize;
+    // The open brackets, innermost last: a closer must match.
+    let mut open: Vec<u8> = Vec::new();
     let mut prev = b'\n';
     while i < b.len() {
         let c = b[i];
         match c {
             b'#' => {
-                while i < b.len() && b[i] != b'\n' {
+                // Like the lexer: a comment ends at LF or at CR.
+                while i < b.len() && !matches!(b[i], b'\n' | b'\r') {
                     i += 1;
                 }
                 continue;
@@ -203,14 +256,20 @@ fn prescan(source: &str) -> Result<(), &'static str> {
                     return Err("more than 8 `.` on one line outside strings");
                 }
             }
-            b'\n' => dots = 0,
+            // The lexer also takes a lone CR as a line end.
+            b'\n' | b'\r' => dots = 0,
             b'{' | b'[' => {
-                depth += 1;
-                if depth > MAX_NESTING {
+                if open.len() == MAX_NESTING {
                     return Err("tables and arrays nest more than 32 levels deep");
                 }
+                open.push(c);
             }
-            b'}' | b']' => depth = depth.saturating_sub(1),
+            b'}' | b']' => {
+                let want = if c == b'}' { b'{' } else { b'[' };
+                if open.pop() != Some(want) {
+                    return Err("a closing bracket does not match");
+                }
+            }
             _ => {}
         }
         prev = if c == b'\t' { b' ' } else { c };
@@ -238,12 +297,15 @@ fn string_end(b: &[u8], start: usize) -> Result<usize, &'static str> {
             if !triple {
                 return Ok(i + 1);
             }
-            // A multi-line string ends at the last quote of a run of 3 to 5.
+            // Like the lexer: three quotes end a multi-line string, and at
+            // most two more quotes right before them belong to the string.
+            // Any quote after that starts a new token.
             if b.get(i..i + 3) == Some(&[q, q, q][..]) {
-                while i < b.len() && b[i] == q {
-                    i += 1;
+                let mut extra = 0;
+                while extra < 2 && b.get(i + 3 + extra) == Some(&q) {
+                    extra += 1;
                 }
-                return Ok(i);
+                return Ok(i + 3 + extra);
             }
         }
         if !triple && matches!(c, b'\n' | b'\r') {
@@ -798,7 +860,12 @@ fn roles(
                 set
             }
         };
-        if owner_only && never.iter().any(|k| assignable_to.contains(k)) {
+        if owner_only && seeded_as == Some(SeededRole::Agent) {
+            ctx.bad(
+                format!("{at}.grants"),
+                "the `agent` role can never hold an admin key or an owner-only action",
+            );
+        } else if owner_only && never.iter().any(|k| assignable_to.contains(k)) {
             ctx.bad(
                 format!("{at}.assignable_to"),
                 "a role with an admin key or an owner-only action can never be assigned to an agent or a group (groups may hold agents)",
@@ -1017,7 +1084,7 @@ fn value(ctx: &mut Ctx, at: &str, ft: FieldType, v: raw::Scalar) -> Option<Value
             } else {
                 ctx.bad(
                     at,
-                    "a string value is 1 to 256 characters with no control characters",
+                    "a string value is 1 to 256 characters with no control or invisible characters",
                 );
                 None
             }
@@ -1241,7 +1308,7 @@ fn ui(
         {
             ctx.bad(
                 format!("{at}.reason"),
-                "1 to 512 characters with no control characters",
+                "1 to 512 characters with no control or invisible characters",
             );
         }
         out.insert(

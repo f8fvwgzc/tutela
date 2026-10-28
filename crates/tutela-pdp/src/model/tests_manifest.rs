@@ -639,13 +639,14 @@ fn deep_input_cannot_exhaust_the_stack() {
             .join(".")
     };
     // The deepest input the pre-scan lets through: a 9-part dotted header,
-    // then 31 nested multi-line inline tables, each opened by a 9-part key.
+    // then 32 nested multi-line inline tables, each opened by a 9-part key,
+    // and a 9-part key inside the last one.
     let mut deepest = format!("{HEAD}[{}]\n", parts(9, "h"));
-    for d in 0..31 {
+    for d in 0..32 {
         deepest.push_str(&format!("{} = {{\n", parts(9, &format!("k{d}_"))));
     }
-    deepest.push_str("x = 1\n");
-    deepest.push_str(&"}\n".repeat(31));
+    deepest.push_str(&format!("{} = 1\n", parts(9, "x")));
+    deepest.push_str(&"}\n".repeat(32));
     let cases: Vec<(String, &str)> = vec![
         // A quote inside a bare word hid the rest of the line from the scan.
         (
@@ -667,6 +668,22 @@ fn deep_input_cannot_exhaust_the_stack() {
             format!("{HEAD}a.b.c.d.e.f.g.h.i.j = 1\n"),
             "more than 8 `.`",
         ),
+        // The lexer ends a comment at a lone CR, and so does the scan.
+        (
+            format!("{HEAD}# x\r{} = 1\n", parts(80, "k")),
+            "more than 8 `.`",
+        ),
+        // Three quotes and at most two more end a multi-line string; a
+        // further quote starts a new token, which the scan refuses.
+        (
+            format!("{HEAD}x = \"\"\"a\"\"\"\"\"\"\"\"\n"),
+            "a quote may only start",
+        ),
+        (
+            format!("{HEAD}x = '''a''''''''\n"),
+            "a quote may only start",
+        ),
+        (format!("{HEAD}x = [ {{ ] }}\n"), "does not match"),
         (deepest, "unknown field"),
     ];
     let handle = std::thread::Builder::new()
@@ -889,4 +906,93 @@ fn problems_are_capped_at_100() {
     let got = issues(&src);
     assert_eq!(got.len(), 101, "{}", got.len());
     assert!(got[100].contains("and 50 more"), "{:?}", got[100]);
+}
+
+/// The real stack bound is the compiler thread. The deepest tree the `toml`
+/// crate itself accepts (80 nested brackets, each opened by an 80-part key)
+/// must parse and drop on a thread with that stack.
+#[test]
+fn the_compiler_thread_holds_tomls_own_worst_case() {
+    let key = (0..80)
+        .map(|i| format!("k{i}"))
+        .collect::<Vec<_>>()
+        .join(".");
+    let src = format!(
+        "x = {}1{}\n",
+        format!("{{ {key} = ").repeat(79),
+        " }".repeat(79)
+    );
+    let handle = std::thread::Builder::new()
+        .stack_size(32 * 1024 * 1024)
+        .spawn(move || {
+            toml::from_str::<toml::Table>(&src)
+                .map(|_| ())
+                .map_err(|_| ())
+        })
+        .unwrap();
+    // Parsed or refused, but no crash.
+    let _ = handle.join().unwrap();
+}
+
+#[test]
+fn a_leading_byte_order_mark_passes_the_scan() {
+    let src = format!("\u{FEFF}{}", with(PROJECT));
+    if let Err(Issues(v)) = Model::from_toml(&src) {
+        for i in &v {
+            assert!(
+                !i.message.contains("quote may only") && !i.message.contains("does not match"),
+                "{v:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn every_invisible_character_is_refused() {
+    for c in [
+        '\u{00AD}',
+        '\u{034F}',
+        '\u{061C}',
+        '\u{115F}',
+        '\u{1160}',
+        '\u{17B4}',
+        '\u{17B5}',
+        '\u{180B}',
+        '\u{180F}',
+        '\u{200B}',
+        '\u{200F}',
+        '\u{2028}',
+        '\u{202E}',
+        '\u{2060}',
+        '\u{206F}',
+        '\u{3164}',
+        '\u{FE00}',
+        '\u{FE0F}',
+        '\u{FEFF}',
+        '\u{FFA0}',
+        '\u{FFF0}',
+        '\u{FFFB}',
+        '\u{1BCA0}',
+        '\u{1BCA3}',
+        '\u{1D173}',
+        '\u{1D17A}',
+        '\u{E0000}',
+        '\u{E0FFF}',
+    ] {
+        let src = with(&format!(
+            "[types.p]\nparent = \"org\"\nlabel = \"a\\U{:08X}b\"\n",
+            c as u32
+        ));
+        refused(&src, "no control or invisible characters");
+    }
+}
+
+#[test]
+fn the_agent_role_never_holds_admin_powers() {
+    refused(
+        &with(&format!(
+            "{PROJECT}[roles.agent]\ngrants = {{ \"project:manage_fields\" = true }}\nassignable_to = [\"user\"]\n"
+        )),
+        "can never hold an admin key",
+    );
 }

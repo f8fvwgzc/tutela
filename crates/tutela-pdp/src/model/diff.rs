@@ -70,15 +70,25 @@ pub const MAX_DIFF_LINES: usize = 10_000;
 /// Every change between two models, widening ones first.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct ModelDiff {
-    /// The changes, at most [`MAX_DIFF_LINES`]. Empty when the models are
-    /// the same.
-    pub changes: Vec<Change>,
-    /// How many more changes there were beyond [`MAX_DIFF_LINES`].
-    pub omitted: usize,
+    changes: Vec<Change>,
+    omitted: usize,
     class: Class,
 }
 
 impl ModelDiff {
+    /// The changes, at most [`MAX_DIFF_LINES`], widening ones first. Empty
+    /// when the models are the same.
+    #[must_use]
+    pub fn changes(&self) -> &[Change] {
+        &self.changes
+    }
+
+    /// How many changes were left out beyond [`MAX_DIFF_LINES`].
+    #[must_use]
+    pub const fn omitted(&self) -> usize {
+        self.omitted
+    }
+
     /// The class of the whole diff, over every change (also omitted ones):
     /// widening if any change is, else narrowing if any is, else neutral.
     #[must_use]
@@ -89,7 +99,7 @@ impl ModelDiff {
     /// `true` if any change lets someone gain access.
     #[must_use]
     pub fn is_widening(&self) -> bool {
-        self.class() == Class::Widening
+        self.class == Class::Widening
     }
 }
 
@@ -108,11 +118,44 @@ pub enum DiffError {
     },
 }
 
-struct Out(Vec<Change>);
+/// The changes, kept per class and bounded: at most [`MAX_DIFF_LINES`] of
+/// each class are kept, the rest only counted. So the cap limits memory and
+/// work, and the class still counts every change.
+#[derive(Default)]
+struct Out {
+    kept: [Vec<Change>; 3],
+    seen: [usize; 3],
+}
 
 impl Out {
     fn push(&mut self, class: Class, what: String) {
-        self.0.push(Change { class, what });
+        let k = class as usize;
+        self.seen[k] += 1;
+        if self.kept[k].len() < MAX_DIFF_LINES {
+            self.kept[k].push(Change { class, what });
+        }
+    }
+
+    fn finish(self) -> ModelDiff {
+        let Self { mut kept, seen } = self;
+        let class = [Class::Widening, Class::Narrowing, Class::Neutral]
+            .into_iter()
+            .find(|c| seen[*c as usize] > 0)
+            .unwrap_or(Class::Neutral);
+        let total: usize = seen.iter().sum();
+        let mut changes = Vec::new();
+        for c in [Class::Widening, Class::Narrowing, Class::Neutral] {
+            let mut v = std::mem::take(&mut kept[c as usize]);
+            v.sort();
+            v.dedup();
+            let room = MAX_DIFF_LINES - changes.len();
+            changes.extend(v.into_iter().take(room));
+        }
+        ModelDiff {
+            omitted: total.saturating_sub(changes.len()),
+            changes,
+            class,
+        }
     }
 
     /// Up is widening, down is narrowing, equal is no line.
@@ -121,14 +164,6 @@ impl Out {
             self.push(Class::Widening, format!("{what}: {old} -> {new}"));
         } else if new < old {
             self.push(Class::Narrowing, format!("{what}: {old} -> {new}"));
-        }
-    }
-
-    fn allowed(&mut self, what: &str, old: bool, new: bool) {
-        match (old, new) {
-            (false, true) => self.push(Class::Widening, format!("{what}: now allowed")),
-            (true, false) => self.push(Class::Narrowing, format!("{what}: no longer allowed")),
-            _ => {}
         }
     }
 }
@@ -145,7 +180,7 @@ pub fn diff(old: &Model, new: &Model) -> Result<ModelDiff, DiffError> {
             new: new.app.to_string(),
         });
     }
-    let mut out = Out(Vec::new());
+    let mut out = Out::default();
     if old.audience != new.audience {
         out.push(Class::Neutral, "app audience changed".into());
     }
@@ -153,21 +188,7 @@ pub fn diff(old: &Model, new: &Model) -> Result<ModelDiff, DiffError> {
     field_rules(&mut out, old, new);
     roles(&mut out, old, new);
     ui(&mut out, old, new);
-    let mut changes = out.0;
-    changes.sort_by(|a, b| b.class.cmp(&a.class).then_with(|| a.what.cmp(&b.what)));
-    changes.dedup();
-    let class = changes
-        .iter()
-        .map(|c| c.class)
-        .max()
-        .unwrap_or(Class::Neutral);
-    let omitted = changes.len().saturating_sub(MAX_DIFF_LINES);
-    changes.truncate(MAX_DIFF_LINES);
-    Ok(ModelDiff {
-        changes,
-        omitted,
-        class,
-    })
+    Ok(out.finish())
 }
 
 fn field_keys(t: &ResourceType, d: &TypeDef) -> BTreeSet<FieldKey> {
@@ -453,14 +474,14 @@ impl Side<'_> {
         }
     }
 
-    fn allows(&self, k: &ActionKey) -> bool {
+    fn allows(&self, k: &ActionKey, item: Level) -> bool {
         self.present
             && self
                 .model
                 .types
                 .get(k.resource_type())
                 .is_some_and(|d| d.actions.contains_key(k.action()))
-            && self.model.allows_custom(self.role, k)
+            && self.model.allows_custom_at(self.role, k, item)
     }
 
     fn grants(&self, t: &ResourceType) -> BTreeSet<ActionKey> {
@@ -577,11 +598,29 @@ fn role_type(out: &mut Out, before: &Side<'_>, after: &Side<'_>, t: &ResourceTyp
             );
         }
         for k in action_keys(t, d) {
-            out.allowed(
-                &format!("{at} on `{k}`"),
-                before.allows(&k),
-                after.allows(&k),
-            );
+            // As for fields: at every item level a condition could leave.
+            let mut up = None;
+            let mut down = None;
+            for item in Level::ALL.into_iter().filter(|l| *l <= top) {
+                let (a, b) = (before.allows(&k, item), after.allows(&k, item));
+                if b && !a && up.is_none() {
+                    up = Some(item);
+                }
+                if a && !b && down.is_none() {
+                    down = Some(item);
+                }
+            }
+            if let Some(item) = up {
+                out.push(
+                    Class::Widening,
+                    format!("{at} on `{k}` (item level {item}): now allowed"),
+                );
+            } else if let Some(item) = down {
+                out.push(
+                    Class::Narrowing,
+                    format!("{at} on `{k}` (item level {item}): no longer allowed"),
+                );
+            }
         }
     }
     let (og, ng) = (before.grants(t), after.grants(t));

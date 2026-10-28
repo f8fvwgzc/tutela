@@ -23,7 +23,10 @@ The model compiler reads the manifest and either returns a compiled model or a l
 
 - The file is TOML 1.0. It is at most 4 MiB.
 - **Unknown keys are errors.** A typo must never drop a restriction silently.
-- Hostile input must give an error, never a crash. Before parsing, a conservative scan refuses: tables and arrays that nest more than 32 levels; more than 8 `.` on one line outside strings (each dotted-key part, as in `a.b.c = 1`, opens a table without a bracket); a quote that does not start a key or a value; and a single-line string that does not end on its line. This bounds how deep the parser's tree can get. Templates also have their own depth limit (§8), and every other value is read without going into nested input.
+- Hostile input must give an error, never a crash. The format is TOML 1.1 (the `toml` crate 1.1.8), which allows multi-line inline tables, and the `toml` crate builds and drops its whole tree recursively, also for input it then refuses. So:
+  - the compiler runs on its own thread with a fixed 32 MiB stack. The `toml` crate's own limits (80 nested brackets, 80 parts per key) keep its deepest tree far inside that stack;
+  - before parsing, a conservative scan refuses early: tables and arrays that nest more than 32 levels or close the wrong bracket; more than 8 `.` on one line outside strings (each dotted-key part, as in `a.b.c = 1`, opens a table without a bracket; the point in a decimal number counts too); a quote that does not start a key or a value; and a single-line string that does not end on its line;
+  - templates have their own depth limit (§8), and every other value is read without going into nested input.
 - Problems are reported with their place. Text taken from the manifest is cut and its control characters are escaped, so it is safe to log.
 - Names follow the name grammar of [CONTRACTS.md §2.1](CONTRACTS.md#21-names): lowercase `snake_case`, 1–64 characters.
 - Levels are `none`, `read`, `write`, `full` ([CONTRACTS.md §3](CONTRACTS.md#3-levels)).
@@ -104,8 +107,8 @@ assignable_to = ["user", "group"]   # optional
 | Key | Value | Meaning |
 |---|---|---|
 | a type, for example `contract` (or `org`) | a level | The item level for that type. A type the role does not list is `none`. |
-| a field key, `contract.title` | a level | The level for one field. Not above the role's level for the type. A field the role does not list uses the type level. |
-| a feature key, `contract.@ai` | a level | The level for one feature. It **may** be above the type level (a Viewer may ask the AI about a contract it can only read: `contract = "read"`, `"contract.@ai" = "write"`, as in [PERMISSION-MODEL.md §17.4](PERMISSION-MODEL.md#174-jae-asks-clause-ai-in-chat-is-c-204-over-budget)), but the type level must be at least `read`. A feature the role does not list uses the type level. |
+| a field key, `contract.title` | a level | The level for one field. Not above the role's level for the type, and at runtime never above the role's item level after conditions. A field the role does not list uses that item level. |
+| a feature key, `contract.@ai` | a level | The level for one feature. It **may** be above the type level (a Viewer may ask the AI about a contract it can only read: `contract = "read"`, `"contract.@ai" = "write"`, as in [PERMISSION-MODEL.md §17.4](PERMISSION-MODEL.md#174-jae-asks-clause-ai-in-chat-is-c-204-over-budget)), but the type level must be at least `read`. A feature the role does not list uses the role's item level after conditions. |
 | an action key, `contract:approve` | `true` | A grant for a custom action that needs one, or an admin key (§6). Built-in actions come from levels and cannot be granted. `false` is an error: leave the key out instead. |
 
 `assignable_to`: who may receive the role: `user`, `sa`, `key`, `agent`, `workload`, `group`. Default: all of them (for a declared seeded role: the seeded default, §5.1). A role that holds an admin key or an owner-only action **can never be assigned to an agent or to a group** ([PERMISSION-MODEL.md §5.3](PERMISSION-MODEL.md#53-owner-only-admin-actions-blueprint)): groups may hold agents. Its default leaves both out, and listing either is an error. The evaluator also never gives an admin key or an owner-only action to an agent, however it is reached.
@@ -153,6 +156,8 @@ Owner-only admin actions sit above the four levels. Full never includes them ([P
 
 A role holds one as an action key, for example `"matter:manage_fields" = true`. These names cannot be used for custom actions.
 
+An admin key needs **the key only**. An owner-only custom action (`needs = "owner"`, §4) needs **Full on the item and the grant**.
+
 ## 7. Field rules at the org root
 
 ```toml
@@ -198,6 +203,7 @@ Rules:
 - String values are 1–256 characters. Integers fit in 64 bits.
 - A template has at most 32 nodes and is at most 4 levels deep.
 - The field must not be confidential or secret. Otherwise people could learn its value from what they may do.
+- String values are checked like labels: no control or invisible characters.
 - `in_group` names a group key. Groups are `tutela-store` data. If a template names a group that does not exist, the **whole condition** is false (fail closed), even under `not`: the level drops to `else`.
 - Templates are read with a depth limit: input deeper than 4 levels is refused while it is read, before anything deeper is looked at.
 
@@ -251,7 +257,7 @@ For the model:
 |---|---|
 | `needs` of a custom action | it goes down (owner-only > full > write > read) |
 | `grant` of a custom action | `true` → `false` |
-| An org-root field rule | it is removed, its `max` goes up, or a new rule for one role is above the all-roles rule |
+| An org-root field rule | its `max` goes up; a new rule for one role is above the all-roles rule; or it is removed and the cap that then applies (the all-roles rule, or none) is higher than its `max` |
 | A UI key | it is removed, or an action, field or route is taken away (a route loses its declared guard) |
 | `starts` of a type | `private` → `open` |
 | `ai_reach` of a type | `project` → `team` |
@@ -263,6 +269,8 @@ The opposite direction is narrowing. These are neutral: labels, the audience, a 
 ## 11. Limits
 
 A manifest over any count limit is refused at once, before any other check.
+
+A valid manifest can still give a `list_filter` above the filter limits of [CONTRACTS.md §6.6](CONTRACTS.md#66-list_filter) for a principal with many deciding scopes, roles with conditions and nesting levels. Such a list fails closed. ROADMAP item 4 measures this and either raises the limits or bounds the inputs ([ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)).
 
 | Item | Limit |
 |---|---|
