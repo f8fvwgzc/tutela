@@ -348,3 +348,234 @@ async fn tm10_the_sql_lists_exactly_the_rows_check_allows() {
         Err(SqlError::Query(_))
     ));
 }
+
+/// ADR-0016: the grouped SQL lists exactly the rows the term-by-term SQL
+/// lists, on random rows with nulls and random filters of every shape.
+#[tokio::test]
+async fn grouped_terms_list_the_same_rows_as_term_by_term() {
+    use tutela_contracts::keys::FieldName;
+    use tutela_pdp::{FilterExpr as E, FilterValue as V, ListFilter};
+    let Some(base) = std::env::var("TUTELA_TEST_DATABASE_URL")
+        .ok()
+        .filter(|u| !u.is_empty())
+    else {
+        assert!(std::env::var("TUTELA_REQUIRE_DATABASE").as_deref() != Ok("1"));
+        eprintln!("skipped: set TUTELA_TEST_DATABASE_URL");
+        return;
+    };
+    let (mut client, conn) = tokio_postgres::connect(&base, NoTls).await.unwrap();
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    let tx = client.transaction().await.unwrap();
+    tx.batch_execute(
+        "CREATE TEMP TABLE eq_item (tenant_iss text, tenant_tid text, id text, ancestors text[],
+            status text, owner text, prio bigint, flag boolean, labels text[]);
+         INSERT INTO eq_item
+         SELECT 'https://auth.example.test', 'ten_0193a1b2-c3d4-7e5f-8a6b-7c8d9e0f1a2b', 'r' || n,
+                ARRAY['project:p' || (n % 30), 'department:d' || (n % 3), 'org:o'],
+                CASE WHEN n % 4 = 0 THEN NULL ELSE 's' || (n % 3) END,
+                CASE WHEN n % 5 = 0 THEN NULL ELSE 'u' || (n % 2) END,
+                CASE WHEN n % 6 = 0 THEN NULL ELSE n % 3 END,
+                CASE WHEN n % 7 = 0 THEN NULL ELSE n % 2 = 0 END,
+                CASE WHEN n % 3 = 0 THEN NULL ELSE ARRAY['l' || (n % 4)] END
+         FROM generate_series(0, 599) n;",
+    )
+    .await
+    .unwrap();
+    let mut cols = columns();
+    cols.table = "eq_item".into();
+    for (f, c) in [("prio", "prio"), ("flag", "flag"), ("labels", "labels")] {
+        cols.fields.insert(f.parse().unwrap(), c.into());
+    }
+    let fname = |s: &str| FieldName::parse(s).unwrap();
+    let mut seed = 0x5eed_u64;
+    let mut rnd = |n: u64| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed % n
+    };
+    let p = |i: u64| entry("project", &format!("p{i}"));
+    let d = |i: u64| entry("department", &format!("d{i}"));
+    let s = |i: u64| V::String(format!("s{i}"));
+    let mut grouped_seen = 0;
+    for _ in 0..80 {
+        let mut args = Vec::new();
+        for _ in 0..(4 + rnd(40)) {
+            let (a, b) = (rnd(30), rnd(3));
+            args.push(match rnd(9) {
+                0 => E::And {
+                    args: vec![
+                        E::Under { scopes: vec![p(a)] },
+                        E::Not {
+                            arg: Box::new(E::Eq {
+                                attr: fname("status"),
+                                value: s(b),
+                            }),
+                        },
+                    ],
+                },
+                1 => E::And {
+                    args: vec![
+                        E::Under {
+                            scopes: vec![p(a), d(b)],
+                        },
+                        E::Eq {
+                            attr: fname("prio"),
+                            value: V::Integer(i64::try_from(b).unwrap()),
+                        },
+                    ],
+                },
+                2 => E::And {
+                    args: vec![
+                        E::Under { scopes: vec![p(a)] },
+                        E::And {
+                            args: vec![
+                                E::Eq {
+                                    attr: fname("flag"),
+                                    value: V::Boolean(b == 0),
+                                },
+                                E::Not {
+                                    arg: Box::new(E::IsNull {
+                                        attr: fname("owner"),
+                                    }),
+                                },
+                            ],
+                        },
+                    ],
+                },
+                3 => E::And {
+                    args: vec![
+                        E::Under { scopes: vec![d(b)] },
+                        E::Contains {
+                            attr: fname("labels"),
+                            value: format!("l{}", a % 4),
+                        },
+                    ],
+                },
+                4 => E::And {
+                    args: vec![
+                        E::Under { scopes: vec![p(a)] },
+                        E::Ne {
+                            attr: fname("status"),
+                            value: s(b),
+                        },
+                    ],
+                },
+                5 => E::And {
+                    args: vec![E::Under { scopes: vec![p(a)] }, E::True],
+                },
+                6 => E::Under { scopes: vec![p(a)] },
+                7 => E::And {
+                    args: vec![
+                        E::Under { scopes: vec![d(b)] },
+                        E::Not {
+                            arg: Box::new(E::Under { scopes: vec![p(a)] }),
+                        },
+                    ],
+                },
+                _ => E::IdIn {
+                    ids: vec![format!("r{}", rnd(600)).parse().unwrap()],
+                },
+            });
+        }
+        let condition = if rnd(3) == 0 {
+            E::Not {
+                arg: Box::new(E::Or { args }),
+            }
+        } else {
+            E::Or { args }
+        };
+        let f = ListFilter {
+            tenant: tenant(),
+            type_name: "item".parse().unwrap(),
+            rev: 1,
+            ids_in: vec![],
+            container_in: vec![d(0), d(1), d(2)],
+            condition: Some(condition),
+        };
+        let mut rows = Vec::new();
+        for compile in [sql::where_clause, sql::where_clause_plain] {
+            let (clause, params) = compile(&f, &cols, 1).unwrap();
+            if clause.contains("tutela_vals") {
+                grouped_seen += 1;
+            }
+            let refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
+                params.iter().map(sql::Param::as_sql).collect();
+            let mut ids: Vec<String> = tx
+                .query(&format!("SELECT id FROM eq_item WHERE {clause}"), &refs)
+                .await
+                .unwrap()
+                .iter()
+                .map(|r| r.get(0))
+                .collect();
+            ids.sort();
+            rows.push(ids);
+        }
+        assert_eq!(rows[0], rows[1], "filter {f:?}");
+    }
+    assert!(
+        grouped_seen >= 40,
+        "the grouped form came up {grouped_seen} times"
+    );
+    // A long scope list (over 64) uses the hashed form; it lists the same
+    // rows as `&&`.
+    let long: Vec<String> = (0..70)
+        .map(|i| {
+            if i % 2 == 0 {
+                format!("project:p{}", i % 30)
+            } else {
+                format!("project:gone{i}")
+            }
+        })
+        .collect();
+    let mut by = Vec::new();
+    for q in [
+        "SELECT id FROM eq_item WHERE ancestors && $1 ORDER BY id",
+        "SELECT id FROM eq_item WHERE EXISTS (SELECT 1 FROM unnest(ancestors) AS tutela_anc(tutela_scope) WHERE tutela_scope = ANY($1)) ORDER BY id",
+    ] {
+        let ids: Vec<String> = tx
+            .query(q, &[&long])
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| r.get(0))
+            .collect();
+        by.push(ids);
+    }
+    assert_eq!(by[0], by[1]);
+    assert!(!by[0].is_empty());
+    let f = ListFilter {
+        tenant: tenant(),
+        type_name: "item".parse().unwrap(),
+        rev: 1,
+        ids_in: vec![],
+        container_in: (0..70).map(|i| p(i % 30)).collect(),
+        condition: None,
+    };
+    let (clause, _) = sql::where_clause(&f, &cols, 1).unwrap();
+    assert!(clause.contains("tutela_scope = ANY("), "{clause}");
+    // A product column may not take an alias the grouped form uses.
+    let mut bad = columns();
+    bad.fields
+        .insert("status".parse().unwrap(), "tutela_vals".into());
+    assert!(matches!(
+        sql::where_clause(
+            &ListFilter {
+                tenant: tenant(),
+                type_name: "item".parse().unwrap(),
+                rev: 1,
+                ids_in: vec![],
+                container_in: vec![],
+                condition: Some(E::Eq {
+                    attr: "status".parse().unwrap(),
+                    value: V::Boolean(true)
+                })
+            },
+            &bad,
+            1
+        ),
+        Err(SqlError::Column(_))
+    ));
+}

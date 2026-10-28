@@ -433,10 +433,10 @@ fn the_size_counts_nodes_depth_and_entries() {
 
 /// A valid manifest can still give a filter above the limits of
 /// CONTRACTS.md 6.6 (ADR-0012 asked ROADMAP item 4 to measure this). Here:
-/// one role with 200 conditions (3 nodes each once nested `and`s are
+/// one role with 40 conditions (3 nodes each once nested `and`s are
 /// flattened) on the listed type, and one principal with that role at 8
 /// nested scopes. Each nesting level repeats the role's conditions, so the
-/// filter has about 8 × 600 nodes. The list fails closed; `check` still
+/// filter has about 8 × 120 nodes. The list fails closed; `check` still
 /// answers.
 #[test]
 fn tm10_a_valid_manifest_can_pass_the_limits_and_the_list_fails_closed() {
@@ -454,7 +454,7 @@ fn tm10_a_valid_manifest_can_pass_the_limits_and_the_list_fails_closed() {
          prio = { sensitivity = \"internal\", type = \"integer\", grants_access = true }\n\
          [roles.r]\ngrants = { proj = \"read\", item = \"write\" }\n",
     );
-    for i in 0..200 {
+    for i in 0..40 {
         let _ = write!(
             toml,
             "[[conditions]]\nrole = \"r\"\ntype = \"item\"\nwhen = {{ and = [{{ eq = {{ field = \"status\", value = \"s{i}\" }} }}, {{ not = {{ eq = {{ field = \"prio\", value = {i} }} }} }}] }}\nelse = \"read\"\n"
@@ -510,11 +510,11 @@ fn tm10_a_valid_manifest_can_pass_the_limits_and_the_list_fails_closed() {
         action: action("item:write"),
         at_least_revision: None,
     };
-    // One level: about 600 nodes, under the limit.
+    // One level: about 120 nodes, under the limit.
     let one = load(1).list_filter(&req, &chain).unwrap();
     let size = one.size();
     assert!(
-        size.nodes > 600 && size.nodes < crate::MAX_FILTER_NODES,
+        size.nodes > 100 && size.nodes < crate::MAX_FILTER_NODES,
         "{size:?}"
     );
     // Eight levels: above the limit. The list fails closed.

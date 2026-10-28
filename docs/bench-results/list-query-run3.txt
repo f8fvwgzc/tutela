@@ -1,0 +1,7 @@
+# start 2026-10-29 00:49:13 JST, load { 4.67 3.52 3.64 }, Apple M2 Pro, git 39a8cac + grouped terms (ADR-0016), cargo/rustc running: 0
+postgres 16.14 (Homebrew)
+setup: 2000000 rows in 4.9 s
+typical  p50     1.90 ms  p99    13.30 ms  max    17.18 ms  timeouts 0  avg rows 2
+limits   p50  5004.11 ms  p99  5005.17 ms  max  5007.42 ms  timeouts 200  avg rows 0
+gate: FAIL (limits p99 >= 100 ms or a timeout)
+# end 01:06:33, load { 3.15 2.34 2.72 }
