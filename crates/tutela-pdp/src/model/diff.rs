@@ -1,18 +1,23 @@
 //! Compare two models and classify each change (docs/MANIFEST.md section 10).
 //!
-//! The diff compares **effective** permissions per role and type, not text:
-//! item levels, field and feature levels at the org root, custom actions,
-//! admin keys, conditions and who may receive a role. Anything that lets
-//! someone gain access is widening. When a change is hard to judge (a changed
-//! condition), it counts as widening, to be safe.
+//! The diff compares **effective** permissions per role and type, not text.
+//! A type or role that the old model does not have is compared against a
+//! baseline where it gives nobody anything, so a removed and re-added type,
+//! a rename or a rollback cannot widen access without approval. Field and
+//! feature levels are compared at every item level a condition could leave
+//! ([`Model::effective_field_level`], shared with the evaluator). Anything
+//! that lets someone gain access is widening. When a change is hard to judge
+//! (a changed condition), it counts as widening, to be safe.
 
 use core::fmt;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use tutela_contracts::keys::{ActionKey, FieldKey, ResourceType};
+use tutela_contracts::keys::{ActionKey, ActionRequirement, FieldKey, ResourceType};
 use tutela_contracts::level::Level;
 
-use super::{AiReach, Model, RoleKey, Starts, Template, TypeDef, is_admin_key};
+use super::{
+    AiReach, FieldRule, Model, RoleKey, Starts, Template, TypeDef, UiComponent, is_admin_key,
+};
 
 /// The class of one change, or of a whole diff.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -61,7 +66,7 @@ impl fmt::Display for Change {
 /// Every change between two models, sorted.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct ModelDiff {
-    /// The changes. Empty when the models give the same access.
+    /// The changes. Empty when the models are the same.
     pub changes: Vec<Change>,
 }
 
@@ -106,7 +111,7 @@ impl Out {
         self.0.push(Change { class, what });
     }
 
-    /// Up is widening, down is narrowing.
+    /// Up is widening, down is narrowing, equal is no line.
     fn ordered<T: Ord + fmt::Display>(&mut self, what: &str, old: T, new: T) {
         if new > old {
             self.push(Class::Widening, format!("{what}: {old} -> {new}"));
@@ -141,6 +146,7 @@ pub fn diff(old: &Model, new: &Model) -> Result<ModelDiff, DiffError> {
         out.push(Class::Neutral, "app audience changed".into());
     }
     types(&mut out, old, new);
+    field_rules(&mut out, old, new);
     roles(&mut out, old, new);
     ui(&mut out, old, new);
     let mut changes = out.0;
@@ -164,15 +170,34 @@ fn action_keys(t: &ResourceType, d: &TypeDef) -> BTreeSet<ActionKey> {
         .collect()
 }
 
+/// Lower is easier to use: read < write < full < owner-only.
+const fn needs_rank(n: ActionRequirement) -> u8 {
+    match n {
+        ActionRequirement::Level(l) => match l {
+            Level::None => 0,
+            Level::Read => 1,
+            Level::Write => 2,
+            Level::Full => 3,
+        },
+        ActionRequirement::OwnerOnly => 4,
+    }
+}
+
+const fn needs_str(n: ActionRequirement) -> &'static str {
+    match n {
+        ActionRequirement::Level(l) => l.as_str(),
+        ActionRequirement::OwnerOnly => "owner",
+    }
+}
+
 fn types(out: &mut Out, old: &Model, new: &Model) {
     for t in old.types.keys().filter(|t| !new.types.contains_key(*t)) {
         out.push(Class::Narrowing, format!("type `{t}` removed"));
     }
     for t in new.types.keys().filter(|t| !old.types.contains_key(*t)) {
-        out.push(
-            Class::Neutral,
-            format!("type `{t}` added (no data of it exists yet)"),
-        );
+        // The role lines classify it: a new type is compared against a
+        // baseline where nobody has any access.
+        out.push(Class::Neutral, format!("type `{t}` added"));
     }
     for (t, o) in &old.types {
         let Some(n) = new.types.get(t) else { continue };
@@ -191,28 +216,20 @@ fn types(out: &mut Out, old: &Model, new: &Model) {
             }
             _ => {}
         }
-        let reach = |r: AiReach| match r {
-            AiReach::Project => "project",
-            AiReach::Team => "team",
-        };
-        if o.ai_reach < n.ai_reach {
-            out.push(
-                Class::Widening,
-                format!(
-                    "type `{t}` ai_reach: {} -> {}",
-                    reach(o.ai_reach),
-                    reach(n.ai_reach)
-                ),
-            );
-        } else if o.ai_reach > n.ai_reach {
-            out.push(
-                Class::Narrowing,
-                format!(
-                    "type `{t}` ai_reach: {} -> {}",
-                    reach(o.ai_reach),
-                    reach(n.ai_reach)
-                ),
-            );
+        match (o.ai_reach, n.ai_reach) {
+            (AiReach::Project, AiReach::Team) => {
+                out.push(
+                    Class::Widening,
+                    format!("type `{t}` ai_reach: project -> team"),
+                );
+            }
+            (AiReach::Team, AiReach::Project) => {
+                out.push(
+                    Class::Narrowing,
+                    format!("type `{t}` ai_reach: team -> project"),
+                );
+            }
+            _ => {}
         }
         if o.parents != n.parents || o.container != n.container || o.label != n.label {
             out.push(
@@ -234,17 +251,12 @@ fn types(out: &mut Out, old: &Model, new: &Model) {
             if of.sensitivity != nf.sensitivity {
                 let (a, b) = (of.sensitivity.label(), nf.sensitivity.label());
                 // Lower sensitivity: output labels get lower.
-                if nf.sensitivity < of.sensitivity {
-                    out.push(
-                        Class::Widening,
-                        format!("field `{k}` sensitivity: {a} -> {b}"),
-                    );
+                let class = if nf.sensitivity < of.sensitivity {
+                    Class::Widening
                 } else {
-                    out.push(
-                        Class::Narrowing,
-                        format!("field `{k}` sensitivity: {a} -> {b}"),
-                    );
-                }
+                    Class::Narrowing
+                };
+                out.push(class, format!("field `{k}` sensitivity: {a} -> {b}"));
             }
             match (of.grants_access, nf.grants_access) {
                 (true, false) => out.push(
@@ -269,105 +281,297 @@ fn types(out: &mut Out, old: &Model, new: &Model) {
         for k in na.difference(&oa) {
             out.push(Class::Neutral, format!("action `{k}` added"));
         }
+        // `needs` and `grant` directly: conditions and per-scope data decide
+        // who sits at which level, so a lower bar is widening for someone.
+        for (a, oc) in &o.actions {
+            let Some(nc) = n.actions.get(a) else { continue };
+            let k = ActionKey::new(t.clone(), a.clone());
+            if oc.needs != nc.needs {
+                let what = format!(
+                    "action `{k}` needs: {} -> {}",
+                    needs_str(oc.needs),
+                    needs_str(nc.needs)
+                );
+                let class = if needs_rank(nc.needs) < needs_rank(oc.needs) {
+                    Class::Widening
+                } else {
+                    Class::Narrowing
+                };
+                out.push(class, what);
+            }
+            match (oc.grant, nc.grant) {
+                (true, false) => out.push(
+                    Class::Widening,
+                    format!("action `{k}` no longer needs a grant"),
+                ),
+                (false, true) => {
+                    out.push(Class::Narrowing, format!("action `{k}` now needs a grant"));
+                }
+                _ => {}
+            }
+        }
     }
 }
 
-fn common_types(old: &Model, new: &Model) -> Vec<ResourceType> {
-    core::iter::once(ResourceType::ORG)
-        .chain(
-            old.types
-                .keys()
-                .filter(|t| new.types.contains_key(*t))
-                .cloned(),
-        )
-        .collect()
+fn rule_name(field: &FieldKey, role: Option<&RoleKey>) -> String {
+    match role {
+        Some(r) => format!("field rule `{field}` for `{r}`"),
+        None => format!("field rule `{field}` for all roles"),
+    }
+}
+
+type Rules<'m> = BTreeMap<(&'m FieldKey, Option<&'m RoleKey>), &'m FieldRule>;
+
+fn all_field_keys(m: &Model) -> BTreeSet<FieldKey> {
+    m.types.iter().flat_map(|(t, d)| field_keys(t, d)).collect()
+}
+
+/// One line per org-root field rule that is added, removed or changed.
+fn field_rules(out: &mut Out, old: &Model, new: &Model) {
+    let (of, nf) = (all_field_keys(old), all_field_keys(new));
+    let o: Rules<'_> = old
+        .field_rules
+        .iter()
+        .map(|r| ((&r.field, r.role.as_ref()), r))
+        .collect();
+    let n: Rules<'_> = new
+        .field_rules
+        .iter()
+        .map(|r| ((&r.field, r.role.as_ref()), r))
+        .collect();
+    for (&(field, role), r) in &o {
+        // A removed field's rules go with the field.
+        if n.contains_key(&(field, role)) || !nf.contains(field) {
+            continue;
+        }
+        out.push(
+            Class::Widening,
+            format!("{} removed (was max {})", rule_name(field, role), r.max),
+        );
+    }
+    for (&(field, role), r) in &n {
+        // A new field's rules are part of adding the field.
+        if !of.contains(field) {
+            continue;
+        }
+        let what = rule_name(field, role);
+        match o.get(&(field, role)) {
+            None => {
+                // A rule for one role beats the all-roles rule at the same
+                // scope, so it can loosen it.
+                let all = n.get(&(field, None)).map(|a| a.max);
+                let class = match (role, all) {
+                    (Some(_), Some(cap)) if r.max > cap => Class::Widening,
+                    _ => Class::Narrowing,
+                };
+                out.push(class, format!("{what} added (max {})", r.max));
+            }
+            Some(p) => {
+                out.ordered(&format!("{what} max"), p.max, r.max);
+                if p.display != r.display {
+                    out.push(Class::Neutral, format!("{what} display changed"));
+                }
+            }
+        }
+    }
+}
+
+/// What one role holds on one type in one model. When `present` is false the
+/// role or the type is missing there: the baseline, where nobody has anything.
+struct Side<'m> {
+    model: &'m Model,
+    role: &'m RoleKey,
+    present: bool,
+}
+
+impl Side<'_> {
+    fn level(&self, t: &ResourceType) -> Level {
+        if !self.present {
+            return Level::None;
+        }
+        self.model
+            .roles
+            .get(self.role)
+            .map_or(Level::None, |r| r.level(t))
+    }
+
+    fn has_field(&self, k: &FieldKey) -> bool {
+        self.present
+            && self.model.types.get(k.resource_type()).is_some_and(|d| {
+                if k.is_feature() {
+                    d.features.contains(k.field())
+                } else {
+                    d.fields.contains_key(k.field())
+                }
+            })
+    }
+
+    /// An unknown field is masked: `none`.
+    fn effective(&self, k: &FieldKey, item: Level) -> Level {
+        if self.has_field(k) {
+            self.model.effective_field_level(self.role, k, item)
+        } else {
+            Level::None
+        }
+    }
+
+    fn root(&self, k: &FieldKey) -> Level {
+        if self.has_field(k) {
+            self.model.root_field_level(self.role, k)
+        } else {
+            Level::None
+        }
+    }
+
+    fn allows(&self, k: &ActionKey) -> bool {
+        self.present
+            && self
+                .model
+                .types
+                .get(k.resource_type())
+                .is_some_and(|d| d.actions.contains_key(k.action()))
+            && self.model.allows_custom(self.role, k)
+    }
+
+    fn grants(&self, t: &ResourceType) -> BTreeSet<ActionKey> {
+        if !self.present {
+            return BTreeSet::new();
+        }
+        self.model
+            .roles
+            .get(self.role)
+            .map_or_else(BTreeSet::new, |r| {
+                r.grants
+                    .iter()
+                    .filter(|g| g.resource_type() == t)
+                    .cloned()
+                    .collect()
+            })
+    }
+
+    fn conditions(&self, t: &ResourceType) -> BTreeSet<(Template, Level)> {
+        if !self.present {
+            return BTreeSet::new();
+        }
+        self.model
+            .conditions
+            .iter()
+            .filter(|c| &c.role == self.role && &c.resource_type == t)
+            .map(|c| (c.when.clone(), c.otherwise))
+            .collect()
+    }
 }
 
 fn roles(out: &mut Out, old: &Model, new: &Model) {
     for r in old.roles.keys().filter(|r| !new.roles.contains_key(*r)) {
         out.push(Class::Narrowing, format!("role `{r}` removed"));
     }
-    for r in new.roles.keys().filter(|r| !old.roles.contains_key(*r)) {
-        out.push(
-            Class::Neutral,
-            format!("role `{r}` added (nobody holds it yet)"),
-        );
-    }
-    let common = common_types(old, new);
-    for (rk, o) in &old.roles {
-        let Some(n) = new.roles.get(rk) else { continue };
+    for (rk, n) in &new.roles {
         let at = format!("role `{rk}`");
-        for k in n.assignable_to.difference(&o.assignable_to) {
-            out.push(
-                Class::Widening,
-                format!("{at}: may now be assigned to `{}`", k.as_str()),
-            );
+        let o = old.roles.get(rk);
+        match o {
+            // The type lines classify it, against the baseline.
+            None => out.push(Class::Neutral, format!("{at} added")),
+            Some(o) => {
+                for k in n.assignable_to.difference(&o.assignable_to) {
+                    out.push(
+                        Class::Widening,
+                        format!("{at}: may now be assigned to `{}`", k.as_str()),
+                    );
+                }
+                for k in o.assignable_to.difference(&n.assignable_to) {
+                    out.push(
+                        Class::Narrowing,
+                        format!("{at}: may no longer be assigned to `{}`", k.as_str()),
+                    );
+                }
+                if o.label != n.label {
+                    out.push(Class::Neutral, format!("{at}: label changed"));
+                }
+            }
         }
-        for k in o.assignable_to.difference(&n.assignable_to) {
-            out.push(
-                Class::Narrowing,
-                format!("{at}: may no longer be assigned to `{}`", k.as_str()),
-            );
-        }
-        if o.label != n.label {
-            out.push(Class::Neutral, format!("{at}: label changed"));
-        }
-        for t in &common {
-            out.ordered(&format!("{at} on `{t}`"), o.level(t), n.level(t));
-            role_type(out, old, new, rk, t, &at);
+        for t in core::iter::once(&ResourceType::ORG).chain(new.types.keys()) {
+            let present = o.is_some() && (*t == ResourceType::ORG || old.types.contains_key(t));
+            let before = Side {
+                model: old,
+                role: rk,
+                present,
+            };
+            let after = Side {
+                model: new,
+                role: rk,
+                present: true,
+            };
+            role_type(out, &before, &after, t, &at);
         }
     }
 }
 
-/// Fields, features, actions, admin keys and conditions of one role on one
-/// type that both models have.
-fn role_type(out: &mut Out, old: &Model, new: &Model, rk: &RoleKey, t: &ResourceType, at: &str) {
-    let (od, nd) = (old.types.get(t), new.types.get(t));
-    if let Some(nd) = nd {
-        let ok = od.map(|d| field_keys(t, d)).unwrap_or_default();
-        for k in field_keys(t, nd) {
-            let before = if ok.contains(&k) {
-                old.root_field_level(rk, &k)
-            } else {
-                // An unknown field is masked: it was `none` before.
-                Level::None
-            };
+/// One role on one type: the item level, every field and feature at every
+/// item level a condition could leave, the org-root level, custom actions,
+/// grants, admin keys and conditions.
+fn role_type(out: &mut Out, before: &Side<'_>, after: &Side<'_>, t: &ResourceType, at: &str) {
+    let (ol, nl) = (before.level(t), after.level(t));
+    out.ordered(&format!("{at} on `{t}`"), ol, nl);
+    if let Some(d) = after.model.types.get(t) {
+        let top = ol.max(nl);
+        for k in field_keys(t, d) {
+            // Conditions only lower the item level, so every level from
+            // `none` up to the role's level can occur.
+            let mut up = None;
+            let mut down = None;
+            for item in Level::ALL.into_iter().filter(|l| *l <= top) {
+                let (a, b) = (before.effective(&k, item), after.effective(&k, item));
+                if b > a && up.is_none() {
+                    up = Some((item, a, b));
+                }
+                if b < a && down.is_none() {
+                    down = Some((item, a, b));
+                }
+            }
+            if let Some((item, a, b)) = up {
+                out.push(
+                    Class::Widening,
+                    format!("{at} on `{k}` (item level {item}): {a} -> {b}"),
+                );
+            } else if let Some((item, a, b)) = down {
+                out.push(
+                    Class::Narrowing,
+                    format!("{at} on `{k}` (item level {item}): {a} -> {b}"),
+                );
+            }
             out.ordered(
-                &format!("{at} on `{k}`"),
-                before,
-                new.root_field_level(rk, &k),
+                &format!("{at} on `{k}` at the org root"),
+                before.root(&k),
+                after.root(&k),
             );
         }
-        let oa = od.map(|d| action_keys(t, d)).unwrap_or_default();
-        for k in action_keys(t, nd) {
-            let before = oa.contains(&k) && old.allows_custom(rk, &k);
-            out.allowed(&format!("{at} on `{k}`"), before, new.allows_custom(rk, &k));
+        for k in action_keys(t, d) {
+            out.allowed(
+                &format!("{at} on `{k}`"),
+                before.allows(&k),
+                after.allows(&k),
+            );
         }
     }
-    let admin = |m: &Model| -> BTreeSet<ActionKey> {
-        m.roles.get(rk).map_or_else(BTreeSet::new, |r| {
-            r.grants
-                .iter()
-                .filter(|g| g.resource_type() == t && is_admin_key(g.action()))
-                .cloned()
-                .collect()
-        })
-    };
-    let (oa, na) = (admin(old), admin(new));
-    for k in na.difference(&oa) {
-        out.push(Class::Widening, format!("{at}: admin key `{k}` added"));
+    let (og, ng) = (before.grants(t), after.grants(t));
+    for k in ng.difference(&og) {
+        let kind = if is_admin_key(k.action()) {
+            "admin key"
+        } else {
+            "grant"
+        };
+        out.push(Class::Widening, format!("{at}: {kind} `{k}` added"));
     }
-    for k in oa.difference(&na) {
-        out.push(Class::Narrowing, format!("{at}: admin key `{k}` removed"));
+    for k in og.difference(&ng) {
+        let kind = if is_admin_key(k.action()) {
+            "admin key"
+        } else {
+            "grant"
+        };
+        out.push(Class::Narrowing, format!("{at}: {kind} `{k}` removed"));
     }
-    let conds = |m: &Model| -> BTreeSet<(Template, Level)> {
-        m.conditions
-            .iter()
-            .filter(|c| &c.role == rk && &c.resource_type == t)
-            .map(|c| (c.when.clone(), c.otherwise))
-            .collect()
-    };
-    let (oc, nc) = (conds(old), conds(new));
+    let (oc, nc) = (before.conditions(t), after.conditions(t));
     for c in oc.difference(&nc) {
         out.push(
             Class::Widening,
@@ -385,14 +589,41 @@ fn role_type(out: &mut Out, old: &Model, new: &Model, rk: &RoleKey, t: &Resource
     }
 }
 
+/// A UI key is a declared guard: removing it, or taking actions, fields or
+/// routes away from it, leaves a route less guarded.
 fn ui(out: &mut Out, old: &Model, new: &Model) {
+    fn weaker(o: &UiComponent, n: &UiComponent) -> bool {
+        !o.actions.is_subset(&n.actions)
+            || !o.fields.is_subset(&n.fields)
+            || o.routes.iter().any(|r| !n.routes.contains(r))
+    }
     for k in old.ui.keys().filter(|k| !new.ui.contains_key(*k)) {
-        out.push(Class::Neutral, format!("UI key `{k}` removed"));
+        out.push(
+            Class::Widening,
+            format!("UI key `{k}` removed: its routes lose a declared guard"),
+        );
     }
     for (k, n) in &new.ui {
         match old.ui.get(k) {
             None => out.push(Class::Neutral, format!("UI key `{k}` added")),
-            Some(o) if o != n => out.push(Class::Neutral, format!("UI key `{k}` changed")),
+            Some(o) if weaker(o, n) => out.push(
+                Class::Widening,
+                format!("UI key `{k}`: an action, field or route was taken away"),
+            ),
+            Some(o) if o != n => {
+                let more = o.actions.len() < n.actions.len()
+                    || o.fields.len() < n.fields.len()
+                    || o.routes.len() < n.routes.len();
+                if more {
+                    out.push(Class::Narrowing, format!("UI key `{k}`: more is guarded"));
+                }
+                if o.when_denied != n.when_denied || o.reason != n.reason {
+                    out.push(
+                        Class::Neutral,
+                        format!("UI key `{k}`: denied mode or reason changed"),
+                    );
+                }
+            }
             Some(_) => {}
         }
     }

@@ -23,6 +23,8 @@ The model compiler reads the manifest and either returns a compiled model or a l
 
 - The file is TOML 1.0. It is at most 4 MiB.
 - **Unknown keys are errors.** A typo must never drop a restriction silently.
+- Hostile input must give an error, never a crash. Tables and arrays may nest at most 32 levels. Templates are read with a depth limit (§8), and every other value is read without going into nested input, so dotted keys (`a.b.c = 1`) cannot build deep values either.
+- Problems are reported with their place. Text taken from the manifest is cut and its control characters are escaped, so it is safe to log.
 - Names follow the name grammar of [CONTRACTS.md §2.1](CONTRACTS.md#21-names): lowercase `snake_case`, 1–64 characters.
 - Levels are `none`, `read`, `write`, `full` ([CONTRACTS.md §3](CONTRACTS.md#3-levels)).
 - Display labels (`label`) are 1–128 characters with no control characters. They are for people only; code never matches on them.
@@ -35,7 +37,7 @@ version = 1                  # required; the only valid value is 1
 
 [app]
 name     = "contracts"       # required; a name; the app's model namespace
-audience = "contracts-api"   # optional; an audience (CONTRACTS.md §4.2)
+audience = "contracts-api"   # optional; an audience (CONTRACTS.md §4.2), not `tutela-admin`
 ```
 
 Each app has its own model namespace. A diff between two manifests of different apps is refused.
@@ -106,7 +108,7 @@ assignable_to = ["user", "group"]   # optional
 | a feature key, `contract.@ai` | a level | The level for one feature. It **may** be above the type level (a Viewer may ask the AI about a contract it can only read: `contract = "read"`, `"contract.@ai" = "write"`, as in [PERMISSION-MODEL.md §17.4](PERMISSION-MODEL.md#174-jae-asks-clause-ai-in-chat-is-c-204-over-budget)), but the type level must be at least `read`. A feature the role does not list uses the type level. |
 | an action key, `contract:approve` | `true` | A grant for a custom action that needs one, or an admin key (§6). Built-in actions come from levels and cannot be granted. `false` is an error: leave the key out instead. |
 
-`assignable_to`: who may receive the role: `user`, `sa`, `key`, `agent`, `workload`, `group`. Default: all of them. A role that holds an admin key or an owner-only action **can never be assigned to an agent** ([PERMISSION-MODEL.md §5.3](PERMISSION-MODEL.md#53-owner-only-admin-actions-blueprint)); its default leaves `agent` out, and listing `agent` is an error.
+`assignable_to`: who may receive the role: `user`, `sa`, `key`, `agent`, `workload`, `group`. Default: all of them (for a declared seeded role: the seeded default, §5.1). A role that holds an admin key or an owner-only action **can never be assigned to an agent or to a group** ([PERMISSION-MODEL.md §5.3](PERMISSION-MODEL.md#53-owner-only-admin-actions-blueprint)): groups may hold agents. Its default leaves both out, and listing either is an error. The evaluator also never gives an admin key or an owner-only action to an agent, however it is reached.
 
 Role keys are names. At most 512 roles, seeded roles included.
 
@@ -116,14 +118,25 @@ Every model has these five roles ([PERMISSION-MODEL.md §6.1](PERMISSION-MODEL.m
 
 | Role | Levels | Grants | Assignable to |
 |---|---|---|---|
-| `owner` | `full` on every type | every custom-action grant and every admin key, on every type | everyone except `agent` |
+| `owner` | `full` on every type | every custom-action grant and every admin key, on every type | everyone except `agent` and `group` |
 | `member` | `full` on every type | none | everyone |
 | `viewer` | `read` on every type | none | everyone |
 | `guest` | `read` on every type (guests see only what they are invited to, through assignments) | none | everyone |
 | `agent` | `read` on every type | none | `agent` only |
 
 - `owner` cannot be declared or changed in a manifest.
-- A manifest may declare `member`, `viewer`, `guest` or `agent`. Its entry **replaces** the seeded one completely. For example, the blueprint's "an agent may write tasks assigned to it" is a declared `agent` role with `task = "write"` plus a condition (§8).
+- A manifest may declare `member`, `viewer`, `guest` or `agent`. Its entry **replaces** the seeded one completely, except that it keeps the seeded `assignable_to` unless it sets its own. For example, the blueprint's "an agent may write tasks assigned to it" is a declared `agent` role plus a condition (§8):
+
+```toml
+[roles.agent]                       # replaces the seeded agent; still agents only
+grants = { task = "write" }
+
+[[conditions]]
+role = "agent"
+type = "task"
+when = { is_principal = "assignee" }
+else = "read"
+```
 
 ## 6. Admin keys
 
@@ -184,7 +197,9 @@ Rules:
 - A comparison with a null field is false. So `not` of a comparison is true on a null field.
 - String values are 1–256 characters. Integers fit in 64 bits.
 - A template has at most 32 nodes and is at most 4 levels deep.
-- `in_group` names a group key. Groups are `tutela-store` data; a group that does not exist makes the template false.
+- The field must not be confidential or secret. Otherwise people could learn its value from what they may do.
+- `in_group` names a group key. Groups are `tutela-store` data. If a template names a group that does not exist, the **whole condition** is false (fail closed), even under `not`: the level drops to `else`.
+- Templates are read with a depth limit: input deeper than 4 levels is refused while it is read, before anything deeper is looked at.
 
 ## 9. UI keys
 
@@ -211,26 +226,43 @@ UI hiding is never security. Every server checks again.
 
 ## 10. Diffs: narrowing, neutral, widening
 
-The compiler compares two compiled models of the same app and lists every change. Each change is **narrowing** (someone loses access), **neutral** (nobody gains or loses), or **widening** (someone gains access). The whole diff is widening if any change is. `tutela apply` refuses a widening diff without an approval token ([PERMISSION-MODEL.md §15.2](PERMISSION-MODEL.md#152-tutela-apply)).
+The compiler compares two compiled models of the same app and lists every change. Each change is **narrowing** (someone loses access), **neutral** (nobody gains or loses), or **widening** (someone gains access). The whole diff is widening if any change is. `tutela apply` refuses a widening diff without an approval token ([PERMISSION-MODEL.md §15.2](PERMISSION-MODEL.md#152-tutela-apply)). The decisions behind these rules: [ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening).
 
-The compiler compares **effective** permissions, not text. For each role in both models and each type in both models it compares:
+The compiler compares **effective** permissions, not text:
+
+- **A type or role that the old model does not have is compared against a baseline where it gives nobody anything.** Whoever gets access on it is widening. Removing a type is narrowing and needs no token, so without this a removed and re-added type, a rename or a rollback could widen access unseen (Tutela does not know whether rows of the type still exist). A new role that gives nothing is neutral.
+- **Field and feature levels are compared at every item level** a condition could leave, from `none` up to the role's level, with the same function the evaluator uses (`Model::effective_field_level`). They are also compared at the org root (with the org-root field rules applied). A field that is new in an existing type counts as going up from `none` (an unknown field is masked). This holds for a confidential or secret field too: it is hidden at the org root, but a rule at one scope in `tutela-store` (for example one left from before the field was removed) could open it.
+- **The bar of each custom action is compared directly**: a lower `needs` or a dropped `grant` is widening, whoever holds which level today.
+
+For each role and type:
 
 | What | Widening when |
 |---|---|
 | The item level | it goes up |
-| Each field and feature level at the org root: min(role level, field rules at the org root) | it goes up. A field that is new in an existing type counts as going up from `none` (an unknown field is masked), so adding a public or internal field that some role can read is widening. |
-| Each custom action: allowed or not | it becomes allowed (a new action, a lower `needs`, a dropped `grant`, a new grant on the role) |
-| Each admin key | the role gets it |
+| Each field and feature level, at every item level and at the org root | it goes up |
+| Each custom action: allowed or not | it becomes allowed |
+| Each custom-action grant and admin key | the role gets it |
 | The role's conditions on the type | one is removed or changed (a change counts as remove + add, to be safe) |
 | `assignable_to` | a kind is added |
+
+For the model:
+
+| What | Widening when |
+|---|---|
+| `needs` of a custom action | it goes down (owner-only > full > write > read) |
+| `grant` of a custom action | `true` → `false` |
+| An org-root field rule | it is removed, its `max` goes up, or a new rule for one role is above the all-roles rule |
+| A UI key | it is removed, or an action, field or route is taken away (a route loses its declared guard) |
 | `starts` of a type | `private` → `open` |
 | `ai_reach` of a type | `project` → `team` |
 | `grants_access` of a field | `true` → `false` |
 | `sensitivity` of a field | it goes down (labels on output get lower) |
 
-The opposite direction is narrowing. These are neutral: a new type, a new role (nobody holds it yet), labels, the audience, and UI keys. A removed type, field, action or role is narrowing.
+The opposite direction is narrowing. These are neutral: labels, the audience, a field rule's `display`, a UI key's mode or reason, a new UI key, and types' parents and container flags. A removed type, field, action or role is narrowing. Every change gets its own line, even when another line already makes the diff widening.
 
 ## 11. Limits
+
+A manifest over any count limit is refused at once, before any other check.
 
 | Item | Limit |
 |---|---|
@@ -246,3 +278,6 @@ The opposite direction is narrowing. These are neutral: a new type, a new role (
 | `and` / `or` arguments | 2–16 |
 | UI keys | 2,000 |
 | Routes per UI key | 16 |
+| Actions and fields per UI key | 256 |
+| Grants per role | 10,000 |
+| Nesting of tables and arrays | 32 |

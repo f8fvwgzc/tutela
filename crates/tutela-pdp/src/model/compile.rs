@@ -9,7 +9,7 @@ use tutela_contracts::keys::{
 use tutela_contracts::level::Level;
 use tutela_contracts::principal::PrincipalKind;
 
-use super::raw;
+use super::raw::{self, MAX_BRANCHES, MAX_TEMPLATE_DEPTH};
 use super::{
     AiReach, AppName, Condition, CustomAction, FieldDef, FieldDisplay, FieldRule, FieldType,
     GroupKey, Issue, Issues, MANIFEST_VERSION, MAX_MANIFEST_BYTES, Method, Model, Role, RoleKey,
@@ -24,15 +24,15 @@ const MAX_ROLES: usize = 512;
 const MAX_FIELD_RULES: usize = 10_000;
 const MAX_CONDITIONS: usize = 1_000;
 const MAX_TEMPLATE_NODES: usize = 32;
-const MAX_TEMPLATE_DEPTH: usize = 4;
 const MAX_IN_VALUES: usize = 64;
-const MAX_BRANCHES: usize = 16;
 const MAX_UI_KEYS: usize = 2_000;
 const MAX_ROUTES: usize = 16;
 const MAX_LABEL: usize = 128;
 const MAX_REASON: usize = 512;
 const MAX_STRING_VALUE: usize = 256;
 const MAX_NESTING: usize = 32;
+const MAX_GRANTS: usize = 10_000;
+const MAX_UI_ENTRIES: usize = 256;
 
 struct Ctx {
     issues: Vec<Issue>,
@@ -41,10 +41,29 @@ struct Ctx {
 impl Ctx {
     fn bad(&mut self, at: impl Into<String>, message: impl Into<String>) {
         self.issues.push(Issue {
-            at: at.into(),
-            message: message.into(),
+            at: clean(&at.into(), 256),
+            message: clean(&message.into(), 512),
         });
     }
+}
+
+/// Text from the manifest goes into issues, and issues go into logs. Control
+/// characters are escaped and the text is cut, so a hostile key cannot forge
+/// log lines or flood them.
+fn clean(s: &str, max: usize) -> String {
+    let mut out = String::new();
+    for (n, c) in s.chars().enumerate() {
+        if n == max {
+            out.push_str("...");
+            break;
+        }
+        if c.is_control() {
+            out.extend(c.escape_default());
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 fn level(s: &str) -> Option<Level> {
@@ -84,10 +103,15 @@ pub(super) fn compile(source: &str) -> Result<Model, Issues> {
     let raw: raw::Manifest = toml::from_str(source).map_err(|e| {
         Issues(vec![Issue {
             at: String::new(),
-            message: e.message().to_owned() + &location(source, e.span()),
+            message: clean(e.message(), 512) + &location(source, e.span()),
         }])
     })?;
     let mut ctx = Ctx { issues: Vec::new() };
+    // Over a count limit: stop at once, before any work that grows with it.
+    counts(&mut ctx, &raw);
+    if !ctx.issues.is_empty() {
+        return Err(Issues(ctx.issues));
+    }
     let model = build(&mut ctx, raw);
     if ctx.issues.is_empty() {
         Ok(model)
@@ -96,8 +120,11 @@ pub(super) fn compile(source: &str) -> Result<Model, Issues> {
     }
 }
 
-/// The deepest nesting of `{` and `[` outside strings and comments. Checked
-/// before parsing, so hostile input cannot exhaust the stack.
+/// The deepest nesting of `{` and `[` outside strings and comments: a cheap
+/// first filter before parsing. It does not see dotted keys (`a.b.c = 1`),
+/// so it is not the stack guard. The guard is in `raw`: templates stop past
+/// depth 4, and every other value is read by a flat visitor that never
+/// recurses into nested input.
 fn nesting(source: &str) -> usize {
     let b = source.as_bytes();
     let (mut i, mut depth, mut max) = (0usize, 0usize, 0usize);
@@ -116,8 +143,17 @@ fn nesting(source: &str) -> usize {
                         i += 2;
                         continue;
                     }
-                    if b[i] == q && (!triple || b.get(i..i + 3) == Some(&[q, q, q][..])) {
-                        i += if triple { 3 } else { 1 };
+                    if b[i] == q && !triple {
+                        i += 1;
+                        break;
+                    }
+                    // A multi-line string ends at the last quote of a run
+                    // of 3 to 5 (up to 2 quotes may sit before the closing
+                    // three).
+                    if b[i] == q && b.get(i..i + 3) == Some(&[q, q, q][..]) {
+                        while i < b.len() && b[i] == q {
+                            i += 1;
+                        }
                         break;
                     }
                     if !triple && b[i] == b'\n' {
@@ -137,6 +173,62 @@ fn nesting(source: &str) -> usize {
         i += 1;
     }
     max
+}
+
+fn counts(ctx: &mut Ctx, raw: &raw::Manifest) {
+    if raw.types.len() > MAX_TYPES {
+        ctx.bad("types", "at most 512 types");
+    }
+    let declared = raw
+        .roles
+        .keys()
+        .filter(|k| SeededRole::from_key(k).is_none())
+        .count();
+    if declared + SeededRole::ALL.len() > MAX_ROLES {
+        ctx.bad("roles", "at most 512 roles, seeded ones included");
+    }
+    if raw.field_rules.len() > MAX_FIELD_RULES {
+        ctx.bad("field_rules", "at most 10,000 field rules");
+    }
+    if raw.conditions.len() > MAX_CONDITIONS {
+        ctx.bad("conditions", "at most 1,000 conditions");
+    }
+    if raw.ui.len() > MAX_UI_KEYS {
+        ctx.bad("ui", "at most 2,000 UI keys");
+    }
+    for (name, t) in &raw.types {
+        if t.fields.len() + t.features.len() > MAX_FIELDS {
+            ctx.bad(
+                format!("types.{name}"),
+                "at most 256 fields and features per type",
+            );
+        }
+        if t.actions.len() > MAX_ACTIONS {
+            ctx.bad(
+                format!("types.{name}.actions"),
+                "at most 64 custom actions per type",
+            );
+        }
+    }
+    for (name, r) in &raw.roles {
+        if r.grants.len() > MAX_GRANTS {
+            ctx.bad(
+                format!("roles.{name}.grants"),
+                "at most 10,000 grants per role",
+            );
+        }
+    }
+    for (name, u) in &raw.ui {
+        if u.actions.len() + u.fields.len() > MAX_UI_ENTRIES {
+            ctx.bad(
+                format!("ui.{name}"),
+                "at most 256 actions and fields per UI key",
+            );
+        }
+        if u.routes.len() > MAX_ROUTES {
+            ctx.bad(format!("ui.{name}.routes"), "list 1 to 16 routes");
+        }
+    }
 }
 
 fn location(source: &str, span: Option<core::ops::Range<usize>>) -> String {
@@ -161,17 +253,28 @@ fn build(ctx: &mut Ctx, raw: raw::Manifest) -> Model {
             .map_err(|e| ctx.bad("app.audience", e.to_string()))
             .ok()
     });
+    if audience.as_ref() == Some(&Audience::TUTELA_ADMIN) {
+        ctx.bad(
+            "app.audience",
+            "`tutela-admin` is reserved for the Tutela Console and admin components",
+        );
+    }
     let types = types(ctx, raw.types);
     let roles = roles(ctx, &types, raw.roles);
     let field_rules = field_rules(ctx, &types, &roles, raw.field_rules);
     let conditions = conditions(ctx, &types, &roles, raw.conditions);
     let ui = ui(ctx, &types, raw.ui);
+    let rule_caps = field_rules
+        .iter()
+        .map(|r| ((r.field.clone(), r.role.clone()), r.max))
+        .collect();
     Model {
         app,
         audience,
         types,
         roles,
         field_rules,
+        rule_caps,
         conditions,
         ui,
     }
@@ -180,9 +283,6 @@ fn build(ctx: &mut Ctx, raw: raw::Manifest) -> Model {
 // ---------- types ----------
 
 fn types(ctx: &mut Ctx, raw: BTreeMap<String, raw::Type>) -> BTreeMap<ResourceType, TypeDef> {
-    if raw.len() > MAX_TYPES {
-        ctx.bad("types", "at most 512 types");
-    }
     let mut out = BTreeMap::new();
     let mut parents_raw: BTreeMap<ResourceType, Vec<String>> = BTreeMap::new();
     for (name, t) in raw {
@@ -268,16 +368,7 @@ fn types(ctx: &mut Ctx, raw: BTreeMap<String, raw::Type>) -> BTreeMap<ResourceTy
                 ctx.bad(format!("{at}.features"), format!("`{f}` is listed twice"));
             }
         }
-        if fields.len() + features.len() > MAX_FIELDS {
-            ctx.bad(&at, "at most 256 fields and features per type");
-        }
         let mut actions = BTreeMap::new();
-        if t.actions.len() > MAX_ACTIONS {
-            ctx.bad(
-                format!("{at}.actions"),
-                "at most 64 custom actions per type",
-            );
-        }
         for (aname, a) in t.actions {
             let aat = format!("{at}.actions.{aname}");
             let name = match ActionName::parse(&aname) {
@@ -356,19 +447,20 @@ fn types(ctx: &mut Ctx, raw: BTreeMap<String, raw::Type>) -> BTreeMap<ResourceTy
         }
     }
     // Every type must reach `org` through its parents.
-    let mut reached: BTreeSet<ResourceType> = BTreeSet::new();
-    loop {
-        let before = reached.len();
-        for (ty, d) in &out {
-            if d.parents
-                .iter()
-                .any(|p| *p == ResourceType::ORG || reached.contains(p))
-            {
-                reached.insert(ty.clone());
-            }
+    // A breadth-first walk down from `org`: linear in types and parents.
+    let mut children: BTreeMap<&ResourceType, Vec<&ResourceType>> = BTreeMap::new();
+    for (ty, d) in &out {
+        for p in &d.parents {
+            children.entry(p).or_default().push(ty);
         }
-        if reached.len() == before {
-            break;
+    }
+    let mut reached: BTreeSet<ResourceType> = BTreeSet::new();
+    let mut queue = std::collections::VecDeque::from([&ResourceType::ORG]);
+    while let Some(t) = queue.pop_front() {
+        for &c in children.get(t).map(Vec::as_slice).unwrap_or_default() {
+            if reached.insert(c.clone()) {
+                queue.push_back(c);
+            }
         }
     }
     for ty in out.keys() {
@@ -439,7 +531,9 @@ fn seeded(types: &BTreeMap<ResourceType, TypeDef>, role: SeededRole) -> Role {
     let assignable_to = match role {
         SeededRole::Owner => SubjectKind::ALL
             .into_iter()
-            .filter(|k| *k != SubjectKind::Principal(PrincipalKind::Agent))
+            .filter(|k| {
+                *k != SubjectKind::Principal(PrincipalKind::Agent) && *k != SubjectKind::Group
+            })
             .collect(),
         SeededRole::Agent => [SubjectKind::Principal(PrincipalKind::Agent)].into(),
         _ => SubjectKind::ALL.into_iter().collect(),
@@ -578,12 +672,18 @@ fn roles(
                     .is_some_and(|a| a.needs == ActionRequirement::OwnerOnly)
         });
         let agent = SubjectKind::Principal(PrincipalKind::Agent);
+        // Groups may hold agents, so admin powers never go to a group either.
+        let never = [agent, SubjectKind::Group];
         let assignable_to: BTreeSet<SubjectKind> = match r.assignable_to {
             None if owner_only => SubjectKind::ALL
                 .into_iter()
-                .filter(|k| *k != agent)
+                .filter(|k| !never.contains(k))
                 .collect(),
-            None => SubjectKind::ALL.into_iter().collect(),
+            // A declared seeded role keeps the seeded default (agent: agents only).
+            None => match seeded_as {
+                Some(s) => seeded(types, s).assignable_to,
+                None => SubjectKind::ALL.into_iter().collect(),
+            },
             Some(list) => {
                 let mut set = BTreeSet::new();
                 for s in list {
@@ -608,10 +708,10 @@ fn roles(
                 set
             }
         };
-        if owner_only && assignable_to.contains(&agent) {
+        if owner_only && never.iter().any(|k| assignable_to.contains(k)) {
             ctx.bad(
                 format!("{at}.assignable_to"),
-                "a role with an admin key or an owner-only action can never be assigned to an agent",
+                "a role with an admin key or an owner-only action can never be assigned to an agent or a group (groups may hold agents)",
             );
         }
         out.insert(
@@ -625,9 +725,6 @@ fn roles(
                 assignable_to,
             },
         );
-    }
-    if out.len() > MAX_ROLES {
-        ctx.bad("roles", "at most 512 roles, seeded ones included");
     }
     out
 }
@@ -658,9 +755,6 @@ fn field_rules(
                 );
             }
         }
-    }
-    if raw.len() > MAX_FIELD_RULES {
-        ctx.bad("field_rules", "at most 10,000 field rules");
     }
     for (i, r) in raw.into_iter().enumerate() {
         let at = format!("field_rules[{i}]");
@@ -732,9 +826,6 @@ fn conditions(
     roles: &BTreeMap<RoleKey, Role>,
     raw: Vec<raw::Condition>,
 ) -> Vec<Condition> {
-    if raw.len() > MAX_CONDITIONS {
-        ctx.bad("conditions", "at most 1,000 conditions");
-    }
     let mut out = Vec::new();
     for (i, c) in raw.into_iter().enumerate() {
         let at = format!("conditions[{i}]");
@@ -819,12 +910,18 @@ fn template_field<'d>(
             format!("`{name}` is read by a condition, so it must have `grants_access = true`"),
         );
     }
+    if fd.sensitivity.starts_hidden() {
+        ctx.bad(
+            at,
+            format!("`{name}` is confidential or secret; a condition on it would let people learn its value from what they may do"),
+        );
+    }
     Some((field.clone(), fd))
 }
 
-fn value(ctx: &mut Ctx, at: &str, ft: FieldType, v: toml::Value) -> Option<Value> {
+fn value(ctx: &mut Ctx, at: &str, ft: FieldType, v: raw::Scalar) -> Option<Value> {
     match (ft, v) {
-        (FieldType::String, toml::Value::String(s)) => {
+        (FieldType::String, raw::Scalar::String(s)) => {
             if text_ok(&s, MAX_STRING_VALUE) {
                 Some(Value::String(s))
             } else {
@@ -835,8 +932,8 @@ fn value(ctx: &mut Ctx, at: &str, ft: FieldType, v: toml::Value) -> Option<Value
                 None
             }
         }
-        (FieldType::Integer, toml::Value::Integer(i)) => Some(Value::Integer(i)),
-        (FieldType::Boolean, toml::Value::Boolean(b)) => Some(Value::Boolean(b)),
+        (FieldType::Integer, raw::Scalar::Integer(i)) => Some(Value::Integer(i)),
+        (FieldType::Boolean, raw::Scalar::Boolean(b)) => Some(Value::Boolean(b)),
         (FieldType::StringList | FieldType::Principal, _) => {
             ctx.bad(
                 at,
@@ -986,9 +1083,6 @@ fn ui(
     types: &BTreeMap<ResourceType, TypeDef>,
     raw: BTreeMap<String, raw::Ui>,
 ) -> BTreeMap<UiKey, UiComponent> {
-    if raw.len() > MAX_UI_KEYS {
-        ctx.bad("ui", "at most 2,000 UI keys");
-    }
     let mut out = BTreeMap::new();
     for (name, u) in raw {
         let at = format!("ui.\"{name}\"");

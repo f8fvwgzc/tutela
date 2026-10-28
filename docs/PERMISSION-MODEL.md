@@ -179,7 +179,7 @@ Anything the model does not know is denied: an unknown type, an undeclared actio
 
 ### 5.3 Owner-only admin actions (Blueprint)
 
-"Full is not configure." These sit above the four levels and are never given by default. On the wire each one is an action key, `<type>:<name>`. `manage_access` is already a built-in action in `tutela-contracts`. The other names are proposals; they are fixed in Phase A ([CONTRACTS.md §2.3](CONTRACTS.md#23-action-keys)).
+"Full is not configure." These sit above the four levels and are never given by default. On the wire each one is an action key, `<type>:<name>`. `manage_access` is already a built-in action in `tutela-contracts`. The names are fixed in [MANIFEST.md §6](MANIFEST.md#6-admin-keys) ([CONTRACTS.md §2.3](CONTRACTS.md#23-action-keys)).
 
 | Blueprint wording | Admin key (proposed) |
 |---|---|
@@ -200,7 +200,7 @@ The seeded **Owner** role holds these keys at the scope where it is assigned. A 
 
 ### 6.1 Seeded roles (Blueprint)
 
-Every tenant starts with these roles. Tenants can edit them and add their own.
+Every tenant starts with these roles. A manifest may replace Member, Viewer, Guest and Agent, and add its own roles. The Owner role is fixed and has no conditions ([MANIFEST.md §5.1](MANIFEST.md#51-seeded-roles), [ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)).
 
 | Role | Default levels | Admin keys | Notes |
 |---|---|---|---|
@@ -594,7 +594,7 @@ The blueprint lists the places that each need **their own test before launch**. 
 A product declares UI keys in `tutela.resources.toml`. **Each key names the actions and the API routes behind it.** This stops the classic mistake: hiding the Approve button but forgetting the check on `POST /approve`.
 
 ```toml
-# tutela.resources.toml (draft shape; the format is fixed in Phase A)
+# tutela.resources.toml (format v1: MANIFEST.md)
 [ui."contracts.approve_button"]
 actions     = ["contract:approve"]
 routes      = ["POST /api/contracts/{id}/approve"]
@@ -752,9 +752,9 @@ Roles that matter here:
 |---|---|---|---|---|---|
 | Owner (seeded) | Full | — | Full | Full | admin keys at its scope |
 | Member (seeded) | Full | — | Full | Full | — |
-| Viewer (seeded; Kestrel lets viewers ask the AI) | Read | — | Read | `@chat` Read, `@ai` Write | — |
+| Viewer (declared by Kestrel; it replaces the seeded Viewer, so viewers may ask the AI) | Read | — | Read | `@chat` Read, `@ai` Write | — |
 | **Legal reviewer** (tenant-defined) | Write | `title`, `counterparty`, `assignee`: Read | Read | `@chat` Write, `@ai` Write | `contract:approve` |
-| Agent (seeded) | Read, or Write when assigned (condition C-1) | — | Read | — | — |
+| Agent (declared by Kestrel; it replaces the seeded Agent, which is Read only) | Write, narrowed to Read by condition C-1 when not assigned | — | Read | — | — |
 
 Rules:
 

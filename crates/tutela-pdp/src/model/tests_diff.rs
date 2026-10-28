@@ -67,7 +67,7 @@ fn lowering_sensitivity_is_widening() {
     assert!(
         lines
             .iter()
-            .any(|l| l.contains("role `member` on `contract.budget`: none -> full"))
+            .any(|l| l.contains("role `member` on `contract.budget` at the org root: none -> full"))
     );
     // And back is narrowing.
     let (c, _) = classes(&tracker("internal", ""), &tracker("confidential", ""));
@@ -85,7 +85,8 @@ fn opening_a_hidden_field_for_one_role_is_widening() {
     assert!(
         lines
             .iter()
-            .any(|l| l.contains("role `reviewer` on `contract.budget`: none -> read"))
+            .any(|l| l
+                .contains("role `reviewer` on `contract.budget` at the org root: none -> read"))
     );
 }
 
@@ -146,21 +147,194 @@ fn new_things() {
     );
     let (c, lines) = classes(&base, &field);
     assert_eq!(c, Class::Widening, "{lines:?}");
-    // A new secret field starts hidden: neutral.
+    // A new secret field is hidden at the org root, but a per-scope rule in
+    // tutela-store (for example one left from before it was removed) could
+    // open it, so it is widening too.
     let secret = base.replace(
         "title    = {",
         "notes = { sensitivity = \"secret\" }\ntitle    = {",
     );
-    assert_eq!(classes(&base, &secret).0, Class::Neutral);
-    // A new type and a new role: neutral.
+    let (c, lines) = classes(&base, &secret);
+    assert_eq!(c, Class::Widening, "{lines:?}");
+    assert!(
+        lines.iter().all(|l| !l.contains("notes` at the org root")),
+        "{lines:?}"
+    );
+    // A new type and a new role are compared against a baseline where
+    // nobody has anything: whoever gets access on them is widening.
     let more = tracker(
         "confidential",
         "[types.memo]\nparent = \"matter\"\n[roles.auditor]\ngrants = { contract = \"read\" }\n",
     );
     let (c, lines) = classes(&base, &more);
-    assert_eq!(c, Class::Neutral, "{lines:?}");
+    assert_eq!(c, Class::Widening, "{lines:?}");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("role `member` on `memo`: none -> full"))
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("role `auditor` on `contract`: none -> read"))
+    );
+    // A new role that gives nothing is neutral.
+    let empty = tracker("confidential", "[roles.nobody]\n");
+    assert_eq!(classes(&base, &empty).0, Class::Neutral);
     // Removing them again: narrowing.
     assert_eq!(classes(&more, &base).0, Class::Narrowing);
+}
+
+/// Review 1a: removing a type is narrowing, so it needs no token. Adding it
+/// back with a weaker field must not be neutral.
+#[test]
+fn a_re_added_type_is_compared_against_nothing() {
+    let rev_a = tracker("confidential", "");
+    let rev_b = rev_a
+        .replace("[types.contract]\nparent = \"matter\"\n", "")
+        .replace(
+            "[types.contract.fields]\ntitle    = { sensitivity = \"internal\" }\nassignee = { sensitivity = \"internal\", type = \"principal\", grants_access = true }\nbudget   = { sensitivity = \"confidential\", type = \"integer\" }\n\n[types.contract.actions]\napprove = { needs = \"write\" }\n",
+            "",
+        )
+        .replace(
+            "grants = { matter = \"read\", contract = \"write\", \"contract.title\" = \"read\", \"contract:approve\" = true }",
+            "grants = { matter = \"read\" }",
+        );
+    assert_eq!(classes(&rev_a, &rev_b).0, Class::Narrowing);
+    let rev_c = tracker("internal", "");
+    let (c, lines) = classes(&rev_b, &rev_c);
+    assert_eq!(c, Class::Widening, "{lines:?}");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("role `viewer` on `contract`: none -> read"))
+    );
+}
+
+/// Review 1b: a confidential field is `none` at the org root for everyone,
+/// but a per-scope rule can open it. Raising the role's own level is then
+/// widening, even though the org-root level stays `none`.
+#[test]
+fn a_raised_level_under_a_root_cap_is_widening() {
+    let base = tracker("confidential", "").replace(
+        "\"contract.title\" = \"read\"",
+        "\"contract.title\" = \"read\", \"contract.budget\" = \"read\"",
+    );
+    let raised = base.replace(
+        "\"contract.budget\" = \"read\"",
+        "\"contract.budget\" = \"write\"",
+    );
+    let (c, lines) = classes(&base, &raised);
+    assert_eq!(c, Class::Widening, "{lines:?}");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("role `reviewer` on `contract.budget`"))
+    );
+    // Dropping the entry falls back to the type level (write): widening too.
+    let dropped = base.replace(", \"contract.budget\" = \"read\"", "");
+    assert_eq!(classes(&base, &dropped).0, Class::Widening);
+}
+
+/// Review 1c: conditions decide who sits at which level, so a lower `needs`
+/// and an explicit feature level are widening even when the role's full
+/// level hides them.
+#[test]
+fn lower_needs_and_feature_levels_are_widening() {
+    let base = tracker("confidential", "");
+    let read = base.replace(
+        "approve = { needs = \"write\" }",
+        "approve = { needs = \"read\" }",
+    );
+    let (c, lines) = classes(&base, &read);
+    assert_eq!(c, Class::Widening, "{lines:?}");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("action `contract:approve` needs: write -> read"))
+    );
+    assert_eq!(classes(&read, &base).0, Class::Narrowing);
+    let owner = base.replace(
+        "approve = { needs = \"write\" }",
+        "approve = { needs = \"owner\" }",
+    );
+    assert_eq!(classes(&owner, &base).0, Class::Widening);
+
+    let ai = base.replace(
+        "[types.contract]\nparent = \"matter\"\n",
+        "[types.contract]\nparent = \"matter\"\nfeatures = [\"ai\"]\n",
+    );
+    let explicit = ai.replace(
+        "\"contract.title\" = \"read\"",
+        "\"contract.title\" = \"read\", \"contract.@ai\" = \"write\"",
+    );
+    let (c, lines) = classes(&ai, &explicit);
+    assert_eq!(c, Class::Widening, "{lines:?}");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("on `contract.@ai` (item level read): read -> write"))
+    );
+}
+
+#[test]
+fn field_rule_and_ui_changes_get_lines() {
+    let rule = |max: &str, display: &str| {
+        tracker(
+            "confidential",
+            &format!(
+                "[[field_rules]]\nfield = \"contract.title\"\nmax = \"{max}\"\ndisplay = \"{display}\"\n"
+            ),
+        )
+    };
+    let (c, lines) = classes(&rule("read", "restricted"), &rule("read", "remove"));
+    assert_eq!(c, Class::Neutral);
+    assert!(lines.iter().any(|l| l.contains("display changed")));
+    assert_eq!(
+        classes(&rule("read", "remove"), &rule("write", "remove")).0,
+        Class::Widening
+    );
+    assert_eq!(
+        classes(&rule("read", "remove"), &tracker("confidential", "")).0,
+        Class::Widening
+    );
+
+    let ui = |actions: &str, routes: &str| {
+        tracker(
+            "confidential",
+            &format!(
+                "[ui.\"c.approve\"]\nactions = [{actions}]\nroutes = [{routes}]\nwhen_denied = \"hide\"\n"
+            ),
+        )
+    };
+    let full = ui(
+        "\"contract:approve\", \"contract:write\"",
+        "\"POST /a\", \"POST /b\"",
+    );
+    assert_eq!(
+        classes(
+            &full,
+            &ui("\"contract:approve\"", "\"POST /a\", \"POST /b\"")
+        )
+        .0,
+        Class::Widening
+    );
+    assert_eq!(
+        classes(
+            &full,
+            &ui("\"contract:approve\", \"contract:write\"", "\"POST /a\"")
+        )
+        .0,
+        Class::Widening
+    );
+    assert_eq!(
+        classes(&full, &tracker("confidential", "")).0,
+        Class::Widening
+    );
+    assert_eq!(
+        classes(&tracker("confidential", ""), &full).0,
+        Class::Neutral
+    );
 }
 
 #[test]

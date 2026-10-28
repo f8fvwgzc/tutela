@@ -166,13 +166,27 @@ fn the_worked_example_compiles() {
         tutela_contracts::principal::PrincipalKind::Agent
     )));
 
-    // C-1: the agent writes contracts only when it is the assignee.
+    // C-1: the declared agent writes contracts only when it is the assignee.
     assert_eq!(m.conditions().len(), 1);
-    assert!(matches!(
-        m.conditions()[0].when,
-        Template::IsPrincipal { .. }
-    ));
-    assert_eq!(m.conditions()[0].otherwise, Level::Read);
+    let c1 = &m.conditions()[0];
+    assert_eq!(c1.role, role("agent"));
+    assert_eq!(c1.resource_type, ty("contract"));
+    assert_eq!(
+        c1.when,
+        Template::IsPrincipal {
+            field: tutela_contracts::keys::FieldName::parse("assignee").unwrap()
+        }
+    );
+    assert_eq!(c1.otherwise, Level::Read);
+    let agent = &m.roles()[&role("agent")];
+    assert_eq!(agent.level(&ty("contract")), Level::Write);
+    assert_eq!(
+        agent.assignable_to,
+        [SubjectKind::Principal(
+            tutela_contracts::principal::PrincipalKind::Agent
+        )]
+        .into()
+    );
 
     assert_eq!(
         m.types()[&ty("contract")].fields
@@ -610,4 +624,189 @@ fn oversized_and_hostile_input_is_refused() {
     );
     Model::from_toml(&quoted).unwrap();
     assert!(Model::from_toml("not toml at all [").is_err());
+}
+
+/// Review must-fix 2: dotted keys open one table per part without any
+/// bracket, so they pass the bracket scan. Deep input must give an error,
+/// never a stack overflow, even on a thread with a 2 MiB stack.
+#[test]
+fn deep_input_through_dotted_keys_cannot_exhaust_the_stack() {
+    let cond = |when: &str| {
+        format!(
+            "{HEAD}{PROJECT}[types.project.fields]\nstatus = {{ sensitivity = \"internal\", grants_access = true }}\n[[conditions]]\nrole = \"member\"\ntype = \"project\"\n{when}\nelse = \"read\"\n"
+        )
+    };
+    // 31 nested inline tables, each opened by a key of 64 dotted parts:
+    // about 2,000 levels, with only 31 brackets.
+    let dotted = vec!["not"; 64].join(".");
+    let deep_when = format!(
+        "when = {}{{ in_group = \"a\" }}{}",
+        format!("{{ {dotted} = ").repeat(30),
+        " }".repeat(30)
+    );
+    let value = vec!["a"; 64].join(".");
+    let deep_value = format!(
+        "when = {{ eq = {{ field = \"status\", value = {}1{} }} }}",
+        format!("{{ {value} = ").repeat(29),
+        " }".repeat(29)
+    );
+    let grants = format!(
+        "{HEAD}{PROJECT}[roles.r]\ngrants = {}\"read\"{}\n",
+        format!("{{ {value} = ").repeat(30),
+        " }".repeat(30)
+    );
+    let inputs = [cond(&deep_when), cond(&deep_value), grants];
+    let handle = std::thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(move || {
+            inputs
+                .iter()
+                .map(|s| Model::from_toml(s).is_err())
+                .collect::<Vec<_>>()
+        })
+        .unwrap();
+    assert_eq!(handle.join().unwrap(), vec![true, true, true]);
+}
+
+#[test]
+fn a_multi_line_string_may_end_with_extra_quotes() {
+    // `"""a""""` is the string `a"`. The brackets after it on the same line
+    // are outside the string and must count.
+    let src = format!(
+        "{HEAD}[types.p]\nparent = \"org\"\nf = {{ s = \"\"\"a\"\"\"\", t = {}1{} }}\n",
+        "[".repeat(40),
+        "]".repeat(40)
+    );
+    refused(&src, "nest more than 32 levels");
+}
+
+#[test]
+fn every_count_limit_is_enforced_before_any_other_work() {
+    let many = |n: usize, f: &dyn Fn(usize) -> String| (0..n).map(f).collect::<String>();
+    refused(
+        &with(&many(513, &|i| format!("[types.t{i}]\nparent = \"org\"\n"))),
+        "at most 512 types",
+    );
+    refused(
+        &with(&many(508, &|i| format!("[roles.r{i}]\n"))),
+        "at most 512 roles",
+    );
+    // Replacing seeded roles does not count twice.
+    Model::from_toml(&with(&format!(
+        "{}[roles.member]\n[roles.viewer]\n",
+        many(507, &|i| format!("[roles.r{i}]\n"))
+    )))
+    .unwrap();
+    let field =
+        format!("{PROJECT}[types.project.fields]\nname = {{ sensitivity = \"internal\" }}\n");
+    refused(
+        &with(&format!(
+            "{field}{}",
+            many(10_001, &|_| {
+                "[[field_rules]]\nfield = \"project.name\"\nmax = \"read\"\n".to_string()
+            })
+        )),
+        "at most 10,000 field rules",
+    );
+    refused(
+        &with(&format!(
+            "{field}{}",
+            many(1_001, &|_| {
+                "[[conditions]]\nrole = \"member\"\ntype = \"project\"\nwhen = { in_group = \"a\" }\nelse = \"read\"\n".to_string()
+            })
+        )),
+        "at most 1,000 conditions",
+    );
+    refused(
+        &with(&format!(
+            "{PROJECT}{}",
+            many(2_001, &|i| format!(
+                "[ui.\"a.k{i}\"]\nactions = [\"project:read\"]\nroutes = [\"GET /x\"]\nwhen_denied = \"hide\"\n"
+            ))
+        )),
+        "at most 2,000 UI keys",
+    );
+    refused(
+        &with(&format!(
+            "{PROJECT}[types.project.fields]\n{}",
+            many(257, &|i| format!(
+                "f{i} = {{ sensitivity = \"internal\" }}\n"
+            ))
+        )),
+        "at most 256 fields and features",
+    );
+    refused(
+        &with(&format!(
+            "{PROJECT}[types.project.actions]\n{}",
+            many(65, &|i| format!("a{i} = {{ needs = \"read\" }}\n"))
+        )),
+        "at most 64 custom actions",
+    );
+    refused(
+        &with(&format!(
+            "{PROJECT}[roles.r.grants]\n{}",
+            many(10_001, &|i| format!("\"project.f{i}\" = \"read\"\n"))
+        )),
+        "at most 10,000 grants",
+    );
+    refused(
+        &with(&format!(
+            "{PROJECT}[ui.\"a.b\"]\nactions = [{}]\nroutes = [\"GET /x\"]\nwhen_denied = \"hide\"\n",
+            many(257, &|_| "\"project:read\",".to_string())
+        )),
+        "at most 256 actions and fields",
+    );
+    refused(
+        &with(&format!(
+            "{PROJECT}[ui.\"a.b\"]\nactions = [\"project:read\"]\nroutes = [{}]\nwhen_denied = \"hide\"\n",
+            many(17, &|i| format!("\"GET /x{i}\","))
+        )),
+        "1 to 16 routes",
+    );
+}
+
+#[test]
+fn more_refusal_rules() {
+    refused(
+        "version = 1\n[app]\nname = \"crm\"\naudience = \"tutela-admin\"\n",
+        "reserved",
+    );
+    // A condition must not read a hidden field: people could learn its value.
+    refused(
+        &with(&format!(
+            "{PROJECT}[types.project.fields]\nbudget = {{ sensitivity = \"confidential\", type = \"integer\", grants_access = true }}\n[[conditions]]\nrole = \"member\"\ntype = \"project\"\nwhen = {{ eq = {{ field = \"budget\", value = 1 }} }}\nelse = \"read\"\n"
+        )),
+        "confidential or secret",
+    );
+    // Groups may hold agents, so admin powers never go to a group.
+    refused(
+        &with(&format!(
+            "{PROJECT}[roles.r]\ngrants = {{ \"project:manage_access\" = true }}\nassignable_to = [\"user\", \"group\"]\n"
+        )),
+        "or a group",
+    );
+    let m = Model::from_toml(&with(PROJECT)).unwrap();
+    let owner = &m.roles()[&role("owner")];
+    assert!(!owner.assignable_to.contains(&SubjectKind::Group));
+    // A declared guest keeps the seeded default; a declared agent too.
+    let m = Model::from_toml(&with(&format!(
+        "{PROJECT}[roles.agent]\ngrants = {{ project = \"write\" }}\n[roles.guest]\n"
+    )))
+    .unwrap();
+    assert_eq!(m.roles()[&role("agent")].assignable_to.len(), 1);
+    assert_eq!(
+        m.roles()[&role("guest")].assignable_to.len(),
+        SubjectKind::ALL.len()
+    );
+}
+
+#[test]
+fn issue_text_is_escaped_and_cut() {
+    let src = format!(
+        "{HEAD}[types.\"bad\\nkey{}\"]\nparent = \"org\"\n",
+        "x".repeat(400)
+    );
+    let got = issues(&src);
+    assert!(got.iter().all(|i| !i.contains('\n')), "{got:?}");
+    assert!(got.iter().all(|i| i.chars().count() < 800), "{got:?}");
 }

@@ -556,6 +556,8 @@ pub struct Model {
     types: BTreeMap<ResourceType, TypeDef>,
     roles: BTreeMap<RoleKey, Role>,
     field_rules: Vec<FieldRule>,
+    /// The org-root field rules by (field, role or all roles).
+    rule_caps: BTreeMap<(FieldKey, Option<RoleKey>), Level>,
     conditions: Vec<Condition>,
     ui: BTreeMap<UiKey, UiComponent>,
 }
@@ -617,23 +619,47 @@ impl Model {
     /// the role if there is one, else the all-roles rule, else Full.
     #[must_use]
     pub fn root_cap(&self, role: &RoleKey, field: &FieldKey) -> Level {
-        let mut all = None;
-        for r in self.field_rules.iter().filter(|r| &r.field == field) {
-            match &r.role {
-                Some(k) if k == role => return r.max,
-                Some(_) => {}
-                None => all = Some(r.max),
-            }
-        }
-        all.unwrap_or(Level::Full)
+        self.rule_caps
+            .get(&(field.clone(), Some(role.clone())))
+            .or_else(|| self.rule_caps.get(&(field.clone(), None)))
+            .copied()
+            .unwrap_or(Level::Full)
     }
 
-    /// One role's level on one field or feature at the org root:
-    /// min(role level, org-root field rules).
+    /// One role's own level on one field or feature, when its level on the
+    /// item is `item` (after conditions). Field rules are not applied here;
+    /// they cap the result. The diff and the evaluator share this function.
+    ///
+    /// - A data field: the role's level for the field (or the item level if
+    ///   the role sets none), never above `item`.
+    /// - A feature: `none` when `item` is `none`; else the role's level for
+    ///   the feature, or `item` if the role sets none. A feature may be above
+    ///   the item level (a Viewer may ask the AI).
+    #[must_use]
+    pub fn effective_field_level(&self, role: &RoleKey, field: &FieldKey, item: Level) -> Level {
+        let Some(r) = self.roles.get(role) else {
+            return Level::None;
+        };
+        let own = r.field_levels.get(field).copied();
+        if field.is_feature() {
+            if item == Level::None {
+                Level::None
+            } else {
+                own.unwrap_or(item)
+            }
+        } else {
+            own.unwrap_or(item).min(item)
+        }
+    }
+
+    /// One role's level on one field or feature at the org root, with the
+    /// role's full level on the item: min(effective level, org-root rules).
     #[must_use]
     pub fn root_field_level(&self, role: &RoleKey, field: &FieldKey) -> Level {
         self.roles.get(role).map_or(Level::None, |r| {
-            r.field_level(field).min(self.root_cap(role, field))
+            let item = r.level(field.resource_type());
+            self.effective_field_level(role, field, item)
+                .min(self.root_cap(role, field))
         })
     }
 
