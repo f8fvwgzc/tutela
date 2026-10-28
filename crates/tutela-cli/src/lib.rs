@@ -1,7 +1,7 @@
 //! The `tutela` CLI (ROADMAP Phase A item 9), library mode.
 //!
 //! The binary is a thin layer over these functions, so they can be tested.
-//! Commands: `init`, `check`, `migrate`, `apply`, `approve` and
+//! Commands: `init`, `check`, `codegen`, `migrate`, `apply`, `approve` and
 //! `approvers keygen | add | list | revoke`. The database is
 //! `TUTELA_DATABASE_URL` (a key=value or a `postgresql://` connection
 //! string).
@@ -11,6 +11,7 @@
 
 pub mod apply;
 pub mod approval;
+pub mod codegen;
 pub mod init;
 
 use std::io::Write;

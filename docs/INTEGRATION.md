@@ -482,7 +482,8 @@ Then:
 export TUTELA_DATABASE_URL="host=127.0.0.1 port=5432 user=app_owner dbname=app"
 tutela migrate    # creates or updates the tutela schema (as the database owner)
 tutela apply      # shows the diff first; a widening diff fails (exit 3) without an approval token
-tutela codegen    # typed permission constants, React UI-key constants, server route guards (next)
+tutela codegen --rust src/perms.rs --ts web/src/perms.ts   # typed keys, the UI map and the route table
+tutela codegen --rust src/perms.rs --ts web/src/perms.ts --check   # in CI: fails if they are stale
 ```
 
 A widening diff (every first apply is one) needs a person with an approver
@@ -499,7 +500,11 @@ Until TLS lands (ROADMAP item 8), the CLI connects only to a database on the
 same machine (a Unix socket or a loopback address).
 
 Because `tutela codegen` makes typed constants, a renamed action breaks the
-build, not production.
+build, not production. The Rust file is a module (`pub mod perms;`) with
+`actions`, `fields`, `features` and `ui` constants and a `ROUTES` table (method,
+path, UI key, actions, fields); in a binary crate, put `#[allow(dead_code)]` on
+that `mod` line if some constants are unused. The TypeScript file has the same
+keys as `as const` objects with their types, and the `UI` map for the React parts.
 
 ## Step 4. Guard every handler
 

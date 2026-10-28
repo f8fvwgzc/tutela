@@ -49,8 +49,8 @@ tutela/
 │   ├── tutela-sdk/          token verifier, axum and tonic layers, decision cache         A
 │   ├── tutela-vault/        envelope encryption with a KMS trait                          A
 │   ├── tutela-safenet/      SSRF-safe outbound HTTP                                       A
-│   ├── tutela-cli/          the `tutela` CLI: init, check, migrate, apply, approvals      now
-│   │                        (codegen: A; apps, keys: B)
+│   ├── tutela-cli/          the `tutela` CLI: init, check, codegen, migrate, apply,       now
+│   │                        approvals (apps, keys: B)
 │   └── tutelad/             the service; serves the Tutela Console                        B
 ├── sdk/
 │   ├── react/               @f8fvwgzc/tutela-react                                        A
