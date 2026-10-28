@@ -1,8 +1,14 @@
 # EXPLAIN (ANALYZE, BUFFERS, SETTINGS) of the two slowest list queries of seed 9
 # (finding F2 in ADR-0011). Captured on 2026-10-28 on a quiet machine with the
 # final spike code (levels form), PostgreSQL 16.14 default config, 103,072 rows
-# in tenant 9. The filter text in each plan is cut after 600 characters; the
-# full SQL is long (hundreds of bound array values written in as literals).
+# in tenant 9. The `item` table held tenant 9 only (one tenant, not the 20 of
+# the gated run). The filter text in each plan is cut after 600 characters;
+# the full SQL is long (hundreds of bound array values written in as literals).
+#
+# How it was made (from spike/week1, Postgres on 127.0.0.1:5442):
+#   SPIKE_SLOW_MS=300 ./target/release/tutela-spike-week1 differential --seeds 9-9 --threads 4 2>slow9.sql
+#   then, for the two slowest queries in slow9.sql:
+#   psql -h 127.0.0.1 -p 5442 -U spike -d spike -c 'EXPLAIN (ANALYZE, BUFFERS, SETTINGS) <query>'
 
 ## SLOW 583ms rows=40137 ids_in=39 container_in=237
 
