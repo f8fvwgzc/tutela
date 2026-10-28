@@ -117,12 +117,12 @@ Each threat has an id (TM-01 ... TM-23). Its tests carry the id in their name, f
 | TM-02 | Delegated tokens mistaken for user tokens | `typ: agent+jwt`; `delegation_aware` audiences | A, B | No |
 | TM-03 | Confused deputy in agent work | Overlap rule for chat, task and scheduled work | A, B | **Partly**: the overlap in `tutela-pdp`, with property tests (`tm03_*`); delegated tokens are Phase B |
 | TM-04 | Account linking across tenant IdPs | `(iss, sub)` keys; DNS-proven domains; local credential to link | B, C | No |
-| TM-05 | Tenant id collision across issuers | `(iss, tid)` tenant key; issuer trust list | A, B | **Partly**: `tutela-pdp` keys bundles by `(iss, tid)` and denies resources of other tenants (`tm05_*`) |
+| TM-05 | Tenant id collision across issuers | `(iss, tid)` tenant key; issuer trust list | A, B | **Partly**: `tutela-pdp` keys bundles by `(iss, tid)` and denies resources of other tenants; `tutela-store` checks `(iss, tid)` and has forced row-level security, tested on a real Postgres (`tm05_*`) |
 | TM-06 | Browser token theft | Backend-for-frontend cookies; 5-minute admin token; step-up MFA | A, B, C | No |
 | TM-07 | Attacks on the own login server | Code + PKCE S256 only; conformance suite | C | No |
-| TM-08 | Privilege escalation by admins and model changes | Narrow-only delegation; impact report; `tutela apply` refuses widening | A, B | **Partly**: the model diff, and a property test that a change it does not call widening never widens a decision (`tm08_*`) |
+| TM-08 | Privilege escalation by admins and model changes | Narrow-only delegation; impact report; `tutela apply` refuses widening | A, B | **Partly**: the model diff, a property test that a change it does not call widening never widens a decision (`tm08_*`), and `tutela apply`, which refuses a widening diff without an approval token (ADR-0015) |
 | TM-09 | Resource path spoofing | Paths loaded server-side by id | A | No |
-| TM-10 | List and count leaks | SQL filters from the same evaluator | A, B | **Partly**: `list_filter` ≡ `check` in `tutela-pdp` (`tm10_*`); the SQL adapter is ROADMAP item 6 |
+| TM-10 | List and count leaks | SQL filters from the same evaluator | A, B | **Partly**: `list_filter` ≡ `check` in `tutela-pdp`, and scope paths that are current after a move in `tutela-store` (`tm10_*`); the SQL adapter is ROADMAP item 6 |
 | TM-11 | Field leaks into search, vectors, exports, audit, prompts | Field masks on every exit path | A, B | No |
 | TM-12 | UI-only checks | Codegen route guards; SDK refuses to start without them | A | No |
 | TM-13 | Stale permission caches and slow revocation | `rev`, bundle expiry, refuse lower rev, documented delay | A, B | **Partly**: `tutela-pdp` refuses a lower or stale revision (`tm13_*`) |
@@ -130,7 +130,7 @@ Each threat has an id (TM-01 ... TM-23). Its tests carry the id in their name, f
 | TM-15 | Signing key theft and rotation mistakes | `Signer` trait, per-tenant keys, KMS option, rotation timing, kid deny-list | B, C | No |
 | TM-16 | API key theft | Separate, versioned pepper; hashed keys | B | No |
 | TM-17 | Secrets and personal data in logs, URLs, traces | Redacted types; no tokens in URLs | A, B | **Partly**: the `ApiKey` type in `tutela-contracts` never prints its secret |
-| TM-18 | SSRF through webhooks and JWKS fetches | `tutela-safenet` | A, B, C | No |
+| TM-18 | SSRF through webhooks and JWKS fetches | `tutela-safenet` | A, B, C | **Partly**: the `tutela-safenet` crate with the TM-18 table of bad targets (`tm18_*`); fuzzing the URL parser is a library-gate item; webhooks in `tutelad` are Phase B |
 | TM-19 | Webhook forgery and replay | Standard Webhooks signatures; time window; dedupe by id | B, D | No |
 | TM-20 | Audit tampering and gaps | Local hash chain; producer signatures; sequence numbers; acknowledged Append | B | No |
 | TM-21 | Supply chain | `cargo-deny`, `cargo-audit`, signed images, registered names, pinned git deps | first commit, A, D | **Partly**: blocking CI with `cargo-deny` and `cargo-audit`, workspace lints |
