@@ -41,7 +41,7 @@ A gate is a list of checks. A phase is not done until its gate passes. No produc
 | # | Item | Notes |
 |---|---|---|
 | 1 | First commit | Repo, docs, `tutela-contracts`, blocking CI. **Done.** See [First-commit checklist](#first-commit-checklist). |
-| 2 | Week-1 spike | Go/no-go numbers before more code. See [Very next steps](#very-next-steps). |
+| 2 | Week-1 spike | Go/no-go numbers before more code. **Done: go** ([ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator)). |
 | 3 | Model language and compiler | Reads `tutela.resources.toml`: tenant-defined resource types, roles, field rules, boundary rules, condition templates, UI keys. Rejects condition templates that the SQL filter cannot express. Detects widening changes. |
 | 4 | `tutela-pdp` | The native evaluator: `Pdp::check`, `Pdp::batch`, `Pdp::list_filter`, `Pdp::write_check`. Resolves the effective level once per (principal, scope). Emits the decision and the SQL filter from the same code. Evaluates delegation as person AND agent. |
 | 5 | `tutela-store` | Postgres schema and migrations for bindings, field rules and groups. The same schema `tutelad` uses later. |
@@ -186,6 +186,8 @@ Before the real Phase A code, a short spike proves that the native evaluator can
 | `list_filter` correctness | **100k rows**, random models and principals. | Rows returned by `list_filter` == rows `check()` allows. Zero mismatches. Counts match. | Stop. Fix the evaluator. Nothing in Phase A is built on a mismatch. |
 
 The model and group sizes above are **proposals**. Fix them, and the machine the spike runs on, in the spike notes before running, so the result cannot be bent afterwards. Record the result (go or no-go, with numbers) as the next ADR in [DECISIONS.md](DECISIONS.md).
+
+**Done, 2026-10-28: go.** Notes: [SPIKE-WEEK1.md](SPIKE-WEEK1.md). Result: [ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator).
 
 ### 3. Then, in order
 

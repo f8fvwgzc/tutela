@@ -136,7 +136,7 @@ Dependencies point down only: products → onto-intelli / texc-symphony → atta
 | Design docs in `docs/` | In the first commit |
 | `tutela-contracts` crate | In the first commit (wire types and their format checks only; no I/O) |
 | Blocking CI (fmt, clippy, tests, docs, cargo-deny, cargo-audit) | In the first commit |
-| Week-1 spike with go/no-go numbers | Next (Phase A) |
+| Week-1 spike with go/no-go numbers | Done: **go** ([ADR-0011](docs/DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator)) |
 | Everything else | Planned, see [docs/ROADMAP.md](docs/ROADMAP.md) |
 
 Phases: **A** packages and library mode, **B** `tutelad` service and Tutela Console, **C** own login server (optional), **D** hardening. Honest size for Tutela alone: about 35–45 person-weeks for one strong engineer.

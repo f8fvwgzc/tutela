@@ -1,5 +1,7 @@
 # Week-1 spike: notes written before the run
 
+Result (this line was added after the run; nothing else in this file changed): **go**, see [ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator).
+
 Status: **notes fixed before any spike code ran.** This file is committed alone, before the spike code, so the sizes, the machine, the thresholds and the go/no-go rules cannot be changed after the numbers are known. The result goes into [ADR-0011 in DECISIONS.md](DECISIONS.md). The plan comes from [ROADMAP.md "Very next steps" §2](ROADMAP.md#2-week-1-spike-gono-go).
 
 Other docs: [ROADMAP](ROADMAP.md) · [PERMISSION-MODEL](PERMISSION-MODEL.md) · [CONTRACTS](CONTRACTS.md) · [DECISIONS](DECISIONS.md)

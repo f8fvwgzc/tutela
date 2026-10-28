@@ -1,31 +1,31 @@
 # closure: ./target/release/tutela-spike-week1 closure
-# start 2026-10-28 14:21:13 JST, load 3.59, Apple M2 Pro, git d9b4ae2
-loaded in 1.9s: nodes=220001 group_member rows=30602 group_closure rows=444387 role_assignment rows=10000
-G1 groups of a user, recursive CTE: n=10000 p50=90.1us p90=121.3us p99=151.7us p99.9=242.1us max=498.1us  (avg rows 43.9)
-P1 path at depth 32, recursive CTE: n=10000 p50=90.6us p90=102.9us p99=157.3us p99.9=302.6us max=502.4us  (avg rows 32.0)
-G2 groups of a user, closure table: n=10000 p50=48.0us p90=59.0us p99=90.2us p99.9=153.5us max=1448.1us  (avg rows 43.6)
-P2 path at depth 32, ancestors column: n=10000 p50=39.1us p90=50.2us p99=81.8us p99.9=153.3us max=389.5us  (avg rows 32.0)
-A1 assignments for a user (info): n=10000 p50=236.9us p90=287.3us p99=326.5us p99.9=487.2us max=1659.6us  (avg rows 138.0)
-G3 members of a top group, recursive CTE (info): n=10000 p50=3132.1us p90=3445.6us p99=4108.1us p99.9=7058.5us max=12063.2us  (avg rows 7513.6)
-W1 add group to group + closure update, rolled back (info): n=10000 p50=10499.9us p90=34899.1us p99=79406.8us p99.9=251767.6us max=715323.6us  (avg rows 2218.7)
-      205.63 real         1.36 user         2.31 sys
-            46006272  maximum resident set size
+# start 2026-10-28 14:26:13 JST, load 3.08, Apple M2 Pro, git 0429ee3
+loaded in 2.1s: nodes=220001 group_member rows=30602 group_closure rows=444387 role_assignment rows=10000
+G1 groups of a user, recursive CTE: n=10000 p50=90.9us p90=125.2us p99=183.6us p99.9=458.0us max=1424.8us  (avg rows 43.9)
+P1 path at depth 32, recursive CTE: n=10000 p50=87.3us p90=99.7us p99=132.2us p99.9=257.7us max=2598.4us  (avg rows 32.0)
+G2 groups of a user, closure table: n=10000 p50=49.2us p90=65.5us p99=102.1us p99.9=174.4us max=253.9us  (avg rows 43.6)
+P2 path at depth 32, ancestors column: n=10000 p50=37.8us p90=45.6us p99=62.6us p99.9=99.9us max=168.7us  (avg rows 32.0)
+A1 assignments for a user (info): n=10000 p50=238.0us p90=284.4us p99=323.8us p99.9=471.1us max=2794.7us  (avg rows 138.0)
+G3 members of a top group, recursive CTE (info): n=10000 p50=3105.8us p90=3337.5us p99=3619.3us p99.9=3999.4us max=9167.8us  (avg rows 7513.6)
+W1 add group to group + closure update, rolled back (info): n=10000 p50=9787.9us p90=31968.0us p99=77002.6us p99.9=240866.3us max=479713.3us  (avg rows 2218.7)
+      191.69 real         1.18 user         2.09 sys
+            48513024  maximum resident set size
                    0  average shared memory size
                    0  average unshared data size
                    0  average unshared stack size
-                4217  page reclaims
-                  37  page faults
+                4358  page reclaims
+                   4  page faults
                    0  swaps
                    0  block input operations
                    0  block output operations
-              161312  messages sent
-              161703  messages received
+              161304  messages sent
+              160917  messages received
                    0  signals received
                    3  voluntary context switches
-              396584  involuntary context switches
-         18877129026  instructions retired
-         11234426672  cycles elapsed
-            40665472  peak memory footprint
+              376044  involuntary context switches
+         18566127899  instructions retired
+         10062230563  cycles elapsed
+            43205016  peak memory footprint
 # exit 0
-# end 2026-10-28 14:24:38 JST, load 5.39
-VOID: a cargo or rustc process ran during closure (see results/closure.sampler.txt)
+# end 2026-10-28 14:29:25 JST, load 3.09
+valid: no cargo or rustc during closure
