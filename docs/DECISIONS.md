@@ -31,6 +31,7 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0012](#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening) | Manifest v1: seeded roles, org-root rules, and what counts as widening | Accepted |
 | [0013](#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits) | The evaluator: deciding roles, reasons, scope paths and Phase A limits | Accepted |
 | [0014](#adr-0014-tutela-store-in-phase-a-the-schema-row-level-security-and-checked-writes) | tutela-store in Phase A: the schema, row-level security and checked writes | Accepted |
+| [0015](#adr-0015-approval-tokens-for-tutela-apply-in-library-mode) | Approval tokens for `tutela apply` in library mode | Accepted |
 
 ---
 
@@ -571,4 +572,38 @@ Benchmark (`cargo bench -p tutela-pdp`): the tenant has the sizes of the week-1 
 - **A bypass setting for admin work.** Any code could set it, so an injected bug would read every tenant. `publish_manifest` instead enters each tenant in turn, and the tenant directory, which holds no tenant data, has no policy.
 - **Store the normalised model tables now.** Two copies of the model (text and tables) in Phase A, with nothing that edits the tables.
 - **Let the product's tables be the only scope-path source.** Possible (ADR-0011 F1). But then the store could not refuse inconsistent paths or delete a subtree, and the product would have to answer `ScopePaths` itself.
+
+---
+
+## ADR-0015: Approval tokens for `tutela apply` in library mode
+
+**Status:** Accepted, 2026-10-28. Built in Phase A (`tutela-cli`, ROADMAP item 9). Closes [PERMISSION-MODEL.md open point 2](PERMISSION-MODEL.md#19-open-points).
+
+**Context.** `tutela apply` must refuse a widening diff unless it has an approval token bound to that exact diff (PERMISSION-MODEL.md §15.2). In library mode there is no `tutelad` to issue one. ADR-0012 also notes that a first apply is all widening, so the first apply needs a clear path.
+
+**Decision.**
+
+1. **The token** is `tutela-approval-v1.<payload>.<signature>` ([MANIFEST.md §12](MANIFEST.md#12-applying-tutela-apply-and-approval-tokens)):
+   - The payload binds the app and the SHA-256 digests of the applied manifest (`from`, `none` for a first apply) and the new one (`to`).
+   - The diff is a function of the two manifests, so the token approves exactly one diff. Binding the digests is simpler and exact; hashing the printed diff text would tie the token to the diff's wording.
+   - The signature is Ed25519 (`ed25519-dalek`, BSD-3-Clause, pure Rust), verified with `verify_strict`, over the prefix and the payload. A token lives at most 24 hours.
+2. **Approver keys.**
+   - `tutela approvers keygen` makes a key pair and writes the private key to a new file with mode 0600. The private key never goes into the database.
+   - `tutela approvers add` stores the public key in `tutela.approver_key` (store migration 0002). The key id is derived from the public key, so a signer names its key without asking the database.
+   - A revoked key approves nothing, also tokens it signed before. Whoever may write that table may also change the model directly, so the table needs no more protection than the rest of the schema.
+3. **Who checks what.**
+   - The token holds no secret and approves one change only, so passing it on the command line or in `TUTELA_APPROVAL` is fine.
+   - `apply` checks the key, the signature, the change and the times inside the same transaction that publishes. A change made by someone else in between is refused by the store's version check.
+4. **The first apply** is compared against an empty model of the same app, so it is widening. The refusal prints the exact `tutela approve` command.
+5. **Database connections.** The CLI has no TLS until the rustls stack lands (ROADMAP item 8, step 4). Until then it accepts only a Unix socket or a loopback host, so a password and a manifest never cross a network in clear.
+
+**Consequences.**
+- Library mode has the full refusal path: diff, class, refusal and approval.
+- Phase B replaces these tokens with approvals in `tutelad` (impact report, two-person publish). The CLI against `tutelad` still refuses a widening diff without an approval.
+- A product's deploy pipeline applies narrowing and neutral changes on its own. A widening change waits for a person with an approver key.
+
+**Alternatives considered.**
+- **A shared secret (HMAC).** Every applier could then mint approvals.
+- **Sign the printed diff text.** It ties the token to the diff's wording, and two diffs of the same manifests would need two tokens.
+- **No first-apply approval.** Any new product, or a wiped table, would grant everything without a human seeing it.
 

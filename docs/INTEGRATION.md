@@ -417,7 +417,8 @@ Every access token must carry **exactly one audience**.
 
 ## Step 3. Write `tutela.resources.toml`
 
-Run `tutela init` for a starter file (planned, Phase A). The manifest
+Run `tutela init --app <name>` for a starter file, and `tutela check` to list
+every problem in it. The manifest
 declares resource types, fields with their sensitivity, actions, roles, field
 rules, conditions and UI keys. The format is fixed in
 [MANIFEST.md](MANIFEST.md). An example:
@@ -478,9 +479,24 @@ when_denied = "hide"
 Then:
 
 ```sh
-tutela apply      # shows the diff first; a widening diff fails without an approval token
-tutela codegen    # typed permission constants, React UI-key constants, server route guards
+export TUTELA_DATABASE_URL="host=127.0.0.1 port=5432 user=app_owner dbname=app"
+tutela migrate    # creates or updates the tutela schema (as the database owner)
+tutela apply      # shows the diff first; a widening diff fails (exit 3) without an approval token
+tutela codegen    # typed permission constants, React UI-key constants, server route guards (next)
 ```
+
+A widening diff (every first apply is one) needs a person with an approver
+key ([MANIFEST.md §12](MANIFEST.md#12-applying-tutela-apply-and-approval-tokens)):
+
+```sh
+tutela approvers keygen --out dana.key           # once, on the approver's machine
+tutela approvers add --name Dana --public-key …  # once, registers the public key
+tutela approve --app crm --from none --to <digest> --key dana.key   # after reading the diff
+tutela apply --approval <token>
+```
+
+Until TLS lands (ROADMAP item 8), the CLI connects only to a database on the
+same machine (a Unix socket or a loopback address).
 
 Because `tutela codegen` makes typed constants, a renamed action breaks the
 build, not production.

@@ -245,8 +245,11 @@ onto-intelli's Keys, Members, Projects and Sessions pages).
 
 | Command | What it does | Phase |
 | --- | --- | --- |
-| `tutela init` | Writes a starter `tutela.resources.toml` | A |
-| `tutela apply` | Applies the manifest. Shows the diff first. Refuses a **widening** diff without an approval token. | A (library mode), B (against `tutelad`) |
+| `tutela init` | Writes a starter `tutela.resources.toml` (never overwrites a file) | A, built |
+| `tutela check` | Compiles a manifest and lists every problem | A, built |
+| `tutela migrate` | Creates or updates the `tutela` schema (`tutela-store`), as the database owner | A, built |
+| `tutela apply` | Applies the manifest. Shows the diff first. Refuses a **widening** diff without an approval token. | A (library mode, built), B (against `tutelad`) |
+| `tutela approve`, `tutela approvers keygen\|add\|list\|revoke` | Approval tokens for widening diffs in library mode ([ADR-0015](DECISIONS.md#adr-0015-approval-tokens-for-tutela-apply-in-library-mode)) | A, built |
 | `tutela codegen` | Generates typed permission constants, React UI-key constants and server route guards from the same manifest entries | A |
 | `tutela apps create` | Registers an app (client, redirect URIs, audience) in `tutelad` | B |
 | `tutela keys rotate` | Rotates keys | B |

@@ -29,6 +29,7 @@
 //!
 //! [`docs/PERMISSION-MODEL.md`]: https://github.com/f8fvwgzc/tutela/blob/main/docs/PERMISSION-MODEL.md
 
+mod approvers;
 mod load;
 mod manifest;
 mod migrate;
@@ -45,6 +46,7 @@ use tutela_contracts::tenant::{OrgId, TenantId, TenantKey};
 use tutela_pdp::model::Model;
 use tutela_pdp::{LoadError, PathEntry, Pdp, TenantData};
 
+pub use approvers::{Approver, add_approver, approver, approver_id, approvers, revoke_approver};
 pub use load::{ScopePathSnapshot, TenantBundle, load, rev};
 pub use manifest::{Publish, StoredManifest, digest, manifest, publish_manifest};
 pub use migrate::{latest as latest_migration, migrate};
