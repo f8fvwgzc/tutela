@@ -87,13 +87,16 @@ async fn db() -> Option<Db> {
     })
 }
 
-/// A unique name part from the clock and the process id.
+/// A unique name part: the clock, the process id and a counter (tests in
+/// one process run in parallel and may read the same clock value).
 fn uuid_like() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let t = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    format!("{t:x}_{}", std::process::id())
+    format!("{t:x}_{}_{n}", std::process::id())
 }
 
 impl Db {
