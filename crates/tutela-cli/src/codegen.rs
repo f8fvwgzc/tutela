@@ -190,6 +190,25 @@ pub fn rust(model: &Model, digest: &str) -> String {
         }
     }
     let _ = writeln!(o, "];");
+    let _ = writeln!(o);
+    let _ = writeln!(
+        o,
+        "/// The declared routes as `(method, path)` pairs: for `tutela_sdk::http::Guards::declared`,"
+    );
+    let _ = writeln!(
+        o,
+        "/// and for the test that calls each route as a denied principal,"
+    );
+    let _ = writeln!(
+        o,
+        "/// `tutela_sdk::http::assert_routes_deny(app, route_pairs(), token)`."
+    );
+    let _ = writeln!(
+        o,
+        "pub fn route_pairs() -> impl Iterator<Item = (&'static str, &'static str)> {{"
+    );
+    let _ = writeln!(o, "    ROUTES.iter().map(|r| (r.method, r.path))");
+    let _ = writeln!(o, "}}");
     o
 }
 
@@ -314,6 +333,10 @@ mod tests {
         assert_eq!(golden::actions::TASK__CLOSE, "task:close");
         assert_eq!(golden::fields::TASK__ASSIGNEE, "task.assignee");
         assert_eq!(golden::ui::TASKS__CLOSE_BUTTON, "tasks.close_button");
+        assert_eq!(
+            golden::route_pairs().collect::<Vec<_>>(),
+            [("POST", "/api/tasks/{id}/close")]
+        );
         assert_eq!(
             golden::ROUTES,
             [golden::Route {

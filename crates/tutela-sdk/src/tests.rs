@@ -556,3 +556,212 @@ async fn tm18_the_jwks_is_fetched_through_safenet() {
         Some(Step::Key)
     );
 }
+
+// ---------- The auth layer and route guards ----------
+
+mod layers {
+    use std::convert::Infallible;
+    use std::task::{Context as Cx, Poll};
+
+    use ::http::{Request, Response, StatusCode};
+    use tower_layer::Layer as _;
+    use tower_service::Service;
+
+    use super::*;
+    use crate::http::{AuthLayer, GuardLayer, Guards, Params, Protocol, assert_routes_deny};
+
+    /// The app: answers 200 with the subject it was given.
+    #[derive(Clone)]
+    struct App;
+    impl Service<Request<String>> for App {
+        type Response = Response<String>;
+        type Error = Infallible;
+        type Future = std::future::Ready<Result<Response<String>, Infallible>>;
+        fn poll_ready(&mut self, _: &mut Cx<'_>) -> Poll<Result<(), Infallible>> {
+            Poll::Ready(Ok(()))
+        }
+        fn call(&mut self, req: Request<String>) -> Self::Future {
+            let who = match req.extensions().get::<Identity>() {
+                Some(Identity::Access(c)) => c.sub.to_string(),
+                Some(_) => "other".into(),
+                None => "nobody".into(),
+            };
+            std::future::ready(Ok(Response::new(who)))
+        }
+    }
+
+    async fn call<S: Service<Request<String>, Response = Response<String>>>(
+        s: &mut S,
+        method: &str,
+        path: &str,
+        auth: Option<&str>,
+    ) -> Response<String> {
+        let mut b = Request::builder().method(method).uri(path);
+        if let Some(a) = auth {
+            b = b.header("authorization", a);
+        }
+        let req = b.body(String::new()).unwrap();
+        std::future::poll_fn(|cx| s.poll_ready(cx))
+            .await
+            .ok()
+            .unwrap();
+        s.call(req).await.ok().unwrap()
+    }
+
+    fn setup() -> (Arc<Verifier>, String) {
+        let s = Signer::new(Alg::Es256);
+        let src = Memory::new(&[s.jwk(&s.kid())]);
+        let (v, _) = verifier(config(vec![Alg::Es256]), &src);
+        (Arc::new(v), s.token(&s.header("at+jwt"), &claims()))
+    }
+
+    #[tokio::test]
+    async fn the_auth_layer_refuses_missing_or_bad_tokens() {
+        let (v, token) = setup();
+        let mut svc = AuthLayer::new(Arc::clone(&v), Protocol::Http).layer(App);
+        let ok = call(&mut svc, "GET", "/x", Some(&format!("Bearer {token}"))).await;
+        assert_eq!((ok.status(), ok.body().as_str()), (StatusCode::OK, USER));
+        let lower = call(&mut svc, "GET", "/x", Some(&format!("bearer {token}"))).await;
+        assert_eq!(lower.status(), StatusCode::OK);
+        for bad in [
+            None,
+            Some("Bearer"),
+            Some("Basic abc"),
+            Some("Bearer a.b.c"),
+            Some("Bearer x y"),
+        ] {
+            let r = call(&mut svc, "GET", "/x", bad).await;
+            assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "{bad:?}");
+            assert_eq!(
+                r.headers().get("www-authenticate").unwrap(),
+                "Bearer error=\"invalid_token\""
+            );
+            assert!(r.body().is_empty(), "the reason is never sent");
+        }
+        // Two authorization headers: refused.
+        let req = Request::builder()
+            .uri("/x")
+            .header("authorization", format!("Bearer {token}"))
+            .header("authorization", format!("Bearer {token}"))
+            .body(String::new())
+            .unwrap();
+        assert_eq!(
+            svc.call(req).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        // gRPC answers with grpc-status 16.
+        let mut grpc = AuthLayer::new(v, Protocol::Grpc).layer(App);
+        let r = call(&mut grpc, "POST", "/svc/Method", None).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(r.headers().get("grpc-status").unwrap(), "16");
+    }
+
+    const ROUTES: [(&str, &str); 2] = [
+        ("POST", "/api/tasks/{id}/close"),
+        ("PATCH", "/api/tasks/{id}"),
+    ];
+
+    #[tokio::test]
+    async fn every_declared_route_needs_a_guard() {
+        let partial = Guards::declared(ROUTES)
+            .protect(
+                "POST",
+                "/api/tasks/{id}/close",
+                |_: Identity, _: Params| async { true },
+            )
+            .unwrap();
+        let err = partial.check_complete().unwrap_err();
+        assert_eq!(err.0, ["PATCH /api/tasks/{id}"]);
+        assert!(
+            Guards::declared(ROUTES)
+                .protect("GET", "/not/declared", |_: Identity, _: Params| async {
+                    true
+                })
+                .is_err()
+        );
+        let (v, token) = setup();
+        // The unguarded declared route is 403; other routes pass through.
+        let mut svc = AuthLayer::new(v, Protocol::Http)
+            .layer(GuardLayer::new(partial, Protocol::Http).layer(App));
+        let auth = format!("Bearer {token}");
+        assert_eq!(
+            call(&mut svc, "PATCH", "/api/tasks/7", Some(&auth))
+                .await
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            call(&mut svc, "POST", "/api/tasks/7/close", Some(&auth))
+                .await
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            call(&mut svc, "GET", "/api/health", Some(&auth))
+                .await
+                .status(),
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn guards_get_the_identity_and_the_ids_and_denied_routes_pass_the_test() {
+        let (v, token) = setup();
+        let guards = Guards::declared(ROUTES)
+            .protect(
+                "POST",
+                "/api/tasks/{id}/close",
+                |id: Identity, p: Params| async move {
+                    matches!(id, Identity::Access(_))
+                        && p.get("id").map(String::as_str) == Some("7")
+                },
+            )
+            .unwrap()
+            .protect("PATCH", "/api/tasks/{id}", |_: Identity, _: Params| async {
+                false
+            })
+            .unwrap();
+        guards.check_complete().unwrap();
+        let mut svc = AuthLayer::new(v, Protocol::Http)
+            .layer(GuardLayer::new(guards, Protocol::Http).layer(App));
+        let auth = format!("Bearer {token}");
+        assert_eq!(
+            call(&mut svc, "POST", "/api/tasks/7/close", Some(&auth))
+                .await
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            call(&mut svc, "POST", "/api/tasks/8/close", Some(&auth))
+                .await
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            call(&mut svc, "POST", "/api/tasks//close", Some(&auth))
+                .await
+                .status(),
+            StatusCode::OK,
+            "not the declared route"
+        );
+        // The generated test: every declared route, with `x` for each id, as
+        // this principal. The guards deny both, so nothing is reported.
+        assert_eq!(
+            assert_routes_deny(svc.clone(), ROUTES, &token).await,
+            Vec::<String>::new()
+        );
+        // A route whose guard lets everyone in is reported.
+        let open = Guards::declared(ROUTES[..1].iter().copied())
+            .protect(
+                "POST",
+                "/api/tasks/{id}/close",
+                |_: Identity, _: Params| async { true },
+            )
+            .unwrap();
+        let (v, _) = setup();
+        let leaky = AuthLayer::new(v, Protocol::Http)
+            .layer(GuardLayer::new(open, Protocol::Http).layer(App));
+        let report = assert_routes_deny(leaky, ROUTES[..1].iter().copied(), &token).await;
+        assert_eq!(report.len(), 1, "{report:?}");
+    }
+}

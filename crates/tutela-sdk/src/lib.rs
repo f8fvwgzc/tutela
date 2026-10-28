@@ -1,5 +1,6 @@
 //! Tutela's SDK for Rust services (`tutela-sdk`), Phase A: the token
-//! verifier (CONTRACTS.md 4).
+//! verifier (CONTRACTS.md 4), and the auth layer and route guards for axum
+//! and tonic services ([`http`]).
 //!
 //! [`Verifier::verify`] checks a bearer token offline, with a cached JWKS,
 //! in the order of CONTRACTS.md 4.2:
@@ -20,6 +21,7 @@
 //! about the step. [`AuthError::step`] names the step for the log. Errors
 //! never hold the token.
 
+pub mod http;
 mod jwks;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
