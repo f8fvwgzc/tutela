@@ -133,6 +133,11 @@ impl Out {
         self.push_with(class, || what);
     }
 
+    #[cfg(debug_assertions)]
+    fn is_empty(&self) -> bool {
+        self.seen.iter().all(|n| *n == 0)
+    }
+
     /// Counts the change, and formats its line only if it is kept.
     fn push_with(&mut self, class: Class, what: impl FnOnce() -> String) {
         let k = class as usize;
@@ -537,6 +542,13 @@ fn roles(out: &mut Out, old: &Model, new: &Model) {
         .map(|(t, d)| (t, (field_keys(t, d), action_keys(t, d))))
         .collect();
     let none = (BTreeSet::new(), BTreeSet::new());
+    // The type-level part of `unchanged`, once per type.
+    let same_type: BTreeSet<&ResourceType> = core::iter::once(&ResourceType::ORG)
+        .chain(new.types.keys())
+        .filter(|t| {
+            old.types.get(*t) == new.types.get(*t) && type_rules(old, t) == type_rules(new, t)
+        })
+        .collect();
     for (rk, n) in &new.roles {
         let at = format!("role `{rk}`");
         let o = old.roles.get(rk);
@@ -565,9 +577,6 @@ fn roles(out: &mut Out, old: &Model, new: &Model) {
             let present = o.is_some() && (*t == ResourceType::ORG || old.types.contains_key(t));
             // Nothing that this role's access on this type depends on has
             // changed: there is nothing to compare.
-            if present && unchanged(old, new, rk, t) {
-                continue;
-            }
             let before = Side {
                 model: old,
                 role: rk,
@@ -579,51 +588,70 @@ fn roles(out: &mut Out, old: &Model, new: &Model) {
                 present: true,
             };
             let (fk, ak) = keys.get(t).unwrap_or(&none);
+            if present && same_type.contains(t) && unchanged(old, new, rk, t) {
+                // In test and debug builds, check that skipping is safe: the
+                // full comparison must find nothing.
+                #[cfg(debug_assertions)]
+                {
+                    let mut scratch = Out::default();
+                    role_type(&mut scratch, &before, &after, t, &at, fk, ak);
+                    debug_assert!(
+                        scratch.is_empty(),
+                        "skipped a changed role and type: {at} on {t}"
+                    );
+                }
+                continue;
+            }
             role_type(out, &before, &after, t, &at, fk, ak);
         }
     }
 }
 
-/// `true` if the role's levels, grants and conditions on the type, the type
-/// itself and its org-root field rules are the same in both models.
+/// The org-root field rules of one type.
+fn type_rules<'m>(
+    m: &'m Model,
+    t: &ResourceType,
+) -> Vec<(
+    &'m FieldKey,
+    Option<&'m RoleKey>,
+    Level,
+    super::FieldDisplay,
+)> {
+    m.field_rules
+        .iter()
+        .filter(|r| r.field.resource_type() == t)
+        .map(|r| (&r.field, r.role.as_ref(), r.max, r.display))
+        .collect()
+}
+
+/// `true` if the role's levels, grants and conditions on the type are the
+/// same in both models. The caller checks the type itself and its org-root
+/// field rules, once per type.
 fn unchanged(old: &Model, new: &Model, rk: &RoleKey, t: &ResourceType) -> bool {
     let (Some(o), Some(n)) = (old.roles.get(rk), new.roles.get(rk)) else {
         return false;
     };
-    let fields = |r: &super::Role| -> Vec<(FieldKey, Level)> {
-        r.field_levels
+    let on_type = |k: &FieldKey| k.resource_type() == t;
+    let cond = |c: &&super::Condition| &c.role == rk && &c.resource_type == t;
+    o.level(t) == n.level(t)
+        && o.field_levels
             .iter()
-            .filter(|(k, _)| k.resource_type() == t)
-            .map(|(k, l)| (k.clone(), *l))
-            .collect()
-    };
-    let grants = |r: &super::Role| -> Vec<ActionKey> {
-        r.grants
+            .filter(|(k, _)| on_type(k))
+            .eq(n.field_levels.iter().filter(|(k, _)| on_type(k)))
+        && o.grants
             .iter()
             .filter(|g| g.resource_type() == t)
-            .cloned()
-            .collect()
-    };
-    let rules = |m: &Model| -> Vec<(FieldKey, Option<RoleKey>, Level, super::FieldDisplay)> {
-        m.field_rules
+            .eq(n.grants.iter().filter(|g| g.resource_type() == t))
+        && old
+            .conditions
             .iter()
-            .filter(|r| r.field.resource_type() == t)
-            .map(|r| (r.field.clone(), r.role.clone(), r.max, r.display))
-            .collect()
-    };
-    let conds = |m: &Model| -> Vec<(Template, Level)> {
-        m.conditions
-            .iter()
-            .filter(|c| &c.role == rk && &c.resource_type == t)
-            .map(|c| (c.when.clone(), c.otherwise))
-            .collect()
-    };
-    o.level(t) == n.level(t)
-        && old.types.get(t) == new.types.get(t)
-        && fields(o) == fields(n)
-        && grants(o) == grants(n)
-        && rules(old) == rules(new)
-        && conds(old) == conds(new)
+            .filter(cond)
+            .map(|c| (&c.when, c.otherwise))
+            .eq(new
+                .conditions
+                .iter()
+                .filter(cond)
+                .map(|c| (&c.when, c.otherwise)))
 }
 
 /// One role on one type: the item level, every field and feature at every
@@ -657,15 +685,13 @@ fn role_type(
                 }
             }
             if let Some((item, a, b)) = up {
-                out.push(
-                    Class::Widening,
-                    format!("{at} on `{k}` (item level {item}): {a} -> {b}"),
-                );
+                out.push_with(Class::Widening, || {
+                    format!("{at} on `{k}` (item level {item}): {a} -> {b}")
+                });
             } else if let Some((item, a, b)) = down {
-                out.push(
-                    Class::Narrowing,
-                    format!("{at} on `{k}` (item level {item}): {a} -> {b}"),
-                );
+                out.push_with(Class::Narrowing, || {
+                    format!("{at} on `{k}` (item level {item}): {a} -> {b}")
+                });
             }
             out.ordered(before.root(k), after.root(k), || {
                 format!("{at} on `{k}` at the org root")
@@ -685,15 +711,13 @@ fn role_type(
                 }
             }
             if let Some(item) = up {
-                out.push(
-                    Class::Widening,
-                    format!("{at} on `{k}` (item level {item}): now allowed"),
-                );
+                out.push_with(Class::Widening, || {
+                    format!("{at} on `{k}` (item level {item}): now allowed")
+                });
             } else if let Some(item) = down {
-                out.push(
-                    Class::Narrowing,
-                    format!("{at} on `{k}` (item level {item}): no longer allowed"),
-                );
+                out.push_with(Class::Narrowing, || {
+                    format!("{at} on `{k}` (item level {item}): no longer allowed")
+                });
             }
         }
     }
@@ -704,7 +728,7 @@ fn role_type(
         } else {
             "grant"
         };
-        out.push(Class::Widening, format!("{at}: {kind} `{k}` added"));
+        out.push_with(Class::Widening, || format!("{at}: {kind} `{k}` added"));
     }
     for k in og.difference(&ng) {
         let kind = if is_admin_key(k.action()) {
@@ -712,24 +736,22 @@ fn role_type(
         } else {
             "grant"
         };
-        out.push(Class::Narrowing, format!("{at}: {kind} `{k}` removed"));
+        out.push_with(Class::Narrowing, || format!("{at}: {kind} `{k}` removed"));
     }
     let (oc, nc) = (before.conditions(t), after.conditions(t));
     for (c, i) in oc.iter().filter(|(c, _)| !nc.contains_key(*c)) {
         out.push_with(Class::Widening, || {
             format!(
-                "{at} on `{t}`: condition #{} of the old manifest was removed or changed (else {})",
-                i + 1,
-                c.1
+                "{at} on `{t}`: old conditions[{}] was removed or changed (else {})",
+                i, c.1
             )
         });
     }
     for (c, i) in nc.iter().filter(|(c, _)| !oc.contains_key(*c)) {
         out.push_with(Class::Narrowing, || {
             format!(
-                "{at} on `{t}`: condition #{} of the new manifest was added (else {})",
-                i + 1,
-                c.1
+                "{at} on `{t}`: new conditions[{}] was added (else {})",
+                i, c.1
             )
         });
     }

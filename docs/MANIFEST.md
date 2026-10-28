@@ -226,7 +226,7 @@ reason      = "Only reviewers can approve contracts."
 | | At least one of `actions` and `fields`. |
 | `routes` | Required, 1–16: `METHOD /path`. `METHOD` is `GET`, `POST`, `PUT`, `PATCH` or `DELETE`. The path starts with `/`, has no spaces, query or fragment, and may hold `{name}` placeholders. `tutela codegen` makes a server guard for each route. |
 | `when_denied` | Required: `show`, `disable`, `hide` or `readonly` ([PERMISSION-MODEL.md §14.2](PERMISSION-MODEL.md#142-modes-when-access-is-denied)). |
-| `reason` | Optional, 1–512 characters, no control characters. |
+| `reason` | Optional, 1–512 characters, no control or invisible (default-ignorable) characters. |
 
 UI hiding is never security. Every server checks again.
 

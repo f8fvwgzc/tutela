@@ -529,3 +529,22 @@ fn diff_lines_are_capped_but_the_class_is_exact() {
     // Widening lines come first.
     assert_eq!(d.changes()[0].class, Class::Widening);
 }
+
+/// Two conditions with the same `else` are still two lines, so omitted()
+/// counts unique lines.
+#[test]
+fn conditions_with_the_same_else_are_separate_lines() {
+    let two = "[[conditions]]\nrole = \"reviewer\"\ntype = \"contract\"\nwhen = { is_principal = \"assignee\" }\nelse = \"read\"\n[[conditions]]\nrole = \"reviewer\"\ntype = \"contract\"\nwhen = { not = { is_principal = \"assignee\" } }\nelse = \"read\"\n";
+    let d = diff(
+        &model(&tracker("confidential", "")),
+        &model(&tracker("confidential", two)),
+    )
+    .unwrap();
+    assert_eq!(d.omitted(), 0);
+    let added = d
+        .changes()
+        .iter()
+        .filter(|c| c.what.contains("was added"))
+        .count();
+    assert_eq!(added, 2, "{:?}", d.changes());
+}

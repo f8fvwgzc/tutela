@@ -290,13 +290,18 @@ These can only lower the result, never raise it:
 **Step 7. Delegation overlap for agents.** (Correction)
 - Only for delegated tokens (`act` present).
 - Run steps 3–6 **again for the agent** with its own assignments. Also apply its `ai_reach`: the agent may only touch resources inside the scope of the work (`project`), or that scope's parent (`team`). Never the org root, never another branch.
-- **Overlap:** item level = min(person, agent). Each field level = min(person, agent). Custom grants = only those both hold. Admin keys = none.
+- **Overlap:** item level = min(person, agent). Each field level = min(person, agent). Custom actions = the **intersection of the allowed-action sets** of the person and the agent (each set as in [6.3](#63-role-assignments): actions some deciding role allows at its own item level after its own conditions), never raw grants. Admin keys = none.
 - If the act chain is nested (an agent acting for an agent acting for a person), every actor must be allowed, and the chain holds at most 4 actors.
 - The person must be the one who caused the work and must still be enabled.
 - attache's capability limits (`cap` in the token) cap the rest. Tutela does not read `cap`; attache enforces tools, hosts and models on its side. Both must allow.
 
 **Step 8. Decision.**
-- **effect** = allow if the item level ≥ the action's minimum level, any required custom grant is held, and (for writes) every changed field passes `write_check`. Otherwise deny.
+- **effect** = allow if:
+  - for a built-in action: the item level ≥ the action's minimum level;
+  - for a custom action: it is in the **allowed-action set** of [6.3](#63-role-assignments) (some deciding role allows it with `allows_custom_at` at its own item level after its own conditions), and for a delegated token in the intersection of step 7;
+  - for an admin action: a key from the union of the deciding roles' admin keys (never through delegation);
+  - and, for writes, every changed field passes `write_check`.
+- Otherwise deny.
 - Build the decision object (7.3).
 - Write an audit event for every deny, every admin change, every move, every hidden-field opening and every export (Blueprint: "every change, and every denied attempt").
 
@@ -315,7 +320,8 @@ check(token, action, res_ref):
   d = evaluate(p.sub, res, model)                          # steps 3-6
   if p.act:                                                # step 7
       a = evaluate(p.act.sub, res, model, ai_reach=on)
-      d = overlap(d, a)                                    # min per item, per field
+      d = overlap(d, a)                                    # min per item and field;
+                                                           # intersection of allowed actions; no admin keys
   return decide(d, action)                                 # step 8
 
 evaluate(principal, res, model):
@@ -337,7 +343,7 @@ evaluate(principal, res, model):
       results.append((level, fields, actions, role.admin_keys))
   level, fields, actions, admin = combine(results)         # max per item, field, feature;
                                                            # union of allowed actions and admin keys
-  return guardrails(level, fields)                         # can only lower
+  return guardrails(level, fields, actions, admin)         # can only lower
 ```
 
 The engine resolves the effective level **once per (principal, scope)** and caches it for that revision. The week-1 spike target is `check` p99 < 1 ms in-process with a large per-tenant model.
@@ -453,7 +459,7 @@ An agent acting for a person **always** gets the overlap (Correction, see [ADR-0
 | Agent-to-agent work | The person at the start of the chain; every agent in the chain must also be allowed | New |
 
 More rules:
-- Per item **and per field**: min(person, agent). Custom grants: only those both hold. Admin keys: never.
+- Per item **and per field**: min(person, agent). Custom actions: the intersection of the person's and the agent's allowed actions (never raw grants). Admin keys: never.
 - **Hidden fields are removed before the prompt is built.** The model never receives them, so it cannot repeat them. Filtering the answer afterwards is not reliable (Blueprint).
 - When the person is **disabled**, their scheduled work **stops**. The next run cannot get a delegated token for a disabled person, and the `tutela.principal.disabled.v1` event tells schedulers to stop (Correction).
 - The person's `epoch` is re-checked at every token exchange, so a revoked session ends long runs at the next hop (New).
