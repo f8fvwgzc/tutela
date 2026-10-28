@@ -1033,3 +1033,25 @@ fn a_condition_value_with_an_invisible_character_is_refused() {
         "no control or invisible characters",
     );
 }
+
+#[test]
+fn a_condition_integer_must_fit_every_sdk() {
+    // JSON readers in other languages (JavaScript) read integers exactly
+    // only up to 2^53 - 1, and the list filter sends condition values as
+    // JSON. Negative values are fine.
+    let with_value = |v: &str| {
+        with(&format!(
+            "{PROJECT}[types.project.fields]\nprio = {{ sensitivity = \"internal\", type = \"integer\", grants_access = true }}\n[[conditions]]\nrole = \"member\"\ntype = \"project\"\nwhen = {{ in = {{ field = \"prio\", values = [1, {v}] }} }}\nelse = \"read\"\n"
+        ))
+    };
+    for ok in ["9007199254740991", "-9007199254740991", "0"] {
+        assert!(Model::from_toml(&with_value(ok)).is_ok(), "{ok}");
+    }
+    for bad in [
+        "9007199254740992",
+        "-9007199254740992",
+        "9223372036854775807",
+    ] {
+        refused(&with_value(bad), "from -(2^53 - 1) to 2^53 - 1");
+    }
+}

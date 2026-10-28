@@ -657,7 +657,8 @@ Rust signatures of `tutela-pdp` ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-
 // Phase A. Crate: tutela-pdp.
 impl Pdp {
     /// Loads (or replaces) a tenant's bundle: its compiled model and its data
-    /// at one revision. A revision lower than one loaded before is refused.
+    /// at one revision. A revision lower than one loaded before is refused;
+    /// the same revision again replaces the bundle (a retry).
     pub fn load(&mut self, tenant: TenantKey, rev: u64, model: Arc<Model>, data: TenantData)
         -> Result<(), LoadError>;
 
@@ -709,7 +710,8 @@ Rules for `ResourceRef`:
 - A resource whose path ends at an org that is not one of the tenant's orgs is denied with `tenant_mismatch`. There is no cross-tenant grant.
 - `path` and `attrs` are loaded **server-side by id** from the product's database (SDK helpers do this). They never come from the request body.
 - `path` holds no entry twice, and not the resource itself; otherwise the request is invalid.
-- `attrs`: a JSON object from field name to a string, an integer, a boolean, `null`, or an array of strings. A value of a declared field must have that field's type (MANIFEST.md §4; a `principal` field holds a valid principal string); otherwise the request is invalid. It is never read as null.
+- `attrs`: a JSON object from field name to a string, an integer, a boolean, `null`, or an array of strings. A value of a declared field must have that field's type (MANIFEST.md §4; a `principal` field holds a valid principal string); otherwise the request is invalid. It is never read as null. Integers are from −(2^53 − 1) to 2^53 − 1.
+- `attrs` holds **every field of the type that has `grants_access`**, with `null` when the field has no value. Conditions read only those fields, and a field left out would be read as null: under `not` that makes a comparison true, while SQL compares the real column. A request without one is invalid. (Here a missing field and `null` are **not** the same, unlike the general JSON rule in §0.) In `write_check`, `new_attrs` holds only the changed fields.
 - Size bounds: at most 1,000 requests in a `batch`, and at most 512 entries in `fields`, `attrs` and `new_attrs`. More is an invalid request.
 
 ### 6.6 `list_filter`
@@ -803,7 +805,7 @@ The rows must also be well formed, because `check` refuses what is not, and the 
 | `under` | `scopes` (1 or more `{type, id}`) | one of the scopes is an ancestor of the row |
 
 Rules:
-- `attr` is a field name (2.1) registered for the type. A value is a JSON string, integer or boolean. Types must match: `"5"` is not `5`. A comparison with a null field is false (use `is_null`).
+- `attr` is a field name (2.1) registered for the type. A value is a JSON string, integer or boolean. An integer is from −(2^53 − 1) to 2^53 − 1 (the manifest refuses others), so every SDK reads it exactly. Types must match: `"5"` is not `5`. A comparison with a null field is false (use `is_null`).
 - Values that depend on the principal are already filled in. For example the condition "assignee is the principal" arrives as `{"op": "eq", "attr": "assignee", "value": "user:usr_…"}`.
 - An SDK that meets an unknown `op` refuses the filter (deny, no rows). New ops come only with SDK support.
 - Limits (Phase A, [ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator)): at most 4,096 condition nodes, depth 32, 10,000 entries in `ids_in`, 10,000 in `container_in`, and 20,000 entries in total (`ids_in`, `container_in`, and every `under.scopes`, `id_in.ids` and `in.values` inside the condition: each one is a bound array element). These limits are headroom, not measurements: the week-1 spike's largest filter had 1,150 nodes, on models far smaller than the model limits. A filter that would pass a limit is an error, and the caller fails closed (no rows).

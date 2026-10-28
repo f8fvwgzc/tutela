@@ -228,7 +228,7 @@ impl Sensitivity {
 pub enum FieldType {
     /// `string`.
     String,
-    /// `integer`: 64-bit signed.
+    /// `integer`: from −(2^53 − 1) to 2^53 − 1 in requests and conditions.
     Integer,
     /// `boolean`.
     Boolean,
@@ -421,7 +421,7 @@ pub struct FieldRule {
 pub enum Value {
     /// A string, 1 to 256 characters.
     String(String),
-    /// A 64-bit integer.
+    /// An integer from −(2^53 − 1) to 2^53 − 1.
     Integer(i64),
     /// A boolean.
     Boolean(bool),

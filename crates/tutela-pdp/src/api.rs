@@ -77,15 +77,16 @@ impl fmt::Display for PathEntry {
 }
 
 /// A field value that conditions read (CONTRACTS.md 6.5): a string, an
-/// integer, a boolean, `null` or an array of strings. A missing field is
-/// `null`.
+/// integer, a boolean, `null` or an array of strings. Every `grants_access`
+/// field of the type must be sent, as `Null` when it has no value; a
+/// missing one makes the request invalid.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum AttrValue {
     /// `null`.
     Null,
     /// A string. A principal field holds a principal string.
     String(String),
-    /// A 64-bit integer.
+    /// An integer from −(2^53 − 1) to 2^53 − 1.
     Integer(i64),
     /// A boolean.
     Boolean(bool),

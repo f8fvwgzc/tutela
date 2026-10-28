@@ -1,7 +1,7 @@
 //! The evaluator: `Pdp::check`, `Pdp::batch`, `Pdp::list_filter` and
 //! `Pdp::write_check` (CONTRACTS.md 6.5 to 6.8, PERMISSION-MODEL.md 7).
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use tutela_contracts::decision::{
@@ -184,7 +184,7 @@ impl Pdp {
         }
         let this = this_entry(&req.resource)?;
         let ty = &req.resource.type_name;
-        check_attrs(&b.model, ty, &req.resource.attrs)?;
+        check_attrs(&b.model, ty, &req.resource.attrs, true)?;
         if !in_tenant(&b.index, &req.resource) {
             return Ok(tenant_mismatch(b.rev));
         }
@@ -359,8 +359,8 @@ impl Pdp {
         let write_kind = action_kind(&b.model, &write)?;
         let manage_kind = action_kind(&b.model, &manage)?;
         let this = this_entry(&req.resource)?;
-        check_attrs(&b.model, ty, &req.resource.attrs)?;
-        check_attrs(&b.model, ty, &req.new_attrs)?;
+        check_attrs(&b.model, ty, &req.resource.attrs, true)?;
+        check_attrs(&b.model, ty, &req.new_attrs, false)?;
         let ctx = b.ctx();
         let changed: Vec<&FieldName> = req.new_attrs.keys().collect();
         let def = b.model.types().get(ty);
@@ -587,9 +587,19 @@ fn mask(
 
 /// Checks field values against the declared field types. A value of the
 /// wrong type is an error, never treated as null: under `not`, null makes a
-/// comparison true, while SQL compares the real column (ADR-0013). Names the
-/// type does not declare are not read and not checked.
-fn check_attrs(model: &Model, ty: &ResourceType, attrs: &Attrs) -> Result<(), PdpError> {
+/// comparison true, while SQL compares the real column (ADR-0013). An
+/// integer is at most 2^53 − 1 either way, so every SDK reads it exactly.
+/// Names the type does not declare are not read and not checked.
+///
+/// With `complete` (the resource's current values), every `grants_access`
+/// field of the type must be there, `null` included: conditions read only
+/// those fields, and a field left out would be read as null.
+fn check_attrs(
+    model: &Model,
+    ty: &ResourceType,
+    attrs: &Attrs,
+    complete: bool,
+) -> Result<(), PdpError> {
     if attrs.len() > MAX_FIELDS {
         return Err(PdpError::invalid("more than 512 field values"));
     }
@@ -603,9 +613,9 @@ fn check_attrs(model: &Model, ty: &ResourceType, attrs: &Attrs) -> Result<(), Pd
         let ok = match (f.field_type, value) {
             (_, AttrValue::Null)
             | (FieldType::String, AttrValue::String(_))
-            | (FieldType::Integer, AttrValue::Integer(_))
             | (FieldType::Boolean, AttrValue::Boolean(_))
             | (FieldType::StringList, AttrValue::Strings(_)) => true,
+            (FieldType::Integer, AttrValue::Integer(i)) => i.unsigned_abs() <= MAX_JSON_INT,
             (FieldType::Principal, AttrValue::String(p)) => p.parse::<Principal>().is_ok(),
             _ => false,
         };
@@ -614,6 +624,17 @@ fn check_attrs(model: &Model, ty: &ResourceType, attrs: &Attrs) -> Result<(), Pd
                 "the value of field `{name}` does not have its declared type"
             )));
         }
+    }
+    if complete
+        && let Some(name) = def
+            .fields
+            .iter()
+            .find(|(n, f)| f.grants_access && !attrs.contains_key(*n))
+            .map(|(n, _)| n)
+    {
+        return Err(PdpError::invalid(format!(
+            "field `{name}` decides access, so its value must be sent (`null` if it has none)"
+        )));
     }
     Ok(())
 }
@@ -639,9 +660,10 @@ fn highest_label(
 /// without repeats.
 fn rule_ids(ctx: Ctx<'_>, sides: &[Side<'_, '_>], lowered: &BTreeSet<RuleRef>) -> Vec<RuleId> {
     let mut out: Vec<RuleId> = Vec::new();
+    let mut seen: HashSet<RuleId> = HashSet::new();
     let mut push = |id: Option<RuleId>| {
         if let Some(id) = id
-            && !out.contains(&id)
+            && seen.insert(id.clone())
         {
             out.push(id);
         }

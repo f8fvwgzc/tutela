@@ -576,12 +576,20 @@ pub(crate) struct Node {
 }
 
 impl Node {
+    /// The resource as a product's loader sends it: every data field a
+    /// generated `doc` may have, `null` when the row has no value.
     pub fn resource(&self) -> ResourceRef {
+        let mut attrs = self.attrs.clone();
+        for f in DATA_FIELDS {
+            attrs
+                .entry(FieldName::parse(f).unwrap())
+                .or_insert(AttrValue::Null);
+        }
         ResourceRef {
             type_name: self.entry.type_name.clone(),
             id: self.entry.id.clone(),
             path: self.path.clone(),
-            attrs: self.attrs.clone(),
+            attrs,
         }
     }
 }
@@ -812,13 +820,13 @@ fn members(rng: &mut Rng, ps: &[Principal], nested: Option<&str>) -> Vec<Member>
     m
 }
 
-/// Field values: each one null (missing) four times in ten.
+/// Field values: each one null four times in ten. Every field is sent,
+/// `null` included, as `check` requires for the fields that decide access.
 fn attrs(rng: &mut Rng, ps: &[Principal]) -> Attrs {
     let mut a = Attrs::new();
     let mut put = |rng: &mut Rng, f: &str, v: AttrValue| {
-        if !rng.chance(40) {
-            a.insert(FieldName::parse(f).unwrap(), v);
-        }
+        let v = if rng.chance(40) { AttrValue::Null } else { v };
+        a.insert(FieldName::parse(f).unwrap(), v);
     };
     let status = (*rng.pick(&["open", "done", "x"])).to_owned();
     put(rng, "status", AttrValue::String(status));

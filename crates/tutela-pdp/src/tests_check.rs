@@ -223,11 +223,13 @@ pub(crate) fn kestrel() -> Pdp {
     pdp_with(kestrel_data())
 }
 
+/// The values of the fields that decide access (`assignee`, `labels`):
+/// always sent, `null` when there is none.
 fn attrs(assignee: Option<&Principal>) -> Attrs {
     let mut a = Attrs::new();
-    if let Some(p) = assignee {
-        a.insert(fname("assignee"), AttrValue::String(p.to_string()));
-    }
+    let assignee = assignee.map_or(AttrValue::Null, |p| AttrValue::String(p.to_string()));
+    a.insert(fname("assignee"), assignee);
+    a.insert(fname("labels"), AttrValue::Null);
     a
 }
 
@@ -1346,4 +1348,125 @@ fn tm05_a_refused_reload_changes_nothing() {
             Err(LoadError::OrgClaimed(org_id(1)))
         );
     }
+}
+
+// ---------- Independent review: missing fields, integers, many group roles ----------
+
+#[test]
+fn a_field_that_decides_access_must_be_sent() {
+    // Clause's condition reads `assignee`. Left out, it would be read as
+    // null, and under `not` a null comparison is true while SQL compares
+    // the real column. So a field with `grants_access` must be sent, as
+    // `null` when it has no value.
+    let pdp = kestrel();
+    for field in ["assignee", "labels"] {
+        let mut r = req(&agent(CLAUSE), "contract:read", c204());
+        r.resource.attrs.remove(&fname(field));
+        assert!(
+            matches!(pdp.check(&r), Err(PdpError::InvalidInput { .. })),
+            "{field}"
+        );
+        assert!(matches!(
+            pdp.batch(std::slice::from_ref(&r)),
+            Err(PdpError::InvalidInput { .. })
+        ));
+        let mut w = write_req(&user(OMAR), vec![], "review_notes");
+        w.resource.attrs.remove(&fname(field));
+        assert!(matches!(
+            pdp.write_check(&w),
+            Err(PdpError::InvalidInput { .. })
+        ));
+    }
+    // An explicit null is a value: Clause is then not the assignee.
+    let mut r = req(&agent(CLAUSE), "contract:read", c204());
+    r.resource.attrs.insert(fname("assignee"), AttrValue::Null);
+    assert_eq!(pdp.check(&r).unwrap().level, Level::Read);
+    // The changed fields of a write need not repeat the others.
+    let w = write_req(&user(OMAR), vec![], "review_notes");
+    assert_eq!(w.new_attrs.len(), 1);
+    assert_eq!(pdp.write_check(&w).unwrap().effect, Effect::Allow);
+}
+
+#[test]
+fn a_field_integer_must_fit_every_sdk() {
+    let pdp = kestrel();
+    let max = i64::try_from(tutela_contracts::encoding::MAX_JSON_INT).unwrap();
+    for (v, ok) in [
+        (max, true),
+        (-max, true),
+        (max + 1, false),
+        (i64::MIN, false),
+    ] {
+        let mut w = write_req(&user(OMAR), vec![], "budget");
+        w.new_attrs.insert(fname("budget"), AttrValue::Integer(v));
+        let got = pdp.write_check(&w);
+        assert_eq!(got.is_ok(), ok, "{v}: {got:?}");
+        if !ok {
+            assert!(matches!(got, Err(PdpError::InvalidInput { .. })));
+        }
+    }
+}
+
+#[test]
+fn many_group_roles_at_one_scope_give_each_rule_id_once_in_binding_order() {
+    // 3,000 groups hold the user, each with a role at Price negotiations.
+    // The user's groups outnumber the group bindings at most scopes, and
+    // the other way round at this one: both lookups give the same roles.
+    let u = user(0x300);
+    let n = 3_000;
+    let groups: Vec<Group> = (0..n)
+        .map(|i| group(&format!("g{i}"), vec![Member::Principal(u.clone())]))
+        .collect();
+    let bindings: Vec<Binding> = (0..n)
+        .rev()
+        .map(|i| {
+            binding(
+                &format!("ra_g{i:04}"),
+                gsub(&format!("g{i}")),
+                "viewer",
+                price(),
+            )
+        })
+        .collect();
+    let want: Vec<RuleId> = bindings.iter().map(|b| b.id.clone()).collect();
+    let pdp = with_groups(bindings, groups);
+    let d = pdp
+        .check(&req(
+            &u,
+            "contract:read",
+            resource("contract", "c-219", None),
+        ))
+        .unwrap();
+    assert_eq!(d.effect, Effect::Allow);
+    // The deciding assignments first, then the rule that hides `budget`.
+    assert_eq!(d.rule_ids.get(..n), Some(want.as_slice()));
+    assert_eq!(&d.rule_ids[n..], [rule("model:field_rule:0")]);
+    // Few groups, many bindings at the scope: the other lookup.
+    let v = user(0x301);
+    let mut groups: Vec<Group> = (0..n)
+        .map(|i| group(&format!("g{i}"), vec![Member::Principal(u.clone())]))
+        .collect();
+    if let Some(g) = groups.get_mut(7) {
+        g.members.push(Member::Principal(v.clone()));
+    }
+    let bindings: Vec<Binding> = (0..n)
+        .map(|i| {
+            binding(
+                &format!("ra_g{i:04}"),
+                gsub(&format!("g{i}")),
+                "viewer",
+                price(),
+            )
+        })
+        .collect();
+    let pdp = with_groups(bindings, groups);
+    let d = pdp
+        .check(&req(
+            &v,
+            "contract:read",
+            resource("contract", "c-219", None),
+        ))
+        .unwrap();
+    assert_eq!(d.effect, Effect::Allow);
+    assert_eq!(d.rule_ids, [rule("ra_g0007"), rule("model:field_rule:0")]);
 }

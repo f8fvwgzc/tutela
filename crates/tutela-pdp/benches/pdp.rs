@@ -350,6 +350,10 @@ fn build() -> Res<World> {
                 AttrValue::Integer(i64::try_from(rng.below(3))?),
             );
         }
+        // The fields that decide access are always sent, `null` if unset.
+        for f in [&status, &owner_p, &labels, &prio] {
+            attrs.entry(f.clone()).or_insert(AttrValue::Null);
+        }
         by_scope.entry(parent).or_default().push(i);
         items.push(Item { parent, attrs });
     }

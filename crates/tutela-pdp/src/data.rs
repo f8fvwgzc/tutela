@@ -5,7 +5,7 @@
 //! exists, a product builds [`TenantData`] itself. [`crate::Pdp::load`]
 //! checks it and builds an index; it never repairs it.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use tutela_contracts::decision::RuleId;
 use tutela_contracts::keys::{FieldKey, ResourceType};
@@ -174,8 +174,8 @@ pub(crate) struct NodeCaps {
 pub(crate) struct ScopeIndex {
     /// Direct bindings by principal.
     pub direct: HashMap<Principal, usize>,
-    /// Group bindings: (group index, binding index).
-    pub groups: Vec<(usize, usize)>,
+    /// Group bindings: group index → binding index.
+    pub groups: BTreeMap<usize, usize>,
     /// `true` if the scope stops inheritance.
     pub private: bool,
     /// The field rules here.
@@ -326,10 +326,9 @@ impl Index {
                     let gi = *group_ids
                         .get(k)
                         .ok_or_else(|| LoadError::UnknownGroup(k.clone()))?;
-                    if node.groups.iter().any(|&(g, _)| g == gi) {
+                    if node.groups.insert(gi, bi).is_some() {
                         return Err(LoadError::DuplicateBinding(b.id.clone()));
                     }
-                    node.groups.push((gi, bi));
                     if let Some(v) = by_group.get_mut(gi) {
                         v.push(bi);
                     }

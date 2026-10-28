@@ -67,13 +67,15 @@ fn contracts() -> Vec<Node> {
         .into_iter()
         .map(|id| {
             let e = entry("contract", id);
+            // The fields that decide access are always sent.
             let mut attrs = Attrs::new();
-            if id == "c-204" {
-                attrs.insert(
-                    "assignee".parse().unwrap(),
-                    AttrValue::String(agent(CLAUSE).to_string()),
-                );
-            }
+            let assignee = if id == "c-204" {
+                AttrValue::String(agent(CLAUSE).to_string())
+            } else {
+                AttrValue::Null
+            };
+            attrs.insert("assignee".parse().unwrap(), assignee);
+            attrs.insert("labels".parse().unwrap(), AttrValue::Null);
             Node {
                 path: path_of(&e),
                 entry: e,
@@ -524,6 +526,7 @@ fn tm10_a_valid_manifest_can_pass_the_limits_and_the_list_fails_closed() {
     // `check` on one item still answers.
     let mut attrs = Attrs::new();
     attrs.insert("status".parse().unwrap(), AttrValue::String("s0".into()));
+    attrs.insert("prio".parse().unwrap(), AttrValue::Null);
     let d = eight
         .check(&CheckRequest {
             tenant: tenant(1),

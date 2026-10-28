@@ -149,18 +149,28 @@ impl Side<'_, '_> {
 }
 
 /// The deciding bindings for `p` at one scope (PERMISSION-MODEL.md 6.3):
-/// the direct one, else every group one whose group holds `p`. Empty when
-/// there is none.
+/// the direct one, else every group one whose group holds `p`, in binding
+/// order. Empty when there is none.
 pub(crate) fn bindings_at(index: &Index, node: &ScopeIndex, p: &Principal) -> Vec<usize> {
     if let Some(&bi) = node.direct.get(p) {
         return vec![bi];
     }
     let groups = index.groups_of(p);
-    node.groups
-        .iter()
-        .filter(|(g, _)| groups.contains(g))
-        .map(|&(_, b)| b)
-        .collect()
+    // Walk the smaller of the two: the group bindings here, or `p`'s groups.
+    let mut out: Vec<usize> = if node.groups.len() <= groups.len() {
+        node.groups
+            .iter()
+            .filter(|(g, _)| groups.contains(*g))
+            .map(|(_, &b)| b)
+            .collect()
+    } else {
+        groups
+            .iter()
+            .filter_map(|g| node.groups.get(g).copied())
+            .collect()
+    };
+    out.sort_unstable();
+    out
 }
 
 /// The role a binding gives, if the model has it and it may be given to the

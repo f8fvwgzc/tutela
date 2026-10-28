@@ -46,13 +46,14 @@ MUTANTS = [
      "            if false && scope.private {"),
     ("M03", "eval.rs", "a direct assignment no longer beats group ones",
      "    if let Some(&bi) = node.direct.get(p) {\n        return vec![bi];\n    }",
-     "    let mut out: Vec<usize> = node.direct.get(p).copied().into_iter().collect();\n"
-     "    let groups = index.groups_of(p);\n"
-     "    out.extend(node.groups.iter().filter(|(g, _)| groups.contains(g)).map(|&(_, b)| b));\n"
-     "    if !out.is_empty() {\n        return out;\n    }"),
+     "    if let Some(&bi) = node.direct.get(p) {\n"
+     "        let groups = index.groups_of(p);\n"
+     "        let mut out = vec![bi];\n"
+     "        out.extend(node.groups.iter().filter(|(g, _)| groups.contains(*g)).map(|(_, &b)| b));\n"
+     "        return out;\n    }"),
     ("M04", "eval.rs", "only the first group role at a scope counts",
-     "        .map(|&(_, b)| b)\n        .collect()\n}",
-     "        .map(|&(_, b)| b)\n        .take(1)\n        .collect()\n}"),
+     "    out.sort_unstable();\n    out\n}",
+     "    out.sort_unstable();\n    out.truncate(1);\n    out\n}"),
     ("M05", "eval.rs", "check: conditions never narrow",
      "if !condition_holds(ctx, &c.when, attrs, &p_text, groups) {",
      "if false && !condition_holds(ctx, &c.when, attrs, &p_text, groups) {"),
@@ -116,6 +117,12 @@ MUTANTS = [
     ("M24", "data.rs", "a group in two groups gets only its first holder's groups",
      "            for &p in inside.get(g).into_iter().flatten() {",
      "            for &p in inside.get(g).into_iter().flatten().take(1) {"),
+    ("M25", "pdp.rs", "a field that decides access may be left out (read as null)",
+     "    if complete\n        && let Some(name) = def",
+     "    if false\n        && complete\n        && let Some(name) = def"),
+    ("M26", "pdp.rs", "a field integer above 2^53 - 1 is accepted",
+     "(FieldType::Integer, AttrValue::Integer(i)) => i.unsigned_abs() <= MAX_JSON_INT,",
+     "(FieldType::Integer, AttrValue::Integer(i)) => i.unsigned_abs() <= u64::MAX,"),
 ]
 
 

@@ -197,7 +197,9 @@ fn count(
             seen.org_owner_allows += 1;
         }
     }
-    if f.condition.as_ref().is_some_and(has_not_over_comparison) && row.attrs.len() < 5 {
+    if f.condition.as_ref().is_some_and(has_not_over_comparison)
+        && row.attrs.values().any(|v| *v == crate::AttrValue::Null)
+    {
         seen.null_rows_under_not += 1;
     }
     let private: Vec<&crate::PathEntry> = row

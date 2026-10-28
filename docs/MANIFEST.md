@@ -200,7 +200,7 @@ A condition narrows the role's level on one type: when `when` is false, the leve
 Rules:
 - The field is a declared data field of the condition's type (not a feature) and has `grants_access = true`.
 - A comparison with a null field is false. So `not` of a comparison is true on a null field.
-- String values are 1–256 characters. Integers fit in 64 bits.
+- String values are 1–256 characters. Integers are from −(2^53 − 1) to 2^53 − 1, because the list filter sends them as JSON and readers in some languages (JavaScript) lose exact values above that.
 - A template has at most 32 nodes and is at most 4 levels deep.
 - The field must not be confidential or secret. Otherwise people could learn its value from what they may do.
 - String values are checked like labels: no control or invisible (default-ignorable) characters.

@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use tutela_contracts::claims::Audience;
+use tutela_contracts::encoding::MAX_JSON_INT;
 use tutela_contracts::keys::{
     ActionKey, ActionName, ActionRequirement, FieldKey, FieldName, ResourceType, UiKey,
 };
@@ -1100,7 +1101,17 @@ fn value(ctx: &mut Ctx, at: &str, ft: FieldType, v: raw::Scalar) -> Option<Value
                 None
             }
         }
-        (FieldType::Integer, raw::Scalar::Integer(i)) => Some(Value::Integer(i)),
+        (FieldType::Integer, raw::Scalar::Integer(i)) => {
+            if i.unsigned_abs() <= MAX_JSON_INT {
+                Some(Value::Integer(i))
+            } else {
+                ctx.bad(
+                    at,
+                    "an integer value is from -(2^53 - 1) to 2^53 - 1, so every SDK reads it exactly",
+                );
+                None
+            }
+        }
         (FieldType::Boolean, raw::Scalar::Boolean(b)) => Some(Value::Boolean(b)),
         (FieldType::StringList | FieldType::Principal, _) => {
             ctx.bad(
