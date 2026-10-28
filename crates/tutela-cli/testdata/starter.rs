@@ -71,3 +71,10 @@ pub const ROUTES: &[Route] = &[
         fields: &[],
     },
 ];
+
+/// The declared routes as `(method, path)` pairs: for `tutela_sdk::http::Guards::declared`,
+/// and for the test that calls each route as a denied principal,
+/// `tutela_sdk::http::assert_routes_deny(app, route_pairs(), token)`.
+pub fn route_pairs() -> impl Iterator<Item = (&'static str, &'static str)> {
+    ROUTES.iter().map(|r| (r.method, r.path))
+}

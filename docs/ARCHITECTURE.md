@@ -195,7 +195,10 @@ What a Rust product links to talk to Tutela.
   resource's path and attributes **server-side by id** (never from the
   request body).
 - Refuses to start if a route declared in `tutela.resources.toml` has no
-  guard.
+  guard. Built: `tutela_sdk::http::AuthLayer` (one tower layer for axum and
+  tonic: 401, or `grpc-status: 16`), `Guards::check_complete` over the
+  codegen `ROUTES` table, `GuardLayer` (a declared route without a guard is
+  403), and `assert_routes_deny` for the generated denied-route test.
 
 ### `tutela-vault` (Phase A)
 

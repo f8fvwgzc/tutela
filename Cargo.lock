@@ -1946,10 +1946,13 @@ version = "0.0.0"
 dependencies = [
  "aws-lc-rs",
  "base64 0.23.1",
+ "http",
  "serde",
  "serde_json",
  "thiserror",
  "tokio",
+ "tower-layer",
+ "tower-service",
  "tutela-contracts",
  "tutela-safenet",
 ]

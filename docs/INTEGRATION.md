@@ -508,6 +508,11 @@ path, UI key, actions, fields); in a binary crate, put `#[allow(dead_code)]` on
 that `mod` line if some constants are unused. The TypeScript file has the same
 keys as `as const` objects with their types, and the `UI` map for the React parts.
 
+On the server, `tutela_sdk::http::Guards::declared(perms::route_pairs())` takes a
+guard for every declared route; call `check_complete()` at start-up and refuse to
+serve if it fails. In a test, `assert_routes_deny(app, perms::route_pairs(), token)`
+with a token of a principal that may do nothing must return no routes.
+
 ## Step 4. Guard every handler
 
 The `tutela-sdk` layer verifies the token. Each handler then checks the
