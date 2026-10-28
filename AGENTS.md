@@ -47,7 +47,7 @@ tutela/
 │   │                        write_check
 │   ├── tutela-store/        Postgres schema and migrations: bindings, field rules, groups now
 │   ├── tutela-sdk/          token verifier, axum and tonic layers, decision cache         A
-│   ├── tutela-vault/        envelope encryption with a KMS trait                          A
+│   ├── tutela-vault/        envelope encryption with a KMS trait                          now
 │   ├── tutela-safenet/      SSRF-safe outbound HTTP                                       now
 │   ├── tutela-cli/          the `tutela` CLI: init, check, codegen, migrate, apply,       now
 │   │                        approvals (apps, keys: B)

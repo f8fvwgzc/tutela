@@ -198,7 +198,12 @@ What a Rust product links to talk to Tutela.
 Envelope encryption: each secret gets its own data key; the data key is
 encrypted with a master key behind a KMS trait. Keys come from
 `TUTELA_MASTER_KEY`, with `TUTELA_MASTER_KEY_PREVIOUS` for rotation. Its
-design comes from onto-intelli `crates/onto-control/src/vault.rs`.
+design comes from onto-intelli `crates/onto-control/src/vault.rs`. Built: the
+blob is versioned and names the key that wrapped its data key; the data key
+and the secret are both bound to a purpose and a context (length-prefixed in
+the AES-256-GCM associated data); `rewrap` moves a blob to the current key
+without touching the secret's ciphertext; a missing master key is an error,
+never a made-up key.
 
 ### `tutela-safenet` (Phase A)
 

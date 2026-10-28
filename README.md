@@ -156,6 +156,7 @@ Dependencies point down only: products → onto-intelli / texc-symphony → atta
 | `tutela-store` (Postgres schema, migrations, row-level security, checked writes; [ADR-0014](docs/DECISIONS.md#adr-0014-tutela-store-in-phase-a-the-schema-row-level-security-and-checked-writes)) | Done (Phase A) |
 | `tutela` CLI: `init`, `check`, `migrate`, `apply` with approval tokens ([ADR-0015](docs/DECISIONS.md#adr-0015-approval-tokens-for-tutela-apply-in-library-mode)), `codegen` | Done (Phase A); the generated denied-route test comes with `tutela-sdk` |
 | `tutela-safenet` (SSRF-safe outbound HTTP, THREAT-MODEL TM-18) | Done (Phase A) |
+| `tutela-vault` (envelope encryption with a KMS trait) | Done (Phase A) |
 | Everything else | Planned, see [docs/ROADMAP.md](docs/ROADMAP.md) |
 
 Phases: **A** packages and library mode, **B** `tutelad` service and Tutela Console, **C** own login server (optional), **D** hardening. Honest size for Tutela alone: about 35–45 person-weeks for one strong engineer.
