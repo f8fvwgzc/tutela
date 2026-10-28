@@ -1,8 +1,8 @@
 //! Diffs between models (docs/MANIFEST.md section 10): worked cases from
 //! PERMISSION-MODEL.md section 17 and property tests for "no widening".
 
+use crate::model::{Class, DiffError, Model, diff};
 use proptest::prelude::*;
-use tutela_pdp::model::{Class, DiffError, Model, diff};
 
 fn model(src: &str) -> Model {
     Model::from_toml(src).unwrap()
@@ -103,7 +103,7 @@ fn levels_grants_and_conditions() {
     let (c, lines) = classes(&base, &no_grant);
     assert_eq!(c, Class::Narrowing, "{lines:?}");
     // Dropping the grant requirement lets every Write role approve.
-    let open = base.replace(
+    let open = no_grant.replace(
         "approve = { needs = \"write\" }",
         "approve = { needs = \"write\", grant = false }",
     );

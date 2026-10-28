@@ -56,14 +56,14 @@ fn text_ok(s: &str, max: usize) -> bool {
     !s.is_empty() && s.chars().count() <= max && !s.chars().any(char::is_control)
 }
 
-fn label(ctx: &mut Ctx, at: &str, l: Option<String>) -> Option<String> {
-    if let Some(s) = &l {
-        if !text_ok(s, MAX_LABEL) {
-            ctx.bad(
-                at,
-                "a label is 1 to 128 characters with no control characters",
-            );
-        }
+fn check_label(ctx: &mut Ctx, at: &str, l: Option<String>) -> Option<String> {
+    if let Some(s) = &l
+        && !text_ok(s, MAX_LABEL)
+    {
+        ctx.bad(
+            at,
+            "a label is 1 to 128 characters with no control characters",
+        );
     }
     l
 }
@@ -220,7 +220,7 @@ fn types(ctx: &mut Ctx, raw: BTreeMap<String, raw::Type>) -> BTreeMap<ResourceTy
                 AiReach::Project
             }
         };
-        let label = label(ctx, &format!("{at}.label"), t.label);
+        let label = check_label(ctx, &format!("{at}.label"), t.label);
         let mut fields = BTreeMap::new();
         for (fname, f) in t.fields {
             let fat = format!("{at}.fields.{fname}");
@@ -246,7 +246,7 @@ fn types(ctx: &mut Ctx, raw: BTreeMap<String, raw::Type>) -> BTreeMap<ResourceTy
                     FieldType::String
                 }),
             };
-            let label = label(ctx, &format!("{fat}.label"), f.label);
+            let label = check_label(ctx, &format!("{fat}.label"), f.label);
             fields.insert(
                 field,
                 FieldDef {
@@ -477,7 +477,7 @@ fn roles(
             ctx.bad(&at, "the seeded `owner` role cannot be declared or changed");
             continue;
         }
-        let label = label(ctx, &format!("{at}.label"), r.label);
+        let label = check_label(ctx, &format!("{at}.label"), r.label);
         let mut levels = BTreeMap::new();
         let mut field_levels = BTreeMap::new();
         let mut grants = BTreeSet::new();
@@ -548,7 +548,19 @@ fn roles(
                 .get(fk.resource_type())
                 .copied()
                 .unwrap_or(Level::None);
-            if *l > tl {
+            // A data field never goes above the item. A feature may (a
+            // viewer may ask the AI), but only on an item the role can read.
+            if fk.is_feature() {
+                if *l > Level::None && tl == Level::None {
+                    ctx.bad(
+                        format!("{at}.grants.{fk}"),
+                        format!(
+                            "a feature needs at least `read` on `{}`",
+                            fk.resource_type()
+                        ),
+                    );
+                }
+            } else if *l > tl {
                 ctx.bad(
                     format!("{at}.grants.{fk}"),
                     format!(
@@ -791,7 +803,10 @@ fn template_field<'d>(
     def: &'d TypeDef,
     name: &str,
 ) -> Option<(FieldName, &'d FieldDef)> {
-    let Some((field, fd)) = def.fields.get_key_value(name) else {
+    let found = FieldName::parse(name)
+        .ok()
+        .and_then(|f| def.fields.get_key_value(&f));
+    let Some((field, fd)) = found else {
         ctx.bad(
             at,
             format!("`{name}` is not a declared data field of the type"),
@@ -1037,13 +1052,13 @@ fn ui(
                 WhenDenied::Hide
             }
         };
-        if let Some(r) = &u.reason {
-            if !text_ok(r, MAX_REASON) {
-                ctx.bad(
-                    format!("{at}.reason"),
-                    "1 to 512 characters with no control characters",
-                );
-            }
+        if let Some(r) = &u.reason
+            && !text_ok(r, MAX_REASON)
+        {
+            ctx.bad(
+                format!("{at}.reason"),
+                "1 to 512 characters with no control characters",
+            );
         }
         out.insert(
             key,

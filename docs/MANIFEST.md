@@ -103,7 +103,7 @@ assignable_to = ["user", "group"]   # optional
 |---|---|---|
 | a type, for example `contract` (or `org`) | a level | The item level for that type. A type the role does not list is `none`. |
 | a field key, `contract.title` | a level | The level for one field. Not above the role's level for the type. A field the role does not list uses the type level. |
-| a feature key, `contract.@ai` | a level | The level for one feature. Same rules as a field. |
+| a feature key, `contract.@ai` | a level | The level for one feature. It **may** be above the type level (a Viewer may ask the AI about a contract it can only read: `contract = "read"`, `"contract.@ai" = "write"`, as in [PERMISSION-MODEL.md §17.4](PERMISSION-MODEL.md#174-jae-asks-clause-ai-in-chat-is-c-204-over-budget)), but the type level must be at least `read`. A feature the role does not list uses the type level. |
 | an action key, `contract:approve` | `true` | A grant for a custom action that needs one, or an admin key (§6). Built-in actions come from levels and cannot be granted. `false` is an error: leave the key out instead. |
 
 `assignable_to`: who may receive the role: `user`, `sa`, `key`, `agent`, `workload`, `group`. Default: all of them. A role that holds an admin key or an owner-only action **can never be assigned to an agent** ([PERMISSION-MODEL.md §5.3](PERMISSION-MODEL.md#53-owner-only-admin-actions-blueprint)); its default leaves `agent` out, and listing `agent` is an error.

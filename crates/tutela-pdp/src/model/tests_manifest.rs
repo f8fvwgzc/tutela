@@ -2,12 +2,12 @@
 //! worked example of PERMISSION-MODEL.md section 17) and one test per rule
 //! that must refuse a manifest.
 
-use tutela_contracts::keys::{ActionKey, FieldKey, ResourceType};
-use tutela_contracts::level::Level;
-use tutela_pdp::model::{
+use crate::model::{
     FieldDisplay, Issues, MAX_MANIFEST_BYTES, Model, RoleKey, SeededRole, Sensitivity, Starts,
     SubjectKind, Template,
 };
+use tutela_contracts::keys::{ActionKey, FieldKey, ResourceType};
+use tutela_contracts::level::Level;
 
 /// The Kestrel Foods contract tracker (PERMISSION-MODEL.md section 17).
 const KESTREL: &str = r#"
@@ -28,8 +28,9 @@ starts    = "private"
 ai_reach  = "project"
 
 [types.contract]
-parent   = "matter"
-features = ["chat", "files", "ai"]
+parent    = "matter"
+container = true
+features  = ["chat", "files", "ai"]
 
 [types.contract.fields]
 title        = { sensitivity = "internal" }
@@ -105,6 +106,15 @@ fn the_worked_example_compiles() {
     assert_eq!(
         m.roles()[&role("member")].level(&ty("invoice")),
         Level::Full
+    );
+    // 17.4: a Viewer reads the contract and may ask the AI about it.
+    assert_eq!(
+        m.root_field_level(&role("viewer"), &field("contract.@ai")),
+        Level::Write
+    );
+    assert_eq!(
+        m.root_field_level(&role("viewer"), &field("contract.title")),
+        Level::Read
     );
 
     // The Correction: budget and amount start at None for every role, even
@@ -342,10 +352,9 @@ fn roles_follow_the_rules() {
         &role("project = \"read\", \"project.name\" = \"write\""),
         "above the role's level",
     );
-    refused(
-        &role("\"project.@ai\" = \"read\""),
-        "above the role's level",
-    );
+    refused(&role("\"project.@ai\" = \"read\""), "needs at least `read`");
+    // A feature may be above the type level: a viewer may ask the AI.
+    Model::from_toml(&role("project = \"read\", \"project.@ai\" = \"write\"")).unwrap();
     refused(&role("\"project:read\" = true"), "come from levels");
     refused(&role("\"project:archive\" = false"), "leave it out");
     refused(&role("\"project:export\" = true"), "needs no grant");

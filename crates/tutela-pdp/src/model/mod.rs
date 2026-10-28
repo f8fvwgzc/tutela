@@ -17,6 +17,11 @@ mod compile;
 mod diff;
 mod raw;
 
+#[cfg(test)]
+mod tests_diff;
+#[cfg(test)]
+mod tests_manifest;
+
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -76,7 +81,10 @@ impl fmt::Display for Issue {
 /// Every problem the compiler found. Never empty.
 #[derive(Clone, PartialEq, Eq, Debug, thiserror::Error)]
 #[error("the manifest has {} problem(s): {}", .0.len(), join(.0))]
-pub struct Issues(pub Vec<Issue>);
+pub struct Issues(
+    /// The problems, in the order they were found.
+    pub Vec<Issue>,
+);
 
 fn join(issues: &[Issue]) -> String {
     issues
@@ -351,7 +359,8 @@ pub struct Role {
     pub seeded: Option<SeededRole>,
     /// The item level per type. A type not listed is `none`.
     pub levels: BTreeMap<ResourceType, Level>,
-    /// Levels for single fields and features. Never above the type level.
+    /// Levels for single fields and features. A data field is never above
+    /// the type level; a feature may be, when the type level is at least Read.
     pub field_levels: BTreeMap<FieldKey, Level>,
     /// Custom-action grants and admin keys.
     pub grants: BTreeSet<ActionKey>,
