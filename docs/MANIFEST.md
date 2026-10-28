@@ -21,16 +21,16 @@ The model compiler reads the manifest and either returns a compiled model or a l
 
 ## 2. General rules
 
-- The file is TOML 1.0. It is at most 4 MiB.
+- The file is TOML 1.1 (parsed by the `toml` crate 1.1.x). It is at most 4 MiB.
 - **Unknown keys are errors.** A typo must never drop a restriction silently.
-- Hostile input must give an error, never a crash. The format is TOML 1.1 (the `toml` crate 1.1.8), which allows multi-line inline tables, and the `toml` crate builds and drops its whole tree recursively, also for input it then refuses. So:
+- Hostile input must give an error, never a crash. TOML 1.1 allows multi-line inline tables, and the `toml` crate builds and drops its whole tree recursively, also for input it then refuses. So:
   - the compiler runs on its own thread with a fixed 32 MiB stack. The `toml` crate's own limits (80 nested brackets, 80 parts per key) keep its deepest tree far inside that stack;
   - before parsing, a conservative scan refuses early: tables and arrays that nest more than 32 levels or close the wrong bracket; more than 8 `.` on one line outside strings (each dotted-key part, as in `a.b.c = 1`, opens a table without a bracket; the point in a decimal number counts too); a quote that does not start a key or a value; and a single-line string that does not end on its line;
   - templates have their own depth limit (§8), and every other value is read without going into nested input.
-- Problems are reported with their place. Text taken from the manifest is cut and its control characters are escaped, so it is safe to log.
+- Problems are reported with their place. Text taken from the manifest is cut, and control or invisible (default-ignorable) characters are escaped, so it is safe to log. At most 100 problems are reported, then "and N more".
 - Names follow the name grammar of [CONTRACTS.md §2.1](CONTRACTS.md#21-names): lowercase `snake_case`, 1–64 characters.
 - Levels are `none`, `read`, `write`, `full` ([CONTRACTS.md §3](CONTRACTS.md#3-levels)).
-- Display labels (`label`) are 1–128 characters with no control characters. They are for people only; code never matches on them.
+- Display labels (`label`) are 1–128 characters with no control or invisible (default-ignorable) characters. They are for people only; code never matches on them.
 - Everything that is not granted is denied.
 
 ## 3. Top level
@@ -203,7 +203,7 @@ Rules:
 - String values are 1–256 characters. Integers fit in 64 bits.
 - A template has at most 32 nodes and is at most 4 levels deep.
 - The field must not be confidential or secret. Otherwise people could learn its value from what they may do.
-- String values are checked like labels: no control or invisible characters.
+- String values are checked like labels: no control or invisible (default-ignorable) characters.
 - `in_group` names a group key. Groups are `tutela-store` data. If a template names a group that does not exist, the **whole condition** is false (fail closed), even under `not`: the level drops to `else`.
 - Templates are read with a depth limit: input deeper than 4 levels is refused while it is read, before anything deeper is looked at.
 
@@ -246,7 +246,7 @@ For each role and type:
 |---|---|
 | The item level | it goes up |
 | Each field and feature level, at every item level and at the org root | it goes up |
-| Each custom action: allowed or not | it becomes allowed |
+| Each custom action: allowed or not, at every item level | it becomes allowed at some item level |
 | Each custom-action grant and admin key | the role gets it |
 | The role's conditions on the type | one is removed or changed (a change counts as remove + add, to be safe) |
 | `assignable_to` | a kind is added |

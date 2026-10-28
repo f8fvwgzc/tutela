@@ -909,34 +909,35 @@ fn problems_are_capped_at_100() {
 }
 
 /// The real stack bound is the compiler thread. The deepest tree the `toml`
-/// crate itself accepts (80 nested brackets, each opened by an 80-part key)
-/// must parse and drop on a thread with that stack.
+/// crate itself accepts: an 80-part `[[...]]` header, then 80 nested inline
+/// tables, each opened by an 80-part key. It must parse and drop on the same
+/// thread the compiler uses.
 #[test]
 fn the_compiler_thread_holds_tomls_own_worst_case() {
-    let key = (0..80)
-        .map(|i| format!("k{i}"))
-        .collect::<Vec<_>>()
-        .join(".");
+    let key = |p: &str| {
+        (0..80)
+            .map(|i| format!("{p}{i}"))
+            .collect::<Vec<_>>()
+            .join(".")
+    };
     let src = format!(
-        "x = {}1{}\n",
-        format!("{{ {key} = ").repeat(79),
-        " }".repeat(79)
+        "[[{}]]\n{} = {}1{}\n",
+        key("h"),
+        key("b"),
+        (0..80)
+            .map(|d| format!("{{ {} = ", key(&format!("c{d}_"))))
+            .collect::<String>(),
+        " }".repeat(80)
     );
-    let handle = std::thread::Builder::new()
-        .stack_size(32 * 1024 * 1024)
-        .spawn(move || {
-            toml::from_str::<toml::Table>(&src)
-                .map(|_| ())
-                .map_err(|_| ())
-        })
-        .unwrap();
-    // Parsed or refused, but no crash.
-    let _ = handle.join().unwrap();
+    let parsed =
+        super::compile::on_compiler_stack(move || toml::from_str::<toml::Table>(&src).is_ok());
+    assert_eq!(parsed, Ok(true));
 }
 
 #[test]
 fn a_leading_byte_order_mark_passes_the_scan() {
-    let src = format!("\u{FEFF}{}", with(PROJECT));
+    // A quoted key right after the mark: the scan must see it at a line start.
+    let src = format!("\u{FEFF}\"version\" = 1\n[app]\nname = \"crm\"\n{PROJECT}");
     if let Err(Issues(v)) = Model::from_toml(&src) {
         for i in &v {
             assert!(
@@ -994,5 +995,41 @@ fn the_agent_role_never_holds_admin_powers() {
             "{PROJECT}[roles.agent]\ngrants = {{ \"project:manage_fields\" = true }}\nassignable_to = [\"user\"]\n"
         )),
         "can never hold an admin key",
+    );
+}
+
+#[test]
+fn custom_actions_at_an_item_level() {
+    let m = Model::from_toml(&with(&format!(
+        "{PROJECT}[types.project.actions]\napprove = {{ needs = \"write\" }}\nterminate = {{ needs = \"owner\" }}\n[roles.reviewer]\ngrants = {{ project = \"write\", \"project:approve\" = true }}\n"
+    )))
+    .unwrap();
+    let approve = ActionKey::parse("project:approve").unwrap();
+    let terminate = ActionKey::parse("project:terminate").unwrap();
+    // A condition that drops the reviewer to Read takes approve away.
+    assert!(m.allows_custom_at(&role("reviewer"), &approve, Level::Write));
+    assert!(!m.allows_custom_at(&role("reviewer"), &approve, Level::Read));
+    // Owner-only needs Full: the owner at Write may not terminate.
+    assert!(m.allows_custom_at(&role("owner"), &terminate, Level::Full));
+    assert!(!m.allows_custom_at(&role("owner"), &terminate, Level::Write));
+}
+
+#[test]
+fn a_declared_agent_never_gets_an_owner_only_grant() {
+    refused(
+        &with(&format!(
+            "{PROJECT}[types.project.actions]\nterminate = {{ needs = \"owner\" }}\n[roles.agent]\ngrants = {{ project = \"full\", \"project:terminate\" = true }}\n"
+        )),
+        "can never hold an admin key or an owner-only action",
+    );
+}
+
+#[test]
+fn a_condition_value_with_an_invisible_character_is_refused() {
+    refused(
+        &with(&format!(
+            "{PROJECT}[types.project.fields]\nstatus = {{ sensitivity = \"internal\", grants_access = true }}\n[[conditions]]\nrole = \"member\"\ntype = \"project\"\nwhen = {{ eq = {{ field = \"status\", value = \"op\\u202Een\" }} }}\nelse = \"read\"\n"
+        )),
+        "no control or invisible characters",
     );
 }

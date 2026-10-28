@@ -118,9 +118,10 @@ pub enum DiffError {
     },
 }
 
-/// The changes, kept per class and bounded: at most [`MAX_DIFF_LINES`] of
-/// each class are kept, the rest only counted. So the cap limits memory and
-/// work, and the class still counts every change.
+/// The changes, kept per class: at most [`MAX_DIFF_LINES`] lines of each
+/// class are kept, the rest only counted. So the cap bounds memory, and the
+/// class still counts every change. The comparison work itself grows with
+/// roles × types × fields, which the count limits bound.
 #[derive(Default)]
 struct Out {
     kept: [Vec<Change>; 3],
@@ -129,10 +130,18 @@ struct Out {
 
 impl Out {
     fn push(&mut self, class: Class, what: String) {
+        self.push_with(class, || what);
+    }
+
+    /// Counts the change, and formats its line only if it is kept.
+    fn push_with(&mut self, class: Class, what: impl FnOnce() -> String) {
         let k = class as usize;
         self.seen[k] += 1;
         if self.kept[k].len() < MAX_DIFF_LINES {
-            self.kept[k].push(Change { class, what });
+            self.kept[k].push(Change {
+                class,
+                what: what(),
+            });
         }
     }
 
@@ -158,13 +167,15 @@ impl Out {
         }
     }
 
-    /// Up is widening, down is narrowing, equal is no line.
-    fn ordered<T: Ord + fmt::Display>(&mut self, what: &str, old: T, new: T) {
-        if new > old {
-            self.push(Class::Widening, format!("{what}: {old} -> {new}"));
-        } else if new < old {
-            self.push(Class::Narrowing, format!("{what}: {old} -> {new}"));
-        }
+    /// Up is widening, down is narrowing, equal is no line. The label is
+    /// made only when a line is kept.
+    fn ordered<T: Ord + fmt::Display>(&mut self, old: T, new: T, what: impl FnOnce() -> String) {
+        let class = match new.cmp(&old) {
+            core::cmp::Ordering::Greater => Class::Widening,
+            core::cmp::Ordering::Less => Class::Narrowing,
+            core::cmp::Ordering::Equal => return,
+        };
+        self.push_with(class, || format!("{}: {old} -> {new}", what()));
     }
 }
 
@@ -418,7 +429,7 @@ fn field_rules(out: &mut Out, old: &Model, new: &Model) {
                 out.push(class, format!("{what} added (max {})", r.max));
             }
             Some(p) => {
-                out.ordered(&format!("{what} max"), p.max, r.max);
+                out.ordered(p.max, r.max, || format!("{what} max"));
                 if p.display != r.display {
                     out.push(Class::Neutral, format!("{what} display changed"));
                 }
@@ -500,15 +511,17 @@ impl Side<'_> {
             })
     }
 
-    fn conditions(&self, t: &ResourceType) -> BTreeSet<(Template, Level)> {
+    /// The role's conditions on the type, with their place in the manifest.
+    fn conditions(&self, t: &ResourceType) -> BTreeMap<(&Template, Level), usize> {
         if !self.present {
-            return BTreeSet::new();
+            return BTreeMap::new();
         }
         self.model
             .conditions
             .iter()
-            .filter(|c| &c.role == self.role && &c.resource_type == t)
-            .map(|c| (c.when.clone(), c.otherwise))
+            .enumerate()
+            .filter(|(_, c)| &c.role == self.role && &c.resource_type == t)
+            .map(|(i, c)| ((&c.when, c.otherwise), i))
             .collect()
     }
 }
@@ -517,6 +530,13 @@ fn roles(out: &mut Out, old: &Model, new: &Model) {
     for r in old.roles.keys().filter(|r| !new.roles.contains_key(*r)) {
         out.push(Class::Narrowing, format!("role `{r}` removed"));
     }
+    // Each type's keys, built once.
+    let keys: BTreeMap<&ResourceType, (BTreeSet<FieldKey>, BTreeSet<ActionKey>)> = new
+        .types
+        .iter()
+        .map(|(t, d)| (t, (field_keys(t, d), action_keys(t, d))))
+        .collect();
+    let none = (BTreeSet::new(), BTreeSet::new());
     for (rk, n) in &new.roles {
         let at = format!("role `{rk}`");
         let o = old.roles.get(rk);
@@ -543,6 +563,11 @@ fn roles(out: &mut Out, old: &Model, new: &Model) {
         }
         for t in core::iter::once(&ResourceType::ORG).chain(new.types.keys()) {
             let present = o.is_some() && (*t == ResourceType::ORG || old.types.contains_key(t));
+            // Nothing that this role's access on this type depends on has
+            // changed: there is nothing to compare.
+            if present && unchanged(old, new, rk, t) {
+                continue;
+            }
             let before = Side {
                 model: old,
                 role: rk,
@@ -553,26 +578,77 @@ fn roles(out: &mut Out, old: &Model, new: &Model) {
                 role: rk,
                 present: true,
             };
-            role_type(out, &before, &after, t, &at);
+            let (fk, ak) = keys.get(t).unwrap_or(&none);
+            role_type(out, &before, &after, t, &at, fk, ak);
         }
     }
+}
+
+/// `true` if the role's levels, grants and conditions on the type, the type
+/// itself and its org-root field rules are the same in both models.
+fn unchanged(old: &Model, new: &Model, rk: &RoleKey, t: &ResourceType) -> bool {
+    let (Some(o), Some(n)) = (old.roles.get(rk), new.roles.get(rk)) else {
+        return false;
+    };
+    let fields = |r: &super::Role| -> Vec<(FieldKey, Level)> {
+        r.field_levels
+            .iter()
+            .filter(|(k, _)| k.resource_type() == t)
+            .map(|(k, l)| (k.clone(), *l))
+            .collect()
+    };
+    let grants = |r: &super::Role| -> Vec<ActionKey> {
+        r.grants
+            .iter()
+            .filter(|g| g.resource_type() == t)
+            .cloned()
+            .collect()
+    };
+    let rules = |m: &Model| -> Vec<(FieldKey, Option<RoleKey>, Level, super::FieldDisplay)> {
+        m.field_rules
+            .iter()
+            .filter(|r| r.field.resource_type() == t)
+            .map(|r| (r.field.clone(), r.role.clone(), r.max, r.display))
+            .collect()
+    };
+    let conds = |m: &Model| -> Vec<(Template, Level)> {
+        m.conditions
+            .iter()
+            .filter(|c| &c.role == rk && &c.resource_type == t)
+            .map(|c| (c.when.clone(), c.otherwise))
+            .collect()
+    };
+    o.level(t) == n.level(t)
+        && old.types.get(t) == new.types.get(t)
+        && fields(o) == fields(n)
+        && grants(o) == grants(n)
+        && rules(old) == rules(new)
+        && conds(old) == conds(new)
 }
 
 /// One role on one type: the item level, every field and feature at every
 /// item level a condition could leave, the org-root level, custom actions,
 /// grants, admin keys and conditions.
-fn role_type(out: &mut Out, before: &Side<'_>, after: &Side<'_>, t: &ResourceType, at: &str) {
+fn role_type(
+    out: &mut Out,
+    before: &Side<'_>,
+    after: &Side<'_>,
+    t: &ResourceType,
+    at: &str,
+    fk: &BTreeSet<FieldKey>,
+    ak: &BTreeSet<ActionKey>,
+) {
     let (ol, nl) = (before.level(t), after.level(t));
-    out.ordered(&format!("{at} on `{t}`"), ol, nl);
-    if let Some(d) = after.model.types.get(t) {
+    out.ordered(ol, nl, || format!("{at} on `{t}`"));
+    {
         let top = ol.max(nl);
-        for k in field_keys(t, d) {
+        for k in fk {
             // Conditions only lower the item level, so every level from
             // `none` up to the role's level can occur.
             let mut up = None;
             let mut down = None;
             for item in Level::ALL.into_iter().filter(|l| *l <= top) {
-                let (a, b) = (before.effective(&k, item), after.effective(&k, item));
+                let (a, b) = (before.effective(k, item), after.effective(k, item));
                 if b > a && up.is_none() {
                     up = Some((item, a, b));
                 }
@@ -591,18 +667,16 @@ fn role_type(out: &mut Out, before: &Side<'_>, after: &Side<'_>, t: &ResourceTyp
                     format!("{at} on `{k}` (item level {item}): {a} -> {b}"),
                 );
             }
-            out.ordered(
-                &format!("{at} on `{k}` at the org root"),
-                before.root(&k),
-                after.root(&k),
-            );
+            out.ordered(before.root(k), after.root(k), || {
+                format!("{at} on `{k}` at the org root")
+            });
         }
-        for k in action_keys(t, d) {
+        for k in ak {
             // As for fields: at every item level a condition could leave.
             let mut up = None;
             let mut down = None;
             for item in Level::ALL.into_iter().filter(|l| *l <= top) {
-                let (a, b) = (before.allows(&k, item), after.allows(&k, item));
+                let (a, b) = (before.allows(k, item), after.allows(k, item));
                 if b && !a && up.is_none() {
                     up = Some(item);
                 }
@@ -641,20 +715,23 @@ fn role_type(out: &mut Out, before: &Side<'_>, after: &Side<'_>, t: &ResourceTyp
         out.push(Class::Narrowing, format!("{at}: {kind} `{k}` removed"));
     }
     let (oc, nc) = (before.conditions(t), after.conditions(t));
-    for c in oc.difference(&nc) {
-        out.push(
-            Class::Widening,
+    for (c, i) in oc.iter().filter(|(c, _)| !nc.contains_key(*c)) {
+        out.push_with(Class::Widening, || {
             format!(
-                "{at} on `{t}`: a condition was removed or changed (else {})",
+                "{at} on `{t}`: condition #{} of the old manifest was removed or changed (else {})",
+                i + 1,
                 c.1
-            ),
-        );
+            )
+        });
     }
-    for c in nc.difference(&oc) {
-        out.push(
-            Class::Narrowing,
-            format!("{at} on `{t}`: a condition was added (else {})", c.1),
-        );
+    for (c, i) in nc.iter().filter(|(c, _)| !oc.contains_key(*c)) {
+        out.push_with(Class::Narrowing, || {
+            format!(
+                "{at} on `{t}`: condition #{} of the new manifest was added (else {})",
+                i + 1,
+                c.1
+            )
+        });
     }
 }
 

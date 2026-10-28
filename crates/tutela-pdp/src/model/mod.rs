@@ -555,9 +555,12 @@ pub struct Model {
 impl Model {
     /// Compiles a `tutela.resources.toml`.
     ///
+    /// The call blocks while the compiler runs on its own thread with a
+    /// fixed 32 MiB stack (the `toml` crate parses recursively).
+    ///
     /// # Errors
     ///
-    /// Returns [`Issues`] with every problem found.
+    /// Returns [`Issues`]: at most 100 problems, then one "and N more".
     pub fn from_toml(source: &str) -> Result<Self, Issues> {
         compile::compile(source)
     }

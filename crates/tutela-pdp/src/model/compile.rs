@@ -156,15 +156,20 @@ pub(super) fn compile(source: &str) -> Result<Model, Issues> {
             message,
         }])
     };
+    on_compiler_stack(|| compile_here(source)).map_err(one)?
+}
+
+/// Runs `f` on its own thread with [`COMPILER_STACK`] and waits for it. The
+/// compiler and its stack test both use this.
+pub(super) fn on_compiler_stack<T: Send>(f: impl FnOnce() -> T + Send) -> Result<T, String> {
     std::thread::scope(|s| {
-        let handle = std::thread::Builder::new()
+        std::thread::Builder::new()
             .name("tutela-manifest".into())
             .stack_size(COMPILER_STACK)
-            .spawn_scoped(s, || compile_here(source))
-            .map_err(|e| one(format!("could not start the compiler thread: {e}")))?;
-        handle
+            .spawn_scoped(s, f)
+            .map_err(|e| format!("could not start the compiler thread: {e}"))?
             .join()
-            .map_err(|_| one("the compiler stopped unexpectedly".into()))?
+            .map_err(|_| "the compiler stopped unexpectedly".to_owned())
     })
 }
 

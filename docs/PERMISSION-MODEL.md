@@ -226,7 +226,7 @@ A role entry can set a level for:
 
 A role assignment gives one principal or one group one role at one scope. There is at most one direct assignment per principal per scope.
 
-Two assignments can meet at the same scope: one direct, one or more through groups. Proposed rule (New, see [Open points](#19-open-points)): **the direct assignment wins**; this lets an owner narrow one person who sits in a wide group. If there is none, **every** group role at that scope counts: each role is evaluated on its own (its own conditions and field rules), and the results are combined **component-wise**: the highest item level, the highest level per field and feature, and the union of grants. The model diff relies on this ([ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)).
+Two assignments can meet at the same scope: one direct, one or more through groups. Proposed rule (New, see [Open points](#19-open-points)): **the direct assignment wins**; this lets an owner narrow one person who sits in a wide group. If there is none, **every** group role at that scope counts: each role is evaluated on its own (its own conditions and field rules), and the results are combined **component-wise**: the highest item level, and the highest level per field and feature. A **custom action** is allowed if **any** deciding role allows it with its own item level after its own conditions (`allows_custom_at`); raw grants are never pooled, so a grant cannot escape the conditions of the role that holds it. **Admin keys** are the union of the deciding roles' keys. The model diff relies on this ([ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)).
 
 ### 6.4 Groups (New)
 
@@ -263,6 +263,7 @@ Inputs: the verified token, the action, the resource `{type, id}` and, for write
 - **The first node with an assignment wins.** Its roles are the deciding roles: the direct one, or else every group role there. Stop walking.
 - If the node is **private** and has no assignment for the principal, stop: nothing above it counts. The level is None.
 - If you reach the org with no assignment, the level is None. Default deny.
+- An assignment whose role the model no longer has, or whose role may no longer be given to that kind of subject (`assignable_to`), still **decides its node**: the walk stops there, and that role gives None and no grants. So removing a role, or narrowing who may hold it, only takes access away.
 - For each deciding role, the item level is that role's level for this resource type.
 
 **Step 4. Apply conditions.** (Blueprint)
@@ -331,8 +332,11 @@ evaluate(principal, res, model):
       fields = { f: min(effective_field_level(role, f, level),   # capped by `level`
                         closest_field_rule(f, role, res.path))   # for data fields
                  for f in res.type.fields_and_features }
-      results.append((level, fields, role.grants))
-  level, fields = componentwise_max(results)               # highest per item, field, feature; union of grants
+      actions = { a for a in res.type.custom_actions
+                  if allows_custom_at(role, a, level) }    # this role's own level
+      results.append((level, fields, actions, role.admin_keys))
+  level, fields, actions, admin = combine(results)         # max per item, field, feature;
+                                                           # union of allowed actions and admin keys
   return guardrails(level, fields)                         # can only lower
 ```
 
@@ -916,7 +920,7 @@ These are not decided yet. Each has a proposal so work can start. Final answers 
 
 | # | Question | Proposal | When |
 |---|---|---|---|
-| 1 | A direct assignment and a group assignment at the same scope: which wins? | The direct one; else every group role there counts, each with its own conditions and field rules, combined component-wise: the highest item level, the highest level per field and feature, and the union of grants (§6.3, §7.1; the model diff relies on this, [ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)). Closed when the evaluator lands. | Phase A |
+| 1 | A direct assignment and a group assignment at the same scope: which wins? | The direct one; else every group role there counts, each with its own conditions and field rules, combined component-wise: the highest item level, the highest level per field and feature, a custom action allowed when any of the roles allows it with its own item level (never a pool of raw grants), and the union of admin keys (§6.3, §7.1; the model diff relies on this, [ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)). Closed when the evaluator lands. | Phase A |
 | 2 | Where does a library-mode project (no `tutelad`) get an approval token for a widening diff? | A token signed by a tenant admin's key, bound to the diff digest. | Phase A |
 | 3 | How is a reader's clearance per label stored, for labelled output? | Treat each label like a field of that sensitivity in the scope, with the same defaults. | Phase A |
 | 4 | The ancestors column: array, `ltree` or closure table? Maximum path depth? | Decided by the week-1 spike (depth 32, 100k rows). | Week-1 spike |
