@@ -343,6 +343,25 @@ pub trait ScopePaths {
         tenant: &TenantKey,
         scope: &PathEntry,
     ) -> Result<Vec<PathEntry>, ScopePathError>;
+
+    /// Every scope the provider knows that has one of `scopes` among its
+    /// ancestors, or `None` when it cannot answer this. With an answer,
+    /// `list_filter` places only the private scopes in it, not every
+    /// private scope of the tenant (an index on the ancestors makes this
+    /// fast, for example `tutela-store`'s). The answer must be **complete**:
+    /// a scope left out could widen a list, as a wrong path could.
+    ///
+    /// # Errors
+    ///
+    /// As [`ScopePaths::ancestors`]; the list then fails closed.
+    fn below(
+        &self,
+        tenant: &TenantKey,
+        scopes: &[PathEntry],
+    ) -> Option<Result<Vec<PathEntry>, ScopePathError>> {
+        let _ = (tenant, scopes);
+        None
+    }
 }
 
 impl<T: ScopePaths + ?Sized> ScopePaths for &T {
@@ -352,5 +371,13 @@ impl<T: ScopePaths + ?Sized> ScopePaths for &T {
         scope: &PathEntry,
     ) -> Result<Vec<PathEntry>, ScopePathError> {
         (**self).ancestors(tenant, scope)
+    }
+
+    fn below(
+        &self,
+        tenant: &TenantKey,
+        scopes: &[PathEntry],
+    ) -> Option<Result<Vec<PathEntry>, ScopePathError>> {
+        (**self).below(tenant, scopes)
     }
 }

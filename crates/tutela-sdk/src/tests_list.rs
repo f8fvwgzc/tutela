@@ -250,7 +250,10 @@ fn column_names_are_identifiers_and_fields_must_be_mapped() {
 
 #[tokio::test]
 async fn tm10_the_sql_lists_exactly_the_rows_check_allows() {
-    let Ok(base) = std::env::var("TUTELA_TEST_DATABASE_URL") else {
+    let Some(base) = std::env::var("TUTELA_TEST_DATABASE_URL")
+        .ok()
+        .filter(|u| !u.is_empty())
+    else {
         assert!(
             std::env::var("TUTELA_REQUIRE_DATABASE").as_deref() != Ok("1"),
             "TUTELA_REQUIRE_DATABASE=1 but TUTELA_TEST_DATABASE_URL is not set"

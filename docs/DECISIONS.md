@@ -560,7 +560,7 @@ Benchmark (`cargo bench -p tutela-pdp`): the tenant has the sizes of the week-1 
 8. **Not yet.**
    - **Moves:** `boundary_rule` has the move and link columns of §18, but Phase A reads only `private`. `Pdp::write_check` still refuses moves. Moves need the before/after comparison of §10.3, which is the impact calculation of Phase B. `move_scope` keeps paths current for a move the product makes after its own check.
    - **Assignment expiry:** a row with `expires_at` set is not read at all (fail closed). Expiry needs a revision bump when it passes, which comes with Phase B.
-   - **Private-scope placement:** `list_filter` still places every private scope of the tenant on each call. The `scope_path` GIN index on `ancestors` lets a later provider method return only the private scopes under the principal's scopes ([#6](https://github.com/f8fvwgzc/tutela/issues/6)).
+   - **Private-scope placement:** done in [#6](https://github.com/f8fvwgzc/tutela/issues/6). `ScopePaths::below` returns the scopes under the principal's assigned scopes, and `list_filter` places only the private scopes among them. `ScopePathSnapshot` answers it from its snapshot; a provider over `scope_path` can answer it with the GIN index on `ancestors`.
 
 **Consequences.**
 - A product in library mode runs `tutela_store::migrate` as the owner role, gives its runtime role DML grants only, and calls the store inside its own transactions.

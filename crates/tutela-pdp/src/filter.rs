@@ -365,6 +365,24 @@ struct Placer<'a, P: ?Sized> {
 }
 
 impl<P: ScopePaths + ?Sized> Placer<'_, P> {
+    /// The scopes below `scopes`, if the provider can say.
+    fn below(&self, scopes: &[PathEntry]) -> Result<Option<BTreeSet<PathEntry>>, PdpError> {
+        let Some(first) = scopes.first() else {
+            return Ok(None);
+        };
+        match self.provider.below(self.tenant, scopes) {
+            None => Ok(None),
+            Some(Ok(v)) => Ok(Some(v.into_iter().collect())),
+            Some(Err(e)) => Err(PdpError::ScopePath {
+                scope: first.clone(),
+                problem: match e {
+                    ScopePathError::NotFound => ScopePathProblem::NotFound,
+                    _ => ScopePathProblem::Unavailable,
+                },
+            }),
+        }
+    }
+
     fn place(&mut self, scope: &PathEntry) -> Result<(), PdpError> {
         if scope.is_org() || self.cache.contains_key(scope) {
             return Ok(());
@@ -524,8 +542,19 @@ fn side_parts<P: ScopePaths + ?Sized>(
     for s in &scopes {
         placer.place(s)?;
     }
-    // 2. The private scopes: they stop inheritance from above.
-    for x in &index.private {
+    // 2. The private scopes that can decide: those below an assigned scope.
+    //    A provider that knows what is below a scope says so; otherwise
+    //    every private scope is placed and checked.
+    let asked: Vec<PathEntry> = scopes.iter().map(|&s| s.clone()).collect();
+    let privates: Vec<&PathEntry> = match placer.below(&asked)? {
+        Some(below) => index
+            .private
+            .iter()
+            .filter(|x| below.contains(*x))
+            .collect(),
+        None => index.private.iter().collect(),
+    };
+    for x in &privates {
         placer.place(x)?;
     }
     placer.check_consistent()?;
@@ -554,7 +583,7 @@ fn side_parts<P: ScopePaths + ?Sized>(
         }
     }
     let mut deciding: BTreeSet<&PathEntry> = assigned.keys().copied().collect();
-    for x in &index.private {
+    for &x in &privates {
         if assigned.contains_key(x) || owner_orgs.contains_key(placer.org_of(x)?) {
             continue;
         }

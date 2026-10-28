@@ -63,6 +63,24 @@ impl ScopePaths for ScopePathSnapshot {
             .cloned()
             .ok_or(ScopePathError::NotFound)
     }
+
+    /// Complete by construction: every registered scope of the tenant whose
+    /// path holds one of `scopes`.
+    fn below(
+        &self,
+        tenant: &TenantKey,
+        scopes: &[PathEntry],
+    ) -> Option<Result<Vec<PathEntry>, ScopePathError>> {
+        if *tenant != self.tenant {
+            return Some(Err(ScopePathError::NotFound));
+        }
+        Some(Ok(self
+            .paths
+            .iter()
+            .filter(|(_, path)| path.iter().any(|a| scopes.contains(a)))
+            .map(|(s, _)| s.clone())
+            .collect()))
+    }
 }
 
 /// The tenant's current revision.

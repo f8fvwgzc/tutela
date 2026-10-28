@@ -760,3 +760,57 @@ fn tm10_two_parents_for_an_unplaced_entry_fail_the_whole_list() {
         ScopePathProblem::Inconsistent
     );
 }
+
+/// #6: with a provider that answers `below`, `list_filter` places only the
+/// private scopes under the principal's scopes, and the filter is the same.
+#[test]
+fn an_indexed_provider_is_asked_only_for_private_scopes_that_can_decide() {
+    use crate::testgen::Paths;
+    let pdp = kestrel();
+    let mut map = std::collections::HashMap::new();
+    for s in [
+        proc(),
+        sup(),
+        crate::tests_check::price(),
+        crate::tests_check::board(),
+    ] {
+        map.insert((tenant(1), s.clone()), crate::tests_check::path_of(&s));
+    }
+    // A private scope far from Jae's assignments, in another department.
+    let far = crate::tests_check::entry("matter", "m-far");
+    map.insert(
+        (tenant(1), far.clone()),
+        vec![crate::tests_check::entry("department", "d-legal"), org()],
+    );
+    let plain = Paths {
+        map: map.clone(),
+        ..Paths::default()
+    };
+    let indexed = Paths {
+        map,
+        indexed: true,
+        ..Paths::default()
+    };
+    let mut data = crate::tests_check::kestrel_data();
+    data.private_scopes.insert(far.clone());
+    let pdp2 = crate::tests_check::pdp_with(data);
+    let req = ListFilterRequest {
+        tenant: tenant(1),
+        subject: user(JAE),
+        actors: vec![],
+        action: action("contract:read"),
+        at_least_revision: None,
+    };
+    let a = pdp2.list_filter(&req, &plain).unwrap();
+    let b = pdp2.list_filter(&req, &indexed).unwrap();
+    assert_eq!(a, b);
+    assert!(
+        plain.asked.borrow().contains(&far),
+        "the default asks for every private scope"
+    );
+    assert!(
+        !indexed.asked.borrow().contains(&far),
+        "the indexed provider is not asked for it"
+    );
+    let _ = pdp;
+}

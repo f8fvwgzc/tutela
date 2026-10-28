@@ -742,15 +742,19 @@ pub trait ScopePaths {
     /// The ancestors of one scope of one tenant, nearest first; the last is the org.
     fn ancestors(&self, tenant: &TenantKey, scope: &PathEntry)
         -> Result<Vec<PathEntry>, ScopePathError>;  // NotFound or Unavailable
+    /// Every known scope below one of `scopes`, or None (the default) when the
+    /// provider cannot say. The answer must be complete.
+    fn below(&self, tenant: &TenantKey, scopes: &[PathEntry])
+        -> Option<Result<Vec<PathEntry>, ScopePathError>> { None }
 }
 ```
 
 **Scope paths** ([ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator) F1, [ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)). Tutela does not store the product's tree, but the filter must know how the deciding scopes nest: the scopes where the principal has an assignment, and the private scopes inside them. So `list_filter` takes a scope-path provider:
 - It is keyed by **(tenant, type, id)** and returns the ancestors, nearest first, or an error. With ids that are the same across tenants, it must answer with the asking tenant's scope.
-- `list_filter` asks it for every scope where the principal (or the person and each actor) has an assignment, and for every private scope of the tenant, each at most once per call.
+- `list_filter` asks it for every scope where the principal (or the person and each actor) has an assignment, and for every private scope of the tenant, each at most once per call. A provider that implements `below` is asked once for the scopes below the principal's assigned scopes; then only the private scopes among them are placed. Its answer must be **complete** (a scope left out could widen a list, as a wrong path could). `tutela-store`'s `ScopePathSnapshot` implements it.
 - These are errors (`PdpError::ScopePath`): an unknown scope; a provider that cannot answer; a path that does not end at the tenant's own org; a path with an `org` before its end; a path longer than 32; a path that holds the scope itself or one entry twice (`Malformed`); placed paths that disagree, where one entry gets two different parents, also an entry that was never placed itself, and also a cycle (`Inconsistent`). The caller fails closed: no rows. A missing path is never treated as "no ancestors".
 - The paths must be current. A stale path makes `list_filter` and `check` disagree, so a cache of paths needs a test that a move changes list results at once.
-- Every private scope of the tenant is placed, so **one private scope the provider does not know fails every list** of a principal with any assignment. That fails closed, but it is an outage. So a deleted scope must leave `TenantData` (assignments, private flag, field rules) in the same revision as the delete ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)).
+- Without `below`, every private scope of the tenant is placed, so **one private scope the provider does not know fails every list** of a principal with any assignment. That fails closed, but it is an outage. So a deleted scope must leave `TenantData` (assignments, private flag, field rules) in the same revision as the delete ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)).
 
 JSON form:
 
