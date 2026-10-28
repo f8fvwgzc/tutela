@@ -358,13 +358,14 @@ Where they meet:
    - A manifest entry for another seeded role **replaces** it completely, but keeps the seeded `assignable_to` unless it sets its own (a declared `agent` stays agents only).
    - The seeded `agent` is Read only. "Write when assigned" needs a principal field, so the product declares it with a condition. PERMISSION-MODEL.md §6.1 and §17.1 say so.
    - A role with an admin key or an owner-only action can never be assigned to an agent or a group.
+   - An owner-only custom action (`needs = "owner"`) needs Full on the item **and** the grant, in the compiler, the diff and the evaluator.
 3. **Manifest field rules and conditions sit at the org root.** Rules and boundary settings at one scope, and bindings, are `tutela-store` data (ROADMAP item 5).
 4. **What counts as widening** ([MANIFEST.md §10](MANIFEST.md#10-diffs-narrowing-neutral-widening)): the diff compares effective permissions, not text.
    - A type or role the old model does not have is compared against a baseline where it gives nobody anything. So removing a type (narrowing, no token) and adding it back weaker cannot slip through, and neither can a rename or a rollback.
    - Field and feature levels are compared at every item level a condition could leave, through one function the evaluator will share (`Model::effective_field_level`), and also at the org root.
    - A lower `needs` or a dropped `grant` of a custom action is widening by itself.
    - A new field in an existing type is widening when some role could read it at some item level, before field rules (an unknown field was masked). This includes a confidential or secret field: a per-scope rule in `tutela-store` could open it. A changed condition is widening (remove + add). A removed or weaker UI key is widening (a route loses its declared guard).
-5. **Hostile input gives an error, never a crash.** Templates are read with a depth limit (4); every other value is read by a flat visitor that never goes into nested input, so dotted keys cannot build deep values. A bracket scan (32 levels) runs first as a cheap filter. Count limits stop the compiler at once. Text from the manifest is escaped and cut in every problem report.
+5. **Hostile input gives an error, never a crash.** The `toml` crate builds and drops its whole tree recursively, also for input it then refuses. So a conservative scan runs before parsing and bounds how deep that tree can get: at most 32 nested brackets, at most 8 `.` per line outside strings (dotted keys open tables without brackets), quotes only at the start of a key or value, and no single-line string that runs past its line. Templates are read with their own depth limit (4), and every other value is read by a flat visitor. Count limits stop the compiler at once. Text from the manifest is escaped (control and invisible format characters) and cut in every problem report, and the reports themselves are capped.
 6. **Conditions fail closed.** A template that names a group that does not exist makes the whole condition false, even under `not`. A condition may not read a confidential or secret field.
 
 This closes [PERMISSION-MODEL.md open points](PERMISSION-MODEL.md#19-open-points) 6 (the templates) and 7 for the admin key names. The obligation kinds in point 7 stay open.
@@ -373,6 +374,8 @@ This closes [PERMISSION-MODEL.md open points](PERMISSION-MODEL.md#19-open-points
 - Adding a type, or a role that gives access, is widening. The first `tutela apply` of a new product is all widening, so the CLI (ROADMAP item 9) needs a clear first-apply path with an approval token.
 - The evaluator must use `Model::effective_field_level`, must drop admin keys and owner-only actions for agents however they are reached, and must treat an unknown group as "the whole condition is false".
 - An org Owner is a direct assignment of `owner` at the org root, never through a group.
+- The diff is sound only if the roles a principal gets through groups at one scope combine **component-wise**: the highest item level, the highest level per field and feature, and the union of grants. [PERMISSION-MODEL.md open point 1](PERMISSION-MODEL.md#19-open-points) is closed that way when the evaluator lands (the week-1 spike picked one whole group role instead; that is not used).
+- A valid manifest can still give a `list_filter` above the filter limits of [CONTRACTS.md §6.6](CONTRACTS.md#66-list_filter) (many deciding scopes, roles with conditions, nesting levels). Such a list fails closed. ROADMAP item 4 measures this and either raises the limits or bounds the inputs.
 
 **Alternatives considered.**
 - **Compare only types and roles that both models have.** Lets a removed and re-added type widen without approval.

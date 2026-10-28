@@ -626,46 +626,65 @@ fn oversized_and_hostile_input_is_refused() {
     assert!(Model::from_toml("not toml at all [").is_err());
 }
 
-/// Review must-fix 2: dotted keys open one table per part without any
-/// bracket, so they pass the bracket scan. Deep input must give an error,
-/// never a stack overflow, even on a thread with a 2 MiB stack.
+/// Dotted keys open one table per part without any bracket, and the `toml`
+/// crate builds and drops its tree recursively, also for input it refuses.
+/// Deep input must give an error, never a stack overflow, even on a thread
+/// with a 2 MiB stack (review must-fix 2, both rounds).
 #[test]
-fn deep_input_through_dotted_keys_cannot_exhaust_the_stack() {
-    let cond = |when: &str| {
-        format!(
-            "{HEAD}{PROJECT}[types.project.fields]\nstatus = {{ sensitivity = \"internal\", grants_access = true }}\n[[conditions]]\nrole = \"member\"\ntype = \"project\"\n{when}\nelse = \"read\"\n"
-        )
+fn deep_input_cannot_exhaust_the_stack() {
+    let parts = |n: usize, p: &str| {
+        (0..n)
+            .map(|i| format!("{p}{i}"))
+            .collect::<Vec<_>>()
+            .join(".")
     };
-    // 31 nested inline tables, each opened by a key of 64 dotted parts:
-    // about 2,000 levels, with only 31 brackets.
-    let dotted = vec!["not"; 64].join(".");
-    let deep_when = format!(
-        "when = {}{{ in_group = \"a\" }}{}",
-        format!("{{ {dotted} = ").repeat(30),
-        " }".repeat(30)
-    );
-    let value = vec!["a"; 64].join(".");
-    let deep_value = format!(
-        "when = {{ eq = {{ field = \"status\", value = {}1{} }} }}",
-        format!("{{ {value} = ").repeat(29),
-        " }".repeat(29)
-    );
-    let grants = format!(
-        "{HEAD}{PROJECT}[roles.r]\ngrants = {}\"read\"{}\n",
-        format!("{{ {value} = ").repeat(30),
-        " }".repeat(30)
-    );
-    let inputs = [cond(&deep_when), cond(&deep_value), grants];
+    // The deepest input the pre-scan lets through: a 9-part dotted header,
+    // then 31 nested multi-line inline tables, each opened by a 9-part key.
+    let mut deepest = format!("{HEAD}[{}]\n", parts(9, "h"));
+    for d in 0..31 {
+        deepest.push_str(&format!("{} = {{\n", parts(9, &format!("k{d}_"))));
+    }
+    deepest.push_str("x = 1\n");
+    deepest.push_str(&"}\n".repeat(31));
+    let cases: Vec<(String, &str)> = vec![
+        // A quote inside a bare word hid the rest of the line from the scan.
+        (
+            format!("{HEAD}x = [ a', {{ {} = 1 }} ]\n", parts(80, "k")),
+            "a quote may only start",
+        ),
+        // `\` + line break kept the scan inside a basic string.
+        (
+            format!(
+                "{HEAD}x = \"abc\\\ny = {}1{}\n",
+                "[".repeat(60),
+                "]".repeat(60)
+            ),
+            "not closed on its line",
+        ),
+        (format!("{HEAD}{} = 1\n", parts(80, "k")), "more than 8 `.`"),
+        (format!("{HEAD}[[{}]]\n", parts(80, "h")), "more than 8 `.`"),
+        (
+            format!("{HEAD}a.b.c.d.e.f.g.h.i.j = 1\n"),
+            "more than 8 `.`",
+        ),
+        (deepest, "unknown field"),
+    ];
     let handle = std::thread::Builder::new()
         .stack_size(2 * 1024 * 1024)
         .spawn(move || {
-            inputs
-                .iter()
-                .map(|s| Model::from_toml(s).is_err())
+            cases
+                .into_iter()
+                .map(|(src, want)| match Model::from_toml(&src) {
+                    Ok(_) => Err(format!("compiled, expected {want:?}")),
+                    Err(Issues(v)) if v.iter().any(|i| i.message.contains(want)) => Ok(()),
+                    Err(Issues(v)) => Err(format!("expected {want:?}, got {v:?}")),
+                })
                 .collect::<Vec<_>>()
         })
         .unwrap();
-    assert_eq!(handle.join().unwrap(), vec![true, true, true]);
+    for r in handle.join().unwrap() {
+        assert_eq!(r, Ok(()));
+    }
 }
 
 #[test]
@@ -809,4 +828,65 @@ fn issue_text_is_escaped_and_cut() {
     let got = issues(&src);
     assert!(got.iter().all(|i| !i.contains('\n')), "{got:?}");
     assert!(got.iter().all(|i| i.chars().count() < 800), "{got:?}");
+}
+
+#[test]
+fn invisible_characters_are_refused_and_escaped() {
+    // A right-to-left override in a label is refused.
+    refused(
+        &with("[types.p]\nparent = \"org\"\nlabel = \"ab\\u202Ecd\"\n"),
+        "label",
+    );
+    // In a key it is escaped in the issue, never printed as is.
+    let got = issues(&with(
+        "[types.\"x\\u202Ey\\u2028z\\u200Bw\"]\nparent = \"org\"\n",
+    ));
+    assert!(
+        got.iter()
+            .all(|i| !i.contains('\u{202E}') && !i.contains('\u{2028}') && !i.contains('\u{200B}')),
+        "{got:?}"
+    );
+}
+
+#[test]
+fn more_count_limits() {
+    let many = |n: usize, f: &dyn Fn(usize) -> String| (0..n).map(f).collect::<Vec<_>>().join(", ");
+    refused(
+        &with(&format!(
+            "[types.p]\nparent = [{}]\n",
+            many(65, &|_| "\"org\"".to_string())
+        )),
+        "at most 64 parent types",
+    );
+    refused(
+        &with(&format!(
+            "[roles.r]\nassignable_to = [{}]\n",
+            many(17, &|_| "\"user\"".to_string())
+        )),
+        "at most 16 entries",
+    );
+}
+
+#[test]
+fn a_count_limit_is_the_only_problem_reported() {
+    // version 2 and 513 types: only the count limit is reported, because
+    // nothing else runs once a limit is exceeded.
+    let mut src = "version = 2\n[app]\nname = \"crm\"\n".to_string();
+    for i in 0..513 {
+        src.push_str(&format!("[types.t{i}]\nparent = \"org\"\n"));
+    }
+    let got = issues(&src);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert!(got[0].contains("at most 512 types"));
+}
+
+#[test]
+fn problems_are_capped_at_100() {
+    let mut src = with("");
+    for i in 0..150 {
+        src.push_str(&format!("[types.Bad{i}]\nparent = \"org\"\n"));
+    }
+    let got = issues(&src);
+    assert_eq!(got.len(), 101, "{}", got.len());
+    assert!(got[100].contains("and 50 more"), "{:?}", got[100]);
 }

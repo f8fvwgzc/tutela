@@ -20,9 +20,10 @@ use super::{
 };
 
 /// The class of one change, or of a whole diff.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub enum Class {
     /// Nobody gains or loses access.
+    #[default]
     Neutral,
     /// Someone loses access.
     Narrowing,
@@ -63,23 +64,26 @@ impl fmt::Display for Change {
     }
 }
 
-/// Every change between two models, sorted.
+/// The most diff lines kept. The class always counts every change.
+pub const MAX_DIFF_LINES: usize = 10_000;
+
+/// Every change between two models, widening ones first.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct ModelDiff {
-    /// The changes. Empty when the models are the same.
+    /// The changes, at most [`MAX_DIFF_LINES`]. Empty when the models are
+    /// the same.
     pub changes: Vec<Change>,
+    /// How many more changes there were beyond [`MAX_DIFF_LINES`].
+    pub omitted: usize,
+    class: Class,
 }
 
 impl ModelDiff {
-    /// The class of the whole diff: widening if any change is, else
-    /// narrowing if any change is, else neutral.
+    /// The class of the whole diff, over every change (also omitted ones):
+    /// widening if any change is, else narrowing if any is, else neutral.
     #[must_use]
-    pub fn class(&self) -> Class {
-        self.changes
-            .iter()
-            .map(|c| c.class)
-            .max()
-            .unwrap_or(Class::Neutral)
+    pub const fn class(&self) -> Class {
+        self.class
     }
 
     /// `true` if any change lets someone gain access.
@@ -150,9 +154,20 @@ pub fn diff(old: &Model, new: &Model) -> Result<ModelDiff, DiffError> {
     roles(&mut out, old, new);
     ui(&mut out, old, new);
     let mut changes = out.0;
-    changes.sort();
+    changes.sort_by(|a, b| b.class.cmp(&a.class).then_with(|| a.what.cmp(&b.what)));
     changes.dedup();
-    Ok(ModelDiff { changes })
+    let class = changes
+        .iter()
+        .map(|c| c.class)
+        .max()
+        .unwrap_or(Class::Neutral);
+    let omitted = changes.len().saturating_sub(MAX_DIFF_LINES);
+    changes.truncate(MAX_DIFF_LINES);
+    Ok(ModelDiff {
+        changes,
+        omitted,
+        class,
+    })
 }
 
 fn field_keys(t: &ResourceType, d: &TypeDef) -> BTreeSet<FieldKey> {
@@ -344,10 +359,25 @@ fn field_rules(out: &mut Out, old: &Model, new: &Model) {
         if n.contains_key(&(field, role)) || !nf.contains(field) {
             continue;
         }
-        out.push(
-            Class::Widening,
-            format!("{} removed (was max {})", rule_name(field, role), r.max),
+        // Without a rule for the role, the all-roles rule caps it (or
+        // nothing does). Without the all-roles rule, nothing caps the roles
+        // that had no rule of their own.
+        let after = match role {
+            Some(_) => n.get(&(field, None)).map_or(Level::Full, |a| a.max),
+            None => Level::Full,
+        };
+        let what = format!(
+            "{} removed (max {} -> {})",
+            rule_name(field, role),
+            r.max,
+            after
         );
+        let class = match after.cmp(&r.max) {
+            core::cmp::Ordering::Greater => Class::Widening,
+            core::cmp::Ordering::Less => Class::Narrowing,
+            core::cmp::Ordering::Equal => Class::Neutral,
+        };
+        out.push(class, what);
     }
     for (&(field, role), r) in &n {
         // A new field's rules are part of adding the field.

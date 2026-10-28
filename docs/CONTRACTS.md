@@ -1318,7 +1318,7 @@ When a credential format or key changes:
 |---|---|---|---|
 | 1 | The event that pushes the signing-key `kid` deny-list to SDKs ([THREAT-MODEL.md](THREAT-MODEL.md), TM-15). It is not in the v1 event list yet. | Add `tutela.signing_key.revoked.v1` (additive), sent over SSE and webhooks. | Phase B |
 | 2 | The final audience name of the remote check API. | `tutela-authz`. | Phase B |
-| 3 | The final names of admin actions and obligation kinds (2.3, 6.3). | As written in this file. | Phase A |
+| 3 | The final names of the obligation kinds (6.3). The admin action names (2.3) are **fixed** ([MANIFEST.md §6](MANIFEST.md#6-admin-keys), [ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)). | As written in this file. | Phase A |
 | 4 | The env name for the previous key pepper. | `TUTELA_KEY_PEPPER_PREVIOUS`. | Phase A |
 | 5 | Limits of `list_filter`: AST nodes, depth, size of `ids_in`; the ancestors column shape. | Set by the week-1 spike. | Week-1 spike |
 | 6 | The exact AuthZEN 1.0 page field names, and the retry schedule for webhooks. | Follow the final AuthZEN 1.0 text; at least 24 hours of retries. | Phase B |

@@ -451,3 +451,81 @@ proptest! {
         prop_assert!(diff(&m, &m).unwrap().changes.is_empty());
     }
 }
+
+/// Owner-only means Full on the item and the grant, everywhere. So making
+/// an action owner-only is narrowing, and a reviewer narrowed by a condition
+/// can no longer approve (re-review must-fix 1).
+#[test]
+fn owner_only_needs_full_and_the_grant() {
+    let cond = "[[conditions]]\nrole = \"reviewer\"\ntype = \"contract\"\nwhen = { is_principal = \"assignee\" }\nelse = \"read\"\n";
+    let base = tracker("confidential", cond);
+    let owner = base.replace(
+        "approve = { needs = \"write\" }",
+        "approve = { needs = \"owner\" }",
+    );
+    let (c, lines) = classes(&base, &owner);
+    assert_eq!(c, Class::Narrowing, "{lines:?}");
+    assert_eq!(classes(&owner, &base).0, Class::Widening);
+    let m = model(&owner);
+    let approve = tutela_contracts::keys::ActionKey::parse("contract:approve").unwrap();
+    let reviewer = crate::model::RoleKey::parse("reviewer").unwrap();
+    // Write and the grant are not enough.
+    assert!(!m.allows_custom(&reviewer, &approve));
+    // The seeded owner has Full and every grant.
+    assert!(m.allows_custom(&crate::model::RoleKey::parse("owner").unwrap(), &approve));
+    // A role with Full but no grant may not.
+    assert!(!m.allows_custom(&crate::model::RoleKey::parse("member").unwrap(), &approve));
+}
+
+#[test]
+fn undeclared_fields_are_none() {
+    let m = model(&tracker("confidential", ""));
+    let reviewer = crate::model::RoleKey::parse("reviewer").unwrap();
+    for k in ["contract.nope", "contract.@ai", "nope.title"] {
+        let k = tutela_contracts::keys::FieldKey::parse(k).unwrap();
+        assert_eq!(
+            m.effective_field_level(&reviewer, &k, tutela_contracts::level::Level::Full),
+            tutela_contracts::level::Level::None
+        );
+    }
+}
+
+/// Removing a rule for one role falls back to the all-roles rule. For a
+/// hidden field that is `none`, so the removal is a revocation (narrowing),
+/// not widening.
+#[test]
+fn a_removed_role_rule_is_judged_by_the_cap_that_replaces_it() {
+    let with = tracker(
+        "confidential",
+        "[[field_rules]]\nfield = \"contract.budget\"\nrole = \"reviewer\"\nmax = \"read\"\n",
+    );
+    let without = tracker("confidential", "");
+    let (c, lines) = classes(&with, &without);
+    assert_eq!(c, Class::Narrowing, "{lines:?}");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("removed (max read -> none)")),
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn diff_lines_are_capped_but_the_class_is_exact() {
+    let small = "version = 1\n[app]\nname = \"p\"\n".to_string();
+    let mut big = small.clone();
+    for t in 0..200 {
+        big.push_str(&format!(
+            "[types.t{t}]\nparent = \"org\"\n[types.t{t}.fields]\n"
+        ));
+        for f in 0..20 {
+            big.push_str(&format!("f{f} = {{ sensitivity = \"internal\" }}\n"));
+        }
+    }
+    let d = diff(&model(&small), &model(&big)).unwrap();
+    assert_eq!(d.changes.len(), crate::model::MAX_DIFF_LINES);
+    assert!(d.omitted > 0);
+    assert_eq!(d.class(), Class::Widening);
+    // Widening lines come first.
+    assert_eq!(d.changes[0].class, Class::Widening);
+}

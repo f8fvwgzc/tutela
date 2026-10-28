@@ -23,7 +23,7 @@ The model compiler reads the manifest and either returns a compiled model or a l
 
 - The file is TOML 1.0. It is at most 4 MiB.
 - **Unknown keys are errors.** A typo must never drop a restriction silently.
-- Hostile input must give an error, never a crash. Tables and arrays may nest at most 32 levels. Templates are read with a depth limit (§8), and every other value is read without going into nested input, so dotted keys (`a.b.c = 1`) cannot build deep values either.
+- Hostile input must give an error, never a crash. Before parsing, a conservative scan refuses: tables and arrays that nest more than 32 levels; more than 8 `.` on one line outside strings (each dotted-key part, as in `a.b.c = 1`, opens a table without a bracket); a quote that does not start a key or a value; and a single-line string that does not end on its line. This bounds how deep the parser's tree can get. Templates also have their own depth limit (§8), and every other value is read without going into nested input.
 - Problems are reported with their place. Text taken from the manifest is cut and its control characters are escaped, so it is safe to log.
 - Names follow the name grammar of [CONTRACTS.md §2.1](CONTRACTS.md#21-names): lowercase `snake_case`, 1–64 characters.
 - Levels are `none`, `read`, `write`, `full` ([CONTRACTS.md §3](CONTRACTS.md#3-levels)).
@@ -83,7 +83,7 @@ Rules:
 | `type` | Optional, default `string`: `string`, `integer`, `boolean`, `string_list` or `principal`. Conditions use it to check their values. |
 | `grants_access` | Optional, default `false`. `true` means the field decides access (a condition reads it). Changing it needs `manage_access`. **Every field a condition reads must have `grants_access = true`.** |
 | action name | A name. Not a built-in action (`read`, `write`, `delete`, `manage_access`) and not an admin key (§6). At most 64 per type. |
-| `needs` | Required: `read`, `write`, `full` or `owner`. `owner` makes it an owner-only action. |
+| `needs` | Required: `read`, `write`, `full` or `owner`. `owner` makes it an owner-only action: it needs **Full on the item and the grant**. |
 | `grant` | Optional, default `true`: the role must also hold `<type>:<action>`. Must be `true` when `needs = "owner"`. |
 
 Every type also has the four built-in actions ([CONTRACTS.md §2.3](CONTRACTS.md#23-action-keys)) and the admin keys of §6. Nobody declares them.
@@ -281,3 +281,8 @@ A manifest over any count limit is refused at once, before any other check.
 | Actions and fields per UI key | 256 |
 | Grants per role | 10,000 |
 | Nesting of tables and arrays | 32 |
+| `.` outside strings on one line | 8 |
+| Parents per type | 64 |
+| `assignable_to` entries | 16 |
+| Problems reported | 100, then "and N more" |
+| Diff lines | 10,000, then "and N more"; the class stays exact |

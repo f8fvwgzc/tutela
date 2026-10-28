@@ -31,6 +31,10 @@ const MAX_LABEL: usize = 128;
 const MAX_REASON: usize = 512;
 const MAX_STRING_VALUE: usize = 256;
 const MAX_NESTING: usize = 32;
+const MAX_LINE_DOTS: usize = 8;
+const MAX_PARENTS: usize = 64;
+const MAX_ASSIGNABLE: usize = 16;
+const MAX_ISSUES: usize = 100;
 const MAX_GRANTS: usize = 10_000;
 const MAX_UI_ENTRIES: usize = 256;
 
@@ -57,7 +61,7 @@ fn clean(s: &str, max: usize) -> String {
             out.push_str("...");
             break;
         }
-        if c.is_control() {
+        if hidden(c) {
             out.extend(c.escape_default());
         } else {
             out.push(c);
@@ -70,9 +74,32 @@ fn level(s: &str) -> Option<Level> {
     Level::ALL.into_iter().find(|l| l.as_str() == s)
 }
 
-/// Display text: 1 to `max` characters, no control characters.
+/// Display text: 1 to `max` characters, no control or invisible format
+/// characters.
 fn text_ok(s: &str, max: usize) -> bool {
-    !s.is_empty() && s.chars().count() <= max && !s.chars().any(char::is_control)
+    !s.is_empty() && s.chars().count() <= max && !s.chars().any(hidden)
+}
+
+/// Control characters, and format characters that change how text shows
+/// without being seen: bidi controls (U+202A-202E, U+2066-2069, U+061C,
+/// U+200E-200F), zero-width ones (U+200B-200D, U+2060-2064, U+FEFF, U+180E),
+/// the soft hyphen, line and paragraph separators (U+2028-2029),
+/// interlinear annotations (U+FFF9-FFFB) and tag characters (U+E0000-E007F).
+fn hidden(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{00AD}'
+                | '\u{061C}'
+                | '\u{180E}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{2028}'..='\u{202E}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{2066}'..='\u{2069}'
+                | '\u{FEFF}'
+                | '\u{FFF9}'..='\u{FFFB}'
+                | '\u{E0000}'..='\u{E007F}'
+        )
 }
 
 fn check_label(ctx: &mut Ctx, at: &str, l: Option<String>) -> Option<String> {
@@ -94,10 +121,10 @@ pub(super) fn compile(source: &str) -> Result<Model, Issues> {
             message: "the manifest is larger than 4 MiB".into(),
         }]));
     }
-    if nesting(source) > MAX_NESTING {
+    if let Err(why) = prescan(source) {
         return Err(Issues(vec![Issue {
             at: String::new(),
-            message: "tables and arrays nest more than 32 levels deep".into(),
+            message: why.into(),
         }]));
     }
     let raw: raw::Manifest = toml::from_str(source).map_err(|e| {
@@ -110,69 +137,121 @@ pub(super) fn compile(source: &str) -> Result<Model, Issues> {
     // Over a count limit: stop at once, before any work that grows with it.
     counts(&mut ctx, &raw);
     if !ctx.issues.is_empty() {
-        return Err(Issues(ctx.issues));
+        return Err(capped(ctx.issues));
     }
     let model = build(&mut ctx, raw);
     if ctx.issues.is_empty() {
         Ok(model)
     } else {
-        Err(Issues(ctx.issues))
+        Err(capped(ctx.issues))
     }
 }
 
-/// The deepest nesting of `{` and `[` outside strings and comments: a cheap
-/// first filter before parsing. It does not see dotted keys (`a.b.c = 1`),
-/// so it is not the stack guard. The guard is in `raw`: templates stop past
-/// depth 4, and every other value is read by a flat visitor that never
-/// recurses into nested input.
-fn nesting(source: &str) -> usize {
+/// At most [`MAX_ISSUES`] problems, then one "and N more".
+fn capped(mut issues: Vec<Issue>) -> Issues {
+    if issues.len() > MAX_ISSUES {
+        let more = issues.len() - MAX_ISSUES;
+        issues.truncate(MAX_ISSUES);
+        issues.push(Issue {
+            at: String::new(),
+            message: format!("and {more} more"),
+        });
+    }
+    Issues(issues)
+}
+
+/// A conservative scan before parsing. The `toml` crate builds and drops its
+/// whole tree recursively, also for input it then refuses, so the nesting it
+/// can build must be bounded before it sees the text. This scan refuses:
+/// - tables and arrays that nest more than 32 levels deep;
+/// - more than 8 `.` on one line outside strings (each dotted-key part opens a
+///   table without a bracket);
+/// - a quote that does not start a key or a value (a quote inside a bare word
+///   would hide the rest of the line from this scan);
+/// - a single-line string that does not end on its line (also after `\`).
+///
+/// So no input that passes can nest much more than 32 × 9 levels. Templates
+/// also have their own depth limit in `raw`, and every other value is read
+/// flat.
+fn prescan(source: &str) -> Result<(), &'static str> {
     let b = source.as_bytes();
-    let (mut i, mut depth, mut max) = (0usize, 0usize, 0usize);
+    let (mut i, mut depth, mut dots) = (0usize, 0usize, 0usize);
+    let mut prev = b'\n';
     while i < b.len() {
-        match b[i] {
+        let c = b[i];
+        match c {
             b'#' => {
                 while i < b.len() && b[i] != b'\n' {
                     i += 1;
                 }
-            }
-            q @ (b'"' | b'\'') => {
-                let triple = b.get(i..i + 3) == Some(&[q, q, q][..]);
-                i += if triple { 3 } else { 1 };
-                while i < b.len() {
-                    if q == b'"' && b[i] == b'\\' {
-                        i += 2;
-                        continue;
-                    }
-                    if b[i] == q && !triple {
-                        i += 1;
-                        break;
-                    }
-                    // A multi-line string ends at the last quote of a run
-                    // of 3 to 5 (up to 2 quotes may sit before the closing
-                    // three).
-                    if b[i] == q && b.get(i..i + 3) == Some(&[q, q, q][..]) {
-                        while i < b.len() && b[i] == q {
-                            i += 1;
-                        }
-                        break;
-                    }
-                    if !triple && b[i] == b'\n' {
-                        break;
-                    }
-                    i += 1;
-                }
                 continue;
             }
+            b'"' | b'\'' => {
+                if !matches!(
+                    prev,
+                    b'\n' | b'\r' | b' ' | b'\t' | b'=' | b'[' | b'{' | b',' | b'.'
+                ) {
+                    return Err("a quote may only start a key or a value");
+                }
+                i = string_end(b, i)?;
+                prev = c;
+                continue;
+            }
+            b'.' => {
+                dots += 1;
+                if dots > MAX_LINE_DOTS {
+                    return Err("more than 8 `.` on one line outside strings");
+                }
+            }
+            b'\n' => dots = 0,
             b'{' | b'[' => {
                 depth += 1;
-                max = max.max(depth);
+                if depth > MAX_NESTING {
+                    return Err("tables and arrays nest more than 32 levels deep");
+                }
             }
             b'}' | b']' => depth = depth.saturating_sub(1),
             _ => {}
         }
+        prev = if c == b'\t' { b' ' } else { c };
         i += 1;
     }
-    max
+    Ok(())
+}
+
+/// The index just after the string that starts at `i`.
+fn string_end(b: &[u8], start: usize) -> Result<usize, &'static str> {
+    let q = b[start];
+    let triple = b.get(start..start + 3) == Some(&[q, q, q][..]);
+    let mut i = start + if triple { 3 } else { 1 };
+    while i < b.len() {
+        let c = b[i];
+        if q == b'"' && c == b'\\' {
+            // An escape never joins two lines in a single-line string.
+            if !triple && matches!(b.get(i + 1), Some(b'\n' | b'\r') | None) {
+                return Err("a string is not closed on its line");
+            }
+            i += 2;
+            continue;
+        }
+        if c == q {
+            if !triple {
+                return Ok(i + 1);
+            }
+            // A multi-line string ends at the last quote of a run of 3 to 5.
+            if b.get(i..i + 3) == Some(&[q, q, q][..]) {
+                while i < b.len() && b[i] == q {
+                    i += 1;
+                }
+                return Ok(i);
+            }
+        }
+        if !triple && matches!(c, b'\n' | b'\r') {
+            return Err("a string is not closed on its line");
+        }
+        i += 1;
+    }
+    Err("a string is not closed")
 }
 
 fn counts(ctx: &mut Ctx, raw: &raw::Manifest) {
@@ -197,6 +276,11 @@ fn counts(ctx: &mut Ctx, raw: &raw::Manifest) {
         ctx.bad("ui", "at most 2,000 UI keys");
     }
     for (name, t) in &raw.types {
+        if let raw::OneOrMany::Many(v) = &t.parent
+            && v.len() > MAX_PARENTS
+        {
+            ctx.bad(format!("types.{name}.parent"), "at most 64 parent types");
+        }
         if t.fields.len() + t.features.len() > MAX_FIELDS {
             ctx.bad(
                 format!("types.{name}"),
@@ -211,6 +295,12 @@ fn counts(ctx: &mut Ctx, raw: &raw::Manifest) {
         }
     }
     for (name, r) in &raw.roles {
+        if r.assignable_to
+            .as_ref()
+            .is_some_and(|a| a.len() > MAX_ASSIGNABLE)
+        {
+            ctx.bad(format!("roles.{name}.assignable_to"), "at most 16 entries");
+        }
         if r.grants.len() > MAX_GRANTS {
             ctx.bad(
                 format!("roles.{name}.grants"),

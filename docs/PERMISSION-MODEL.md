@@ -171,7 +171,7 @@ On the wire an action is an action key, `<type>:<action>`. Every type has four b
 | `write` on the container (create an item inside it) | Write on the container | The new item starts with the parent's rules. |
 | `write` on the item (update it) | Write on the item, plus Write on **each field** that changes | Checked per field by `Pdp::write_check`. Fields marked `grants_access` (for example an assignee or a label used by a condition) also need `manage_access`. |
 | `delete` | Full | Blueprint decision: Full includes delete and archive for issues, tasks, files and messages. A product that needs `archive` apart from `delete` declares it as a custom action with level Full. |
-| Custom, for example `contract:approve` | The level the type declares (for example Write) **and** the grant on the role | Declared in `tutela.resources.toml`. |
+| Custom, for example `contract:approve` | The level the type declares (for example Write) **and** the grant on the role | Declared in `tutela.resources.toml`. An owner-only custom action (`needs = "owner"`) needs **Full and** the grant ([MANIFEST.md §4](MANIFEST.md#4-resource-types)). |
 | Feature use, for example asking the AI | The feature level (`@ai` Write) | |
 | Admin actions | An admin key (see 5.3) | Never implied by Full. |
 
@@ -181,7 +181,7 @@ Anything the model does not know is denied: an unknown type, an undeclared actio
 
 "Full is not configure." These sit above the four levels and are never given by default. On the wire each one is an action key, `<type>:<name>`. `manage_access` is already a built-in action in `tutela-contracts`. The names are fixed in [MANIFEST.md §6](MANIFEST.md#6-admin-keys) ([CONTRACTS.md §2.3](CONTRACTS.md#23-action-keys)).
 
-| Blueprint wording | Admin key (proposed) |
+| Blueprint wording | Admin key |
 |---|---|
 | Change roles, invite people | `manage_access` |
 | Set field protection | `manage_fields` |
@@ -191,7 +191,7 @@ Anything the model does not know is denied: an unknown type, an undeclared actio
 | Read the audit log | `read_audit` (blueprint decision: org admins for everything, scope owners for their own scope) |
 
 The seeded **Owner** role holds these keys at the scope where it is assigned. A tenant can build other admin roles. Two rules (New):
-- An **agent can never hold an admin key** or the Owner role.
+- An **agent can never hold an admin key** or the Owner role. A role with an admin key is also never given to a **group**, because groups may hold agents ([ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)).
 - Admin keys are never passed through delegation (see [11.3](#113-the-overlap-rule)).
 
 ---
@@ -269,10 +269,11 @@ Inputs: the verified token, the action, the resource `{type, id}` and, for write
 - The deciding role may carry conditions at that scope, for example `resource.assignee == principal` or `"client-visible" in resource.labels`.
 - Each condition has a level to use when it is false (for example Write when true, Read when false). That level is never higher than the role's level. Conditions only narrow.
 - Conditions come from a small list of **vetted templates** that compile both to Rust and to SQL. A model with anything else is rejected when it is compiled, not at request time.
+- A condition that names a group that does not exist is **false as a whole**, even under `not` (fail closed): the level drops to its `else` level ([MANIFEST.md §8](MANIFEST.md#8-conditions)).
 
 **Step 5. Field level = min(role level, closest field rule).** (Blueprint)
 - For each field and feature of the type:
-  - the **role level** is the role's level for that field if the role sets one, else the item level from step 4;
+  - the **role level** comes from one function the diff and the evaluator share (`effective_field_level`, [ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)). For a **data field**: the role's level for that field if the role sets one, else the item level from step 4, and **never above the item level from step 4** (a condition that drops the item to Read also drops its fields). For a **feature**: None when the item level is None; else the role's level for the feature if it sets one, else the item level (a feature may be above the item level: a Viewer may ask the AI). A field or feature the type does not declare is None;
   - the **closest field rule** is found by walking the same path upward: the first scope with a rule for this field wins. At one scope, a rule for this exact role wins over a rule for all roles;
   - **field level = the lower of the two.** If no rule exists anywhere, the field level is the role level.
 - A field marked confidential or secret gets an "all roles → None" rule at the org root when it is registered (Correction). So it starts hidden.
@@ -325,7 +326,8 @@ evaluate(principal, res, model):
           if role: level = role.level(res.type); break
           if node.private: break                           # stops inheritance
   level  = apply_conditions(role, res, principal, level)   # can only lower
-  fields = { f: min(role.level(f) or level, closest_field_rule(f, role, res.path))
+  fields = { f: min(effective_field_level(role, f, level),     # capped by `level`
+                    closest_field_rule(f, role, res.path))     # for data fields
              for f in res.type.fields_and_features }
   return guardrails(level, fields)                         # can only lower
 ```
@@ -897,7 +899,7 @@ The first six table names come from the blueprint. The last five are new.
 | `field_registry` | Blueprint | `tenant_id`, `app`, `item_type`, `field_key`, `label`, `sensitivity` (public, internal, confidential, secret), `grants_access`, `created_by` (manifest, console, onto import, agent), `created_at` | Every field of every type. `grants_access` marks fields that conditions read (changing them needs `manage_access`). |
 | `audit_event` | Blueprint (follows `audit.v1`) | `tenant_id`, `id` (UUIDv7), `time` (blueprint `at`), `org_id`, `actor_kind`, `actor_id`, `on_behalf_of`, `action`, `resource_type` + `resource_id` (blueprint `target`), `decision_effect`, `rule_ids`, `rev`, `outcome`, `reason`, `before_digest`, `after_digest` (blueprint `before`, `after`), `trace_id`, `request_id`, `labels`, `seq`, `prev_hash`, `hash` | Append-only: UPDATE and DELETE are refused. Hash-chained. Copies can go to attache's evidence ledger. See [CONTRACTS.md](CONTRACTS.md). |
 | `resource_type` | New | `tenant_id`, `app`, `key`, `label`, `parent_types`, `container`, `starts` (open, private), `features`, `actions` (key → min level + grant key), `source` (manifest, console, onto), `rev` | Replaces the blueprint's fixed tree. Each app has its own namespace. |
-| `role` | New | `tenant_id`, `id`, `app` (null = tenant-wide), `key`, `name`, `kind` (seeded, custom), `levels` (type, `type.field` and `type.@feature` → level), `grants` (custom actions, admin keys), `assignable_to`, `rev` | A role with admin keys cannot be assigned to an agent. |
+| `role` | New | `tenant_id`, `id`, `app` (null = tenant-wide), `key`, `name`, `kind` (seeded, custom), `levels` (type, `type.field` and `type.@feature` → level), `grants` (custom actions, admin keys), `assignable_to`, `rev` | A role with admin keys cannot be assigned to an agent or a group. |
 | `group` (+ `group_member`) | New | `group`: `tenant_id`, `id`, `org_id`, `key`, `name`. `group_member`: `tenant_id`, `group_id`, `member_kind`, `member_id`, `added_by` | Groups may contain groups. A closure table makes membership one lookup. |
 | `ui_component` | New | `tenant_id`, `app`, `key`, `actions`, `fields`, `routes` (method + path), `when_denied` (show, disable, hide, readonly), `reason`, `rev` | Source for `tutela codegen` (React constants and route guards). |
 | `model_revision` | New | `tenant_id`, `rev`, `parent_rev`, `app`, `author`, `approvers`, `diff`, `class` (narrowing, neutral, widening), `impact`, `state` (draft, proposed, published, rejected), `created_at`, `published_at`, `bundle_digest`, `signature` | One row per model change. `rev` is the tenant revision at publish; the tenant revision goes up in the same transaction as every change, including binding changes (which are recorded in `audit_event`, not here). |
@@ -910,10 +912,10 @@ These are not decided yet. Each has a proposal so work can start. Final answers 
 
 | # | Question | Proposal | When |
 |---|---|---|---|
-| 1 | A direct assignment and a group assignment at the same scope: which wins? | The direct one; else the highest group one. | Phase A |
+| 1 | A direct assignment and a group assignment at the same scope: which wins? | The direct one; else the group roles combine component-wise: the highest item level, the highest level per field and feature, and the union of grants (the model diff relies on this, [ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)). Closed when the evaluator lands. | Phase A |
 | 2 | Where does a library-mode project (no `tutelad`) get an approval token for a widening diff? | A token signed by a tenant admin's key, bound to the diff digest. | Phase A |
 | 3 | How is a reader's clearance per label stored, for labelled output? | Treat each label like a field of that sensitivity in the scope, with the same defaults. | Phase A |
 | 4 | The ancestors column: array, `ltree` or closure table? Maximum path depth? | Decided by the week-1 spike (depth 32, 100k rows). | Week-1 spike |
 | 5 | Default max bundle age per action class. | Reads longer, writes shorter, revocation-sensitive actions online. Numbers measured in Phase B. | Phase B |
-| 6 | The list of condition templates in v1. | **Fixed** in [MANIFEST.md §8](MANIFEST.md#8-conditions): `eq`, `in`, `contains`, `is_principal`, `in_group`; `and`, `or`, `not`. | Phase A |
-| 7 | The final names of admin keys and obligation kinds. | Admin keys: **fixed** as in [5.3](#53-owner-only-admin-actions-blueprint) ([MANIFEST.md §6](MANIFEST.md#6-admin-keys)). Obligation kinds: as in [7.3](#73-the-decision-object), still open. | Phase A, in `tutela-contracts` |
+| 6 | The list of condition templates in v1. | **Fixed** in [MANIFEST.md §8](MANIFEST.md#8-conditions) ([ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)): `eq`, `in`, `contains`, `is_principal`, `in_group`; `and`, `or`, `not`. | Phase A |
+| 7 | The final names of admin keys and obligation kinds. | Admin keys: **fixed** as in [5.3](#53-owner-only-admin-actions-blueprint) ([MANIFEST.md §6](MANIFEST.md#6-admin-keys), [ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)). Obligation kinds: as in [7.3](#73-the-decision-object), still open. | Phase A, in `tutela-contracts` |

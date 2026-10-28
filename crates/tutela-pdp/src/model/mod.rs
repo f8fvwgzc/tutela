@@ -33,7 +33,7 @@ use tutela_contracts::keys::{
 use tutela_contracts::level::Level;
 use tutela_contracts::principal::PrincipalKind;
 
-pub use diff::{Change, Class, DiffError, ModelDiff, diff};
+pub use diff::{Change, Class, DiffError, MAX_DIFF_LINES, ModelDiff, diff};
 
 /// The only manifest format version.
 pub const MANIFEST_VERSION: i64 = 1;
@@ -378,16 +378,6 @@ impl Role {
             .unwrap_or(Level::None)
     }
 
-    /// The role's level for one field or feature: its own entry, else the
-    /// type level.
-    #[must_use]
-    pub fn field_level(&self, key: &FieldKey) -> Level {
-        self.field_levels
-            .get(key)
-            .copied()
-            .unwrap_or_else(|| self.level(key.resource_type()))
-    }
-
     /// `true` if the role holds this grant or admin key.
     #[must_use]
     pub fn holds(&self, key: &ActionKey) -> bool {
@@ -629,6 +619,7 @@ impl Model {
     /// One role's own level on one field or feature, when its level on the
     /// item is `item` (after conditions). Field rules are not applied here;
     /// they cap the result. The diff and the evaluator share this function.
+    /// A field or feature the type does not declare is `none` (masked).
     ///
     /// - A data field: the role's level for the field (or the item level if
     ///   the role sets none), never above `item`.
@@ -640,6 +631,17 @@ impl Model {
         let Some(r) = self.roles.get(role) else {
             return Level::None;
         };
+        let declared = self.types.get(field.resource_type()).is_some_and(|d| {
+            if field.is_feature() {
+                d.features.contains(field.field())
+            } else {
+                d.fields.contains_key(field.field())
+            }
+        });
+        // An undeclared field or feature is masked.
+        if !declared {
+            return Level::None;
+        }
         let own = r.field_levels.get(field).copied();
         if field.is_feature() {
             if item == Level::None {
@@ -675,7 +677,10 @@ impl Model {
             return false;
         };
         match def.needs {
-            ActionRequirement::OwnerOnly => r.holds(key),
+            // Owner-only: Full on the item and the grant (MANIFEST.md §4).
+            ActionRequirement::OwnerOnly => {
+                r.level(key.resource_type()) == Level::Full && r.holds(key)
+            }
             ActionRequirement::Level(l) => {
                 r.level(key.resource_type()).satisfies(l) && (!def.grant || r.holds(key))
             }
