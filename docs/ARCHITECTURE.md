@@ -168,9 +168,14 @@ A small native Rust evaluator over the permission tables. No network calls.
 ### `tutela-store` (Phase A)
 
 The Postgres tables and migrations for bindings, field rules, groups,
-conditions and model revisions. **The same schema is used in library mode
-(inside the product's own database) and by `tutelad`.** It bumps the
-per-tenant revision in the same transaction as each change.
+boundary settings, scope paths and model revisions. **The same schema is
+used in library mode (inside the product's own database) and by
+`tutelad`.** Every call runs in the product's own transaction: it sets the
+tenant with `SET LOCAL` (every tenant table has `FORCE ROW LEVEL SECURITY`),
+bumps the per-tenant revision in the same transaction as the change, and
+checks the whole tenant data with the evaluator's load checks before the
+commit. `load` reads a tenant's revision, `TenantData` and scope paths in one
+consistent view ([ADR-0014](DECISIONS.md#adr-0014-tutela-store-in-phase-a-the-schema-row-level-security-and-checked-writes)).
 
 ### `tutela-sdk` (Phase A)
 

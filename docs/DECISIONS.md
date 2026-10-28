@@ -30,6 +30,7 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0011](#adr-0011-week-1-spike-go-for-the-native-evaluator) | Week-1 spike: go for the native evaluator | Accepted |
 | [0012](#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening) | Manifest v1: seeded roles, org-root rules, and what counts as widening | Accepted |
 | [0013](#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits) | The evaluator: deciding roles, reasons, scope paths and Phase A limits | Accepted |
+| [0014](#adr-0014-tutela-store-in-phase-a-the-schema-row-level-security-and-checked-writes) | tutela-store in Phase A: the schema, row-level security and checked writes | Accepted |
 
 ---
 
@@ -508,3 +509,66 @@ Benchmark (`cargo bench -p tutela-pdp`): the tenant has the sizes of the week-1 
 - **Let `team` reach open sibling scopes.** That widens access through a boundary setting; not done without a decision of its own.
 - **Cache levels per (principal, scope) across calls.** Not needed for the latency gate, and a cache is one more place for a stale allow.
 - **Bound the manifest (conditions per role and type) to keep filters small.** It does not bound the filter, which also grows with the bindings.
+
+---
+
+## ADR-0014: tutela-store in Phase A: the schema, row-level security and checked writes
+
+**Status:** Accepted, 2026-10-28. Built in Phase A (`tutela-store`, ROADMAP item 5).
+
+**Context.** The evaluator reads `TenantData` (ADR-0013), and ADR-0013 left the store several duties:
+- record private scopes in the same transaction as the scope;
+- keep group keys unique and enforce the group limits;
+- leave no trace of a deleted scope;
+- give `list_filter` scope paths that are current after a move (ADR-0011 F1).
+
+[PERMISSION-MODEL.md §18](PERMISSION-MODEL.md#18-tables) lists the tables, and §16.2 asks for tenant isolation in the database itself. This ADR records how Phase A builds them.
+
+**Decision.**
+
+1. **One schema, `tutela`, created by numbered migrations embedded in the crate** (`tutela_store::migrate`):
+   - All pending migrations run in one transaction, under an advisory lock, and are recorded in `tutela.schema_migration`.
+   - A database with a migration this build does not know is refused, so an old binary never writes to a newer schema.
+   - Migrations are additive only. They never drop a column, and never `DROP SCHEMA ... CASCADE`.
+2. **Tables (Phase A).**
+   - **With tenant data:** `tenant_rev`, `org`, `group`, `group_member`, `role_assignment`, `field_rule`, `boundary_rule`, `scope_path` and `model_revision`. The columns follow §18.
+   - **Without tenant data:** `tenant` (the directory: tenant id and issuer) and `app_manifest` (the applied manifest text, its SHA-256 and a version).
+   - Ids are new UUIDv7s with a prefix (`ten_`, `org_`, `grp_`, `ra_`, `fr_`) and are never reused.
+3. **Row-level security.** Every table with tenant data has `tenant_id` first, `ENABLE` and `FORCE ROW LEVEL SECURITY`, and a policy on `tenant_id = current_setting('tutela.tenant_id', true)`.
+   - Each store call checks the tenant key `(iss, tid)` against the directory. It then sets `tutela.tenant_id` with `set_config(..., true)` (the same as `SET LOCAL`) for the rest of the transaction.
+   - With no tenant set, every query returns zero rows, also for the table owner. A row for another tenant cannot be written.
+   - A superuser or a `BYPASSRLS` role still sees everything, so the product's runtime role must be neither (§16.2: app roles never own tables).
+4. **Every call runs in the product's own transaction** (`&tokio_postgres::Transaction`).
+   - So a change to Tutela's tables commits or rolls back with the product's change. For example, a new scope and its private flag, or a move and its new paths.
+   - A write first bumps the tenant revision. That locks the tenant's revision row, so writes to one tenant are serialized.
+   - It then makes the change and **checks the whole tenant data with `Pdp::load`'s own checks**: unknown or duplicate groups, cycles, nesting over 32, the closure limits, duplicate assignments, rules at an org root.
+   - A refused change is an error, and the caller rolls back. The checks do not depend on the model, so a fixed one is used.
+   - This reads the whole tenant on each write. That is fine for Phase A, where writes are admin work; a tenant with very many writes may need an incremental check later.
+5. **Consistent reads.** `load` takes a share lock on the revision row first, then reads the data and the scope paths. It waits for a write in progress, and no write commits until the caller's transaction ends.
+6. **Scopes are registered** (`put_scope`) with their ancestors, nearest first, ending at an org of the tenant.
+   - A scope must be registered before it can hold an assignment, a field rule or a private flag.
+   - `put_scope` writes the private flag in the same transaction as the registration and the revision bump.
+   - A path that disagrees with a registered ancestor's path is refused, so `list_filter` never meets inconsistent paths.
+   - `move_scope` rewrites the scope's path and every path below it in the caller's transaction. It refuses a cycle and any path over 32.
+   - `delete_scope` removes the scope and every registered scope below it, with their assignments, field rules and private flags, in one revision.
+   - `load` returns the paths as a `ScopePathSnapshot` (a `ScopePaths` provider). It answers only for its own tenant and only for registered scopes; anything else is `NotFound`, so the list fails closed.
+7. **The model in library mode is the applied manifest.**
+   - `publish_manifest` replaces `app_manifest`, refuses a publish that was compared against an older version, and records each change in each tenant's `model_revision`. In the same transaction, it bumps every tenant's revision.
+   - The normalised model tables of §18 (`resource_type`, `role`, `field_registry`, `condition`, `ui_component`) come with Phase B, when the Console edits models at runtime. Library mode has no runtime role editing (ARCHITECTURE.md, library mode), and two copies of the model could disagree.
+   - Phase A keeps one app per `tutela` schema for role keys: assignments name role keys without an app.
+8. **Not yet.**
+   - **Moves:** `boundary_rule` has the move and link columns of §18, but Phase A reads only `private`. `Pdp::write_check` still refuses moves. Moves need the before/after comparison of §10.3, which is the impact calculation of Phase B. `move_scope` keeps paths current for a move the product makes after its own check.
+   - **Assignment expiry:** a row with `expires_at` set is not read at all (fail closed). Expiry needs a revision bump when it passes, which comes with Phase B.
+   - **Private-scope placement:** `list_filter` still places every private scope of the tenant on each call. The `scope_path` GIN index on `ancestors` lets a later provider method return only the private scopes under the principal's scopes ([#6](https://github.com/f8fvwgzc/tutela/issues/6)).
+
+**Consequences.**
+- A product in library mode runs `tutela_store::migrate` as the owner role, gives its runtime role DML grants only, and calls the store inside its own transactions.
+- After each write it sends the returned revision as `at_least_revision`.
+- The store's tests run against a real Postgres: `TUTELA_TEST_DATABASE_URL`. CI has a Postgres service and sets `TUTELA_REQUIRE_DATABASE=1`, so a missing database fails there. Each test makes its own database, owned by a role that is not a superuser, so forced row-level security applies to every query in it.
+
+**Alternatives considered.**
+- **Row-level security without FORCE.** The table owner would bypass it, and small products often run with one role.
+- **A bypass setting for admin work.** Any code could set it, so an injected bug would read every tenant. `publish_manifest` instead enters each tenant in turn, and the tenant directory, which holds no tenant data, has no policy.
+- **Store the normalised model tables now.** Two copies of the model (text and tables) in Phase A, with nothing that edits the tables.
+- **Let the product's tables be the only scope-path source.** Possible (ADR-0011 F1). But then the store could not refuse inconsistent paths or delete a subtree, and the product would have to answer `ScopePaths` itself.
+

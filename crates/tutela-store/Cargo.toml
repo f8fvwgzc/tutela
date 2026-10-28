@@ -1,0 +1,24 @@
+[package]
+name = "tutela-store"
+description = "Tutela's permission tables in Postgres: schema, migrations and the tenant data the evaluator reads"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+sha2 = "0.11.1"
+thiserror = "2.0.21"
+tokio-postgres = { version = "0.7.18", default-features = false, features = ["runtime", "with-uuid-1"] }
+tutela-contracts = { workspace = true }
+tutela-pdp = { workspace = true }
+uuid = { version = "1.29.0", features = ["v7"] }
+
+[dev-dependencies]
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread"] }
