@@ -133,6 +133,10 @@ struct Seen {
 fn differential(seed: u64, w: &World, seen: &mut Seen) {
     let pdp = pdp_of(&w.model, &w.tenants.iter().collect::<Vec<_>>());
     let paths = Paths::of(&w.tenants);
+    let indexed = Paths {
+        indexed: true,
+        ..Paths::of(&w.tenants)
+    };
     for t in &w.tenants {
         let rows: Vec<&Node> = t.rows().collect();
         for (p, actors) in askers() {
@@ -141,6 +145,11 @@ fn differential(seed: u64, w: &World, seen: &mut Seen) {
                 let f = pdp
                     .list_filter(&list_req(t, &p, &actors, action), &paths)
                     .unwrap_or_else(|e| panic!("seed {seed}: list_filter failed: {e}"));
+                // A provider that answers `below` gives the same filter.
+                let g = pdp
+                    .list_filter(&list_req(t, &p, &actors, action), &indexed)
+                    .unwrap_or_else(|e| panic!("seed {seed}: indexed list_filter failed: {e}"));
+                assert_eq!(f, g, "seed {seed}: {p} {actors:?} {action}");
                 seen.filters += 1;
                 if let Some(c) = &f.condition {
                     seen.with_condition += 1;

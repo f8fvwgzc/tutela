@@ -891,6 +891,8 @@ pub(crate) struct Paths {
     pub missing: BTreeSet<PathEntry>,
     /// Every scope asked for.
     pub asked: std::cell::RefCell<BTreeSet<PathEntry>>,
+    /// Answer `below` (completely, from `map`), as an indexed store does.
+    pub indexed: bool,
 }
 
 impl Paths {
@@ -922,6 +924,21 @@ impl ScopePaths for Paths {
             .get(&(tenant.clone(), scope.clone()))
             .cloned()
             .ok_or(ScopePathError::NotFound)
+    }
+
+    fn below(
+        &self,
+        tenant: &TenantKey,
+        scopes: &[PathEntry],
+    ) -> Option<Result<Vec<PathEntry>, ScopePathError>> {
+        self.indexed.then(|| {
+            Ok(self
+                .map
+                .iter()
+                .filter(|((t, _), path)| t == tenant && path.iter().any(|a| scopes.contains(a)))
+                .map(|((_, s), _)| s.clone())
+                .collect())
+        })
     }
 }
 
