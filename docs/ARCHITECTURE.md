@@ -144,7 +144,7 @@ A small native Rust evaluator over the permission tables. No network calls.
 - It also holds the model compiler (module `model`): it reads
   `tutela.resources.toml` ([MANIFEST.md](MANIFEST.md)), refuses anything the
   rules do not allow, and classifies a model change as narrowing, neutral or
-  widening. The evaluator uses the same compiled model (both in review,
+  widening. The evaluator uses the same compiled model (both built,
   [ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening),
   [ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)).
 - It resolves the effective level **once per (principal, scope)**. From the

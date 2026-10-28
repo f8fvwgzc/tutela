@@ -39,7 +39,7 @@ Only the left column exists in `tutela-contracts` after the first commit. Everyt
 | 3 | Levels | The four levels, their order, `min` | Proto enum (B) |
 | 4 | Tokens | Claim structs for access tokens and delegated tokens, and their claim checks (no size, header, signature or `epoch` check) | Full verification in `tutela-sdk` (A); token exchange in `tutelad` (B); own OIDC provider (C, optional) |
 | 5 | API keys | Parse, format check, display prefix | Hashing, storage, verification, rotation (A, B) |
-| 6 | Decision | The Decision object: effect, level, field mask, rule ids, reason, rev, obligations | `Pdp::check`, `Pdp::batch`, `Pdp::list_filter`, `Pdp::write_check` (A; in `tutela-pdp`, in review, [ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)) |
+| 6 | Decision | The Decision object: effect, level, field mask, rule ids, reason, rev, obligations | `Pdp::check`, `Pdp::batch`, `Pdp::list_filter`, `Pdp::write_check` (A; built in `tutela-pdp`, [ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)) |
 | 7 | Remote check API | — | AuthZEN-shaped API, permission map, gRPC (B) |
 | 8 | Events | CloudEvents envelope, event type grammar and names | Outbox, webhooks, SSE (B) |
 | 9 | audit.v1 | The audit.v1 record | Producer signatures, sequence numbers, local hash chain, forwarding to attache's evidence ledger (B) |
@@ -544,7 +544,7 @@ Rotation is in section 10.4.
 
 ## 6. The Decision object and the embedded API
 
-**First commit:** the Decision object (6.1 to 6.3) is in `tutela-contracts`. The `Pdp` API (6.5 to 6.8) is in `tutela-pdp` (Phase A, in review; [ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)).
+**First commit:** the Decision object (6.1 to 6.3) is in `tutela-contracts`. The `Pdp` API (6.5 to 6.8) is in `tutela-pdp` (Phase A; [ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)).
 
 ### 6.1 The Decision object
 
@@ -651,7 +651,7 @@ When the request carries actors (from the token's `act` chain):
 
 ### 6.5 Embedded API (`tutela-pdp`) — Phase A
 
-Rust signatures of `tutela-pdp` (in review, [ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)). The Rust API can still change while the crates are `0.x`; the JSON shapes in this section are the contract.
+Rust signatures of `tutela-pdp` ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)). The Rust API can still change while the crates are `0.x`; the JSON shapes in this section are the contract.
 
 ```rust
 // Phase A. Crate: tutela-pdp.

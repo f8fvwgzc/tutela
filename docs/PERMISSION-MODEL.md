@@ -1,6 +1,6 @@
 # Tutela permission model
 
-> **Status: pre-alpha.** The first commit holds only the docs, `tutela-contracts` and CI. In review for **Phase A**: the model compiler and the evaluator in `tutela-pdp` (`check`, `batch`, `list_filter`, `write_check`; [ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)).
+> **Status: pre-alpha.** The first commit holds only the docs, `tutela-contracts` and CI. Built for **Phase A** so far: the model compiler and the evaluator in `tutela-pdp` (`check`, `batch`, `list_filter`, `write_check`; [ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)).
 > The tables (`tutela-store`), the SQL adapter for list filters, codegen and the React parts come later in **Phase A**.
 > The `tutelad` service, revisions with signed bundles, the impact report, two-person publish and the Tutela Console come in **Phase B**.
 > See [ROADMAP.md](ROADMAP.md).
