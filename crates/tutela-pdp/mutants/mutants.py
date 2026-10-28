@@ -31,6 +31,9 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 SRC = ROOT / "crates" / "tutela-pdp" / "src"
+# Proptest records the seeds of failing cases here. Under a mutant those are
+# failures of the planted bug, so the script removes what it adds.
+REGRESSIONS = ROOT / "crates" / "tutela-pdp" / "proptest-regressions"
 OUT = pathlib.Path(__file__).resolve().parent / "results.txt"
 
 # (id, file, what it breaks, old text, new text). `old` must occur once.
@@ -137,11 +140,19 @@ def main():
         if check_only:
             lines.append(f"{mid} {name}: applies - {what}")
             continue
+        before = {f: f.read_text() for f in REGRESSIONS.glob("*")} if REGRESSIONS.exists() else {}
         try:
             path.write_text(text.replace(old, new))
             passed, failed = run_tests()
         finally:
             path.write_text(text)
+            for f in REGRESSIONS.glob("*") if REGRESSIONS.exists() else []:
+                if f in before:
+                    f.write_text(before[f])
+                else:
+                    f.unlink()
+            if REGRESSIONS.exists() and not any(REGRESSIONS.iterdir()):
+                REGRESSIONS.rmdir()
         if passed is None:
             lines.append(f"{mid} {name}: DOES NOT COMPILE - {what}")
             bad = True
