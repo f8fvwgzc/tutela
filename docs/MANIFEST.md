@@ -1,6 +1,6 @@
 # The manifest: `tutela.resources.toml`
 
-Status: **Phase A.** The format and the model compiler are in `tutela-pdp` (module `model`). The evaluator that uses the compiled model (`Pdp::check` and the others) comes in the next Phase A step. `tutela apply`, `tutela init` and `tutela codegen` come later in Phase A ([ROADMAP.md](ROADMAP.md)).
+Status: **Phase A.** The format and the model compiler are in `tutela-pdp` (module `model`). The evaluator that uses the compiled model (`Pdp::check` and the others) is in `tutela-pdp` too ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)). `tutela apply`, `tutela init` and `tutela codegen` come later in Phase A ([ROADMAP.md](ROADMAP.md)).
 
 This file is the contract for the manifest format, version 1. If code and this file disagree, fix one of them in the same commit ([AGENTS.md](../AGENTS.md)).
 
@@ -270,7 +270,7 @@ The opposite direction is narrowing. These are neutral: labels, the audience, a 
 
 A manifest over any count limit is refused at once, before any other check.
 
-A valid manifest can still give a `list_filter` above the filter limits of [CONTRACTS.md §6.6](CONTRACTS.md#66-list_filter) for a principal with many deciding scopes, roles with conditions and nesting levels. Such a list fails closed. ROADMAP item 4 measures this and either raises the limits or bounds the inputs ([ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)).
+A valid manifest can still give a `list_filter` above the filter limits of [CONTRACTS.md §6.6](CONTRACTS.md#66-list_filter) for a principal with many deciding scopes, roles with conditions and nesting levels. Such a list fails closed. ROADMAP item 4 measured this and kept the limits: each nesting level of a principal's deciding scopes repeats the conditions of its roles, so the size grows with the bindings, and a limit on the manifest alone cannot bound it ([ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening), [ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)).
 
 | Item | Limit |
 |---|---|

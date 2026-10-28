@@ -13,8 +13,8 @@ use super::raw::{self, MAX_BRANCHES, MAX_TEMPLATE_DEPTH};
 use super::{
     AiReach, AppName, Condition, CustomAction, FieldDef, FieldDisplay, FieldRule, FieldType,
     GroupKey, Issue, Issues, MANIFEST_VERSION, MAX_MANIFEST_BYTES, Method, Model, Role, RoleKey,
-    Route, SeededRole, Sensitivity, Starts, SubjectKind, Template, TypeDef, UiComponent, Value,
-    WhenDenied, is_admin_key,
+    RootCaps, Route, SeededRole, Sensitivity, Starts, SubjectKind, Template, TypeDef, UiComponent,
+    Value, WhenDenied, is_admin_key,
 };
 
 const MAX_TYPES: usize = 512;
@@ -421,10 +421,16 @@ fn build(ctx: &mut Ctx, raw: raw::Manifest) -> Model {
     let field_rules = field_rules(ctx, &types, &roles, raw.field_rules);
     let conditions = conditions(ctx, &types, &roles, raw.conditions);
     let ui = ui(ctx, &types, raw.ui);
-    let rule_caps = field_rules
-        .iter()
-        .map(|r| ((r.field.clone(), r.role.clone()), r.max))
-        .collect();
+    let mut rule_caps: BTreeMap<FieldKey, RootCaps> = BTreeMap::new();
+    for r in &field_rules {
+        let caps = rule_caps.entry(r.field.clone()).or_default();
+        match &r.role {
+            Some(role) => {
+                caps.roles.insert(role.clone(), r.max);
+            }
+            None => caps.all = Some(r.max),
+        }
+    }
     Model {
         app,
         audience,

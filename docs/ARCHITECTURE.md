@@ -144,11 +144,14 @@ A small native Rust evaluator over the permission tables. No network calls.
 - It also holds the model compiler (module `model`): it reads
   `tutela.resources.toml` ([MANIFEST.md](MANIFEST.md)), refuses anything the
   rules do not allow, and classifies a model change as narrowing, neutral or
-  widening. The compiler is built first; the evaluator comes next.
+  widening. The evaluator uses the same compiled model (both in review,
+  [ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening),
+  [ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)).
 - It resolves the effective level **once per (principal, scope)**. From the
   same code it produces both the decision and the SQL list filter
   (`ids_in` + `container_in` + condition AST; all values are bound
-  parameters).
+  parameters). For the filter it gets scope paths from a provider keyed by
+  (tenant, type, id) and fails closed when a path is missing.
 - A property test proves: rows returned by `list_filter` == rows that
   `check()` allows.
 - Decision object: `effect`, `level`, `field_mask {read, write}`, rule ids,

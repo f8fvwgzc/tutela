@@ -1,7 +1,7 @@
 # Tutela permission model
 
-> **Status: pre-alpha. Nothing on this page is built yet.** The first commit holds only the docs, `tutela-contracts` and CI.
-> The evaluator (`tutela-pdp`), the tables (`tutela-store`), list filters, codegen and the React parts come in **Phase A**.
+> **Status: pre-alpha.** The first commit holds only the docs, `tutela-contracts` and CI. In review for **Phase A**: the model compiler and the evaluator in `tutela-pdp` (`check`, `batch`, `list_filter`, `write_check`; [ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)).
+> The tables (`tutela-store`), the SQL adapter for list filters, codegen and the React parts come later in **Phase A**.
 > The `tutelad` service, revisions with signed bundles, the impact report, two-person publish and the Tutela Console come in **Phase B**.
 > See [ROADMAP.md](ROADMAP.md).
 
@@ -226,12 +226,13 @@ A role entry can set a level for:
 
 A role assignment gives one principal or one group one role at one scope. There is at most one direct assignment per principal per scope.
 
-Two assignments can meet at the same scope: one direct, one or more through groups. Proposed rule (New, see [Open points](#19-open-points)): **the direct assignment wins**; this lets an owner narrow one person who sits in a wide group. If there is none, **every** group role at that scope counts: each role is evaluated on its own (its own conditions and field rules), and the results are combined **component-wise**: the highest item level, and the highest level per field and feature. A **custom action** is allowed if **any** deciding role allows it with its own item level after its own conditions (`allows_custom_at`); raw grants are never pooled, so a grant cannot escape the conditions of the role that holds it. **Admin keys** are the union of the deciding roles' keys. The model diff relies on this ([ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)).
+Two assignments can meet at the same scope: one direct, one or more through groups. The rule (New, [ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)): **the direct assignment wins**; this lets an owner narrow one person who sits in a wide group. If there is none, **every** group role at that scope counts: each role is evaluated on its own (its own conditions and field rules), and the results are combined **component-wise**: the highest item level, and the highest level per field and feature. A **custom action** is allowed if **any** deciding role allows it with its own item level after its own conditions (`allows_custom_at`); raw grants are never pooled, so a grant cannot escape the conditions of the role that holds it. **Admin keys** are the union of the deciding roles' keys. The model diff relies on this ([ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)).
 
 ### 6.4 Groups (New)
 
 - A group belongs to one org. Members are principals or other groups.
 - Tutela keeps a closure table, so "is this principal in that group" is one lookup. The week-1 spike measures this at depth 32 with big groups (see [ROADMAP.md](ROADMAP.md#very-next-steps)).
+- In Phase A, group keys are unique in the tenant, so a binding or an `in_group` condition names one group ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)).
 - Removing a principal from a group removes its access through that group in the same transaction as the revision bump.
 - Deleting a principal deletes its assignments and group memberships in the same transaction.
 
@@ -290,6 +291,7 @@ These can only lower the result, never raise it:
 **Step 7. Delegation overlap for agents.** (Correction)
 - Only for delegated tokens (`act` present).
 - Run steps 3–6 **again for the agent** with its own assignments. Also apply its `ai_reach`: the agent may only touch resources inside the scope of the work (`project`), or that scope's parent (`team`). Never the org root, never another branch.
+  - In the evaluator ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)): the closest assignment is always on the resource's path, so `project` reach holds by itself. An agent whose closest assignment is at the org root gets None (`outside_ai_reach`). `team` reach never adds access; it only narrows less.
 - **Overlap:** item level = min(person, agent). Each field level = min(person, agent). Custom actions = the **intersection of the allowed-action sets** of the person and the agent (each set as in [6.3](#63-role-assignments): actions some deciding role allows at its own item level after its own conditions), never raw grants. Admin keys and owner-only custom actions = none.
 - If the act chain is nested (an agent acting for an agent acting for a person), every actor must be allowed, and the chain holds at most 4 actors.
 - The person must be the one who caused the work and must still be enabled.
@@ -346,7 +348,7 @@ evaluate(principal, res, model):
   return guardrails(level, fields, actions, admin)         # can only lower
 ```
 
-The engine resolves the effective level **once per (principal, scope)** and caches it for that revision. The week-1 spike target is `check` p99 < 1 ms in-process with a large per-tenant model.
+The engine resolves the effective level **once per (principal, scope)** in each call. The Phase A evaluator keeps no cache across calls: `check` p99 is about 12–17 µs without one ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)). A decision cache, keyed by revision, comes with `tutela-sdk`. The week-1 spike target is `check` p99 < 1 ms in-process with a large per-tenant model.
 
 ### 7.3 The decision object
 
@@ -417,7 +419,7 @@ For other trees, "project" means the scope where the agent is assigned, and "tea
 
 (Blueprint) Work does not stay in one box. Moves are allowed, follow access, and owners can restrict them.
 
-1. A move is **one operation**: a `write` that changes the item's parent (`Pdp::write_check` with a new path, see [CONTRACTS.md §6.7](CONTRACTS.md#67-write_check)). It needs the right on both sides: `moves_out` on the source scope and `moves_in` on the target scope (`boundary_rule`). Across teams, only owners of both scopes.
+1. A move is **one operation**: a `write` that changes the item's parent (`Pdp::write_check` with a new path, see [CONTRACTS.md §6.7](CONTRACTS.md#67-write_check)). It needs the right on both sides: `moves_out` on the source scope and `moves_in` on the target scope (`boundary_rule`). Across teams, only owners of both scopes. Phase A: `write_check` refuses moves until these boundary rules exist with `tutela-store` ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)).
 2. The moved item **takes the rules of its new parent**. Its children, files, chat and history move with it.
 3. Tutela compares access before and after (the same impact calculation as model changes, [15](#15-model-changes)). If the new scope is **looser** (for example Budget is visible there), the move **waits for the source owner's approval** (`on_looser = approve`). An owner can also set `on_looser = block`.
 4. The audit log records the move with **both** scopes.
@@ -444,6 +446,8 @@ AI is the easiest place to leak data by accident, because a model will repeat an
 | `project` | The agent reads only inside that scope. | Yes |
 | `team` | The agent may also read other scopes under the same parent. Allowed, **not recommended**; the Console shows a warning. | No |
 | (anything wider) | **Never.** Not the whole org, never another team. | — |
+
+An agent assigned only at the org root therefore gets nothing (`outside_ai_reach`). `team` never opens a sibling scope where the agent has no assignment: that would widen access through a boundary setting ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)).
 
 ### 11.3 The overlap rule
 
@@ -521,9 +525,11 @@ Loading 500 issues and dropping the hidden ones afterwards is slow. Worse, the *
 | condition AST | Everything else as a small boolean tree: role conditions (`assignee == $principal`), and exclusions for scopes nested inside an allowed scope where the level is lower (a private scope the principal is not in, or a closer, lower assignment). When allowed and excluded scopes nest more than once, the compiler emits one more nested group per level, so "closest wins" holds. |
 
 How it is computed:
-1. Find the **deciding scopes** for this principal: every scope where the principal or one of its groups has an assignment, and every private scope inside them.
+1. Find the **deciding scopes** for this principal: every scope where the principal or one of its groups has an assignment, and every private scope inside them. In an org where the principal is the org Owner, only the org root decides.
 2. Resolve the effective level of each deciding scope once (closest wins, private stops inheritance, conditions).
-3. A row's level is the level of the **deepest deciding scope** on its path. Turn that into `ids_in`, `container_in` and the AST.
+3. A row's level is the level of the **deepest deciding scope** on its path. Turn that into `ids_in`, `container_in` and the AST: one term per nesting level of the deciding scopes ([ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator), "filter shape").
+
+Tutela does not store the product's tree, so `list_filter` gets the paths of the deciding scopes from a **scope-path provider**, keyed by (tenant, type, id). An unknown scope, or a path that does not end at the tenant's own org, is an error, and the list fails closed ([CONTRACTS.md §6.6](CONTRACTS.md#66-list_filter), [ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator) F1).
 
 For agents, the same is done for the person and the agent, `ai_reach` is applied, and the two filters are joined with AND.
 
@@ -926,7 +932,7 @@ These are not decided yet. Each has a proposal so work can start. Final answers 
 
 | # | Question | Proposal | When |
 |---|---|---|---|
-| 1 | A direct assignment and a group assignment at the same scope: which wins? | The direct one; else every group role there counts, each with its own conditions and field rules, combined component-wise: the highest item level, the highest level per field and feature, a custom action allowed when any of the roles allows it with its own item level (never a pool of raw grants), and the union of admin keys (§6.3, §7.1; the model diff relies on this, [ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)). Closed when the evaluator lands. | Phase A |
+| 1 | A direct assignment and a group assignment at the same scope: which wins? | **Decided** ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)): the direct one; else every group role there counts, each with its own conditions and field rules, combined component-wise: the highest item level, the highest level per field and feature, a custom action allowed when any of the roles allows it with its own item level (never a pool of raw grants), and the union of admin keys (§6.3, §7.1; the model diff relies on this, [ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)). | Phase A |
 | 2 | Where does a library-mode project (no `tutelad`) get an approval token for a widening diff? | A token signed by a tenant admin's key, bound to the diff digest. | Phase A |
 | 3 | How is a reader's clearance per label stored, for labelled output? | Treat each label like a field of that sensitivity in the scope, with the same defaults. | Phase A |
 | 4 | The ancestors column: array, `ltree` or closure table? Maximum path depth? | Decided by the week-1 spike (depth 32, 100k rows). | Week-1 spike |

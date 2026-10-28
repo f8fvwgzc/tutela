@@ -538,6 +538,15 @@ pub struct UiComponent {
     pub reason: Option<String>,
 }
 
+/// The org-root field rules of one field.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+struct RootCaps {
+    /// The all-roles rule.
+    all: Option<Level>,
+    /// The rules for one role.
+    roles: BTreeMap<RoleKey, Level>,
+}
+
 /// A compiled model. Only [`Model::from_toml`] makes one.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Model {
@@ -546,8 +555,10 @@ pub struct Model {
     types: BTreeMap<ResourceType, TypeDef>,
     roles: BTreeMap<RoleKey, Role>,
     field_rules: Vec<FieldRule>,
-    /// The org-root field rules by (field, role or all roles).
-    rule_caps: BTreeMap<(FieldKey, Option<RoleKey>), Level>,
+    /// The org-root field rules by field: the all-roles cap and the caps
+    /// for single roles. Looked up without cloning keys (the evaluator calls
+    /// [`Model::root_cap`] for every field of every check).
+    rule_caps: BTreeMap<FieldKey, RootCaps>,
     conditions: Vec<Condition>,
     ui: BTreeMap<UiKey, UiComponent>,
 }
@@ -613,9 +624,8 @@ impl Model {
     #[must_use]
     pub fn root_cap(&self, role: &RoleKey, field: &FieldKey) -> Level {
         self.rule_caps
-            .get(&(field.clone(), Some(role.clone())))
-            .or_else(|| self.rule_caps.get(&(field.clone(), None)))
-            .copied()
+            .get(field)
+            .and_then(|c| c.roles.get(role).copied().or(c.all))
             .unwrap_or(Level::Full)
     }
 

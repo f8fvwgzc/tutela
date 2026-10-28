@@ -39,7 +39,7 @@ Only the left column exists in `tutela-contracts` after the first commit. Everyt
 | 3 | Levels | The four levels, their order, `min` | Proto enum (B) |
 | 4 | Tokens | Claim structs for access tokens and delegated tokens, and their claim checks (no size, header, signature or `epoch` check) | Full verification in `tutela-sdk` (A); token exchange in `tutelad` (B); own OIDC provider (C, optional) |
 | 5 | API keys | Parse, format check, display prefix | Hashing, storage, verification, rotation (A, B) |
-| 6 | Decision | The Decision object: effect, level, field mask, rule ids, reason, rev, obligations | `Pdp::check`, `Pdp::batch`, `Pdp::list_filter`, `Pdp::write_check` (A) |
+| 6 | Decision | The Decision object: effect, level, field mask, rule ids, reason, rev, obligations | `Pdp::check`, `Pdp::batch`, `Pdp::list_filter`, `Pdp::write_check` (A; in `tutela-pdp`, in review, [ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)) |
 | 7 | Remote check API | — | AuthZEN-shaped API, permission map, gRPC (B) |
 | 8 | Events | CloudEvents envelope, event type grammar and names | Outbox, webhooks, SSE (B) |
 | 9 | audit.v1 | The audit.v1 record | Producer signatures, sequence numbers, local hash chain, forwarding to attache's evidence ledger (B) |
@@ -544,7 +544,7 @@ Rotation is in section 10.4.
 
 ## 6. The Decision object and the embedded API
 
-**First commit:** the Decision object (6.1 to 6.3) is in `tutela-contracts`. The `Pdp` API (6.5 to 6.8) is **Phase A, planned**.
+**First commit:** the Decision object (6.1 to 6.3) is in `tutela-contracts`. The `Pdp` API (6.5 to 6.8) is in `tutela-pdp` (Phase A, in review; [ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)).
 
 ### 6.1 The Decision object
 
@@ -608,6 +608,22 @@ Rules:
 - The permission map (7.5) sends only codes marked "yes". Other codes are sent as `not_allowed`.
 - New codes may be added inside v1 (section 10).
 
+**Which code `tutela-pdp` sends** ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)). A request can have several deciding roles (a direct one, or every group role at one scope), roles that are gone, and a person with actors. The first row that fits wins:
+
+| Case | Code |
+|---|---|
+| The resource's org is not one of the tenant's orgs | `tenant_mismatch` |
+| No assignment on the path | `no_role` |
+| A private scope stopped the walk before any assignment | `private_scope` |
+| An agent whose closest assignment is at the org root (`ai_reach` is never the whole org) | `outside_ai_reach` |
+| An admin key or an owner-only custom action, through delegation or for an agent | `admin_only` |
+| Every deciding role is gone, or may not be given to that subject | `no_role` (the detail names the assignments) |
+| An admin key that no deciding role holds | `admin_only` |
+| A custom action whose grant no deciding role holds | `missing_grant` |
+| A condition took a role below the level the action needs (for a custom action: a role that holds the grant) | `condition_failed` |
+| Otherwise: the level is too low (for a custom action, judged on the roles that hold the grant; when another role has the level but not the grant, the detail says grants are never pooled) | `level_too_low` |
+| The person is allowed and an actor is not | `delegation_overlap`, or the actor's own `outside_ai_reach` or `admin_only` |
+
 ### 6.3 Obligations
 
 Each obligation is an object with a `kind`. The first kinds are below. Final names are fixed in Phase A ([PERMISSION-MODEL.md §19](PERMISSION-MODEL.md#19-open-points), point 7).
@@ -621,6 +637,8 @@ Each obligation is an object with a `kind`. The first kinds are below. Final nam
 
 A caller that does not know an obligation kind must treat the decision as **deny**. So a new kind can be sent only to SDKs that already know it (section 10.2).
 
+What the Phase A evaluator sends, on an allow only: `label`, with the highest sensitivity among the readable data fields; and, for a delegated request, `audit` with `on_behalf_of` = the person. It does not send `restricted` or `recheck_online` yet, so masked fields are removed, which is the safe default.
+
 ### 6.4 Delegation in decisions
 
 When the request carries actors (from the token's `act` chain):
@@ -631,13 +649,18 @@ When the request carries actors (from the token's `act` chain):
 - `rule_ids` lists the deciding rules of all of them.
 - attache's capability limits (`cap`) apply on top, inside attache. Tutela never reads `cap`.
 
-### 6.5 Embedded API (`tutela-pdp`) — Phase A, planned
+### 6.5 Embedded API (`tutela-pdp`) — Phase A
 
-Rust-like signatures. The final Rust API can still change while the crates are `0.x`; the JSON shapes in this section are the contract.
+Rust signatures of `tutela-pdp` (in review, [ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)). The Rust API can still change while the crates are `0.x`; the JSON shapes in this section are the contract.
 
 ```rust
-// Phase A, planned. Crate: tutela-pdp. Not in the first commit.
+// Phase A. Crate: tutela-pdp.
 impl Pdp {
+    /// Loads (or replaces) a tenant's bundle: its compiled model and its data
+    /// at one revision. A revision lower than one loaded before is refused.
+    pub fn load(&mut self, tenant: TenantKey, rev: u64, model: Arc<Model>, data: TenantData)
+        -> Result<(), LoadError>;
+
     /// One decision for one action on one resource.
     pub fn check(&self, req: &CheckRequest) -> Result<Decision, PdpError>;
 
@@ -645,8 +668,10 @@ impl Pdp {
     /// If any request is invalid, the whole batch fails (fail closed).
     pub fn batch(&self, reqs: &[CheckRequest]) -> Result<Vec<Decision>, PdpError>;
 
-    /// A filter to list rows of one type inside SQL (6.6).
-    pub fn list_filter(&self, req: &ListFilterRequest) -> Result<ListFilter, PdpError>;
+    /// A filter to list rows of one type inside SQL (6.6). `paths` places
+    /// the scopes the filter needs.
+    pub fn list_filter<P: ScopePaths + ?Sized>(&self, req: &ListFilterRequest, paths: &P)
+        -> Result<ListFilter, PdpError>;
 
     /// Per-field verdicts for a write (6.7).
     pub fn write_check(&self, req: &WriteCheckRequest) -> Result<WriteDecision, PdpError>;
@@ -656,29 +681,32 @@ pub struct CheckRequest {
     pub tenant: TenantKey,               // from the verified token: (iss, tid)
     pub subject: Principal,              // the token's `sub`
     pub actors: Vec<Principal>,          // the token's `act` chain, current actor first; empty = no delegation
-    pub action: ActionKey,               // for example "invoice:approve"
+    pub action: ActionKey,               // for example "invoice:approve"; its type is the resource's
     pub resource: ResourceRef,
     pub fields: Option<Vec<FieldName>>,  // limit the field mask to these fields and features
     pub at_least_revision: Option<u64>,  // sent by callers after their own writes
 }
 
 pub struct ResourceRef {
-    pub type_name: TypeName,             // "invoice"
+    pub type_name: ResourceType,         // "invoice"
     pub id: ResourceId,                  // the product's own id
     pub path: Vec<PathEntry>,            // ancestors, nearest first; the last entry is the org
     pub attrs: Attrs,                    // field values that conditions read
 }
 
 pub struct PathEntry {
-    pub type_name: TypeName,
+    pub type_name: ResourceType,
     pub id: ResourceId,
 }
 ```
 
+`TenantData` is what the evaluator reads about a tenant besides the model: its orgs, role assignments, groups, private scopes and field rules at single scopes. It is `tutela-store` data (ROADMAP Phase A item 5); until the store exists, a product builds it. Its rules are in [ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits).
+
 Rules for `ResourceRef`:
 - In JSON, `type_name` is spelled `type` (as in 6.6 and section 7).
 - `id`: the product's own id, 1–256 visible ASCII characters (`%x21-7E`). Numbers are sent as strings.
-- `path`: every ancestor of the resource, **nearest first** (direct parent first), not the resource itself. The last entry is `{type_name: "org", id: "org_<uuidv7>"}`. At most 32 entries (Phase A limit, checked by the week-1 spike). A longer path is an error.
+- `path`: every ancestor of the resource, **nearest first** (direct parent first), not the resource itself. The last entry is `{type_name: "org", id: "org_<uuidv7>"}`, and no other entry is an `org`. At most 32 entries (Phase A limit, checked by the week-1 spike). A longer path is an error. An `org` itself has an empty path.
+- A resource whose path ends at an org that is not one of the tenant's orgs is denied with `tenant_mismatch`. There is no cross-tenant grant.
 - `path` and `attrs` are loaded **server-side by id** from the product's database (SDK helpers do this). They never come from the request body.
 - `attrs`: a JSON object from field name to a string, an integer, a boolean, `null`, or an array of strings.
 
@@ -697,13 +725,26 @@ pub struct ListFilterRequest {
 }
 
 pub struct ListFilter {
-    pub type_name: TypeName,
+    pub type_name: ResourceType,
     pub rev: u64,
     pub ids_in: Vec<ResourceId>,         // rows allowed by an assignment on the row itself
     pub container_in: Vec<PathEntry>,    // scopes; rows anywhere below them match
-    pub condition: Option<Condition>,    // the AST below; None means true
+    pub condition: Option<FilterExpr>,   // the AST below; None means true
+}
+
+/// Where list_filter gets the paths of the scopes it must place.
+pub trait ScopePaths {
+    /// The ancestors of one scope of one tenant, nearest first; the last is the org.
+    fn ancestors(&self, tenant: &TenantKey, scope: &PathEntry)
+        -> Result<Vec<PathEntry>, ScopePathError>;  // NotFound or Unavailable
 }
 ```
+
+**Scope paths** ([ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator) F1, [ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)). Tutela does not store the product's tree, but the filter must know how the deciding scopes nest: the scopes where the principal has an assignment, and the private scopes inside them. So `list_filter` takes a scope-path provider:
+- It is keyed by **(tenant, type, id)** and returns the ancestors, nearest first, or an error. With ids that are the same across tenants, it must answer with the asking tenant's scope.
+- `list_filter` asks it for every scope where the principal (or the person and each actor) has an assignment, and for every private scope of the tenant, each at most once per call.
+- An unknown scope, a provider that cannot answer, a path that does not end at the tenant's own org, a path with an `org` before its end, or a path longer than 32 is an error (`PdpError::ScopePath`). The caller fails closed: no rows. A missing path is never treated as "no ancestors".
+- The paths must be current. A stale path makes `list_filter` and `check` disagree, so a cache of paths needs a test that a move changes list results at once.
 
 JSON form:
 
@@ -753,7 +794,10 @@ Rules:
 - `attr` is a field name (2.1) registered for the type. A value is a JSON string, integer or boolean. Types must match: `"5"` is not `5`. A comparison with a null field is false (use `is_null`).
 - Values that depend on the principal are already filled in. For example the condition "assignee is the principal" arrives as `{"op": "eq", "attr": "assignee", "value": "user:usr_…"}`.
 - An SDK that meets an unknown `op` refuses the filter (deny, no rows). New ops come only with SDK support.
-- Limits (Phase A, set by the week-1 spike): the number of nodes, the depth, and the size of `ids_in`.
+- Limits (Phase A, [ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator)): at most 4,096 condition nodes, depth 32, 10,000 entries in `ids_in`, 10,000 in `container_in`, and 20,000 entries in total (`ids_in`, `container_in`, and every `under.scopes`, `id_in.ids` and `in.values` inside the condition: each one is a bound array element). These limits are headroom, not measurements: the week-1 spike's largest filter had 1,150 nodes, on models far smaller than the model limits. A filter that would pass a limit is an error, and the caller fails closed (no rows).
+- `tutela-pdp` returns `PdpError::FilterTooLarge` for such a filter. A valid manifest can still give one: each nesting level of a principal's deciding scopes repeats the conditions of its roles ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)).
+
+**How `tutela-pdp` builds the filter** ([ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator), "filter shape"). The deciding scopes on one row's path form a chain. So a row's deepest deciding scope is at nesting level `k` exactly when the row is at or under a level-`k` scope and not at or under any level-`k+1` scope. The condition has one term per level: "at or under the scopes of this level where some deciding role allows the action (with that role's conditions, if any) AND NOT at or under any scope of the next level". For a delegated request, the filters of the person and of each actor are joined with `and`.
 
 **How the SDK turns it into SQL** (Phase A; details in [PERMISSION-MODEL.md §12](PERMISSION-MODEL.md#12-list-filtering-in-sql)):
 - Every value is a **bound parameter** (`$1`, `$2`, …). Text is never spliced into SQL. `ids_in` is bound as one array parameter (`id = ANY($1)`).
@@ -785,35 +829,40 @@ pub struct FieldVerdict {
     pub field: FieldName,
     pub effect: Effect,
     pub needs: ActionKey,                // "<type>:write", or "<type>:manage_access" for grants_access fields
-    pub reason: String,                  // same format as Decision.reason
-    pub rule_ids: Vec<String>,
+    pub reason: Reason,                  // same format as Decision.reason
+    pub rule_ids: Vec<RuleId>,
 }
 ```
 
 Rules:
-- Each changed field needs Write on that field.
-- A field marked `grants_access` in the manifest also needs `manage_access`.
+- Each changed field needs Write on that field, for the person and every actor.
+- A field marked `grants_access` in the manifest also needs `manage_access`. It is an admin key, so an agent or a delegated token never changes such a field.
+- A name that is not a declared data field of the type (a feature, an unknown field) is denied.
 - If any field is denied, the whole write is refused (403), and the denied fields are named.
-- A move (`new_path` is set) is also checked against the boundary rules of the old and new scopes ([PERMISSION-MODEL.md §10](PERMISSION-MODEL.md#10-moving-resources-between-scopes)).
+- At least one field must change; an empty write is an error.
+- A move (`new_path` is set) is also checked against the boundary rules of the old and new scopes ([PERMISSION-MODEL.md §10](PERMISSION-MODEL.md#10-moving-resources-between-scopes)). Phase A: those boundary rules come with `tutela-store` (item 5). Until then `write_check` returns an error for a move, so a move into a looser scope cannot leak ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)).
 
 ### 6.8 Errors
 
 ```rust
-// Phase A, planned.
+// Phase A.
 pub enum PdpError {
     StaleBundle { have_rev: u64, need_rev: u64 }, // below at_least_revision or the token's rev
-    ExpiredBundle,                               // older than the max age for this action class
+    ExpiredBundle,                               // older than the max age for this action class (Phase B)
     NoBundle,                                    // no model loaded for this tenant
-    UnsupportedBundle,                           // bundle needs a newer PDP (min_pdp_version)
-    UnknownType(TypeName),
+    UnsupportedBundle,                           // bundle needs a newer PDP, min_pdp_version (Phase B)
+    UnknownType(ResourceType),
     UnknownAction(ActionKey),
     PathTooLong,
     InvalidInput { index: Option<usize>, detail: String },
+    ScopePath { scope: PathEntry, problem: ScopePathProblem }, // list_filter cannot place a scope (6.6)
+    FilterTooLarge(&'static str),                // the list filter would pass a limit (6.6)
 }
 ```
 
 - An error is **never** an allow. The caller fails closed.
-- In the remote API, `StaleBundle`, `ExpiredBundle`, `NoBundle` and `UnsupportedBundle` become HTTP 503. The others become 400.
+- In the remote API, `StaleBundle`, `ExpiredBundle`, `NoBundle` and `UnsupportedBundle` become HTTP 503. The others become 400. The mapping of `ScopePath` and `FilterTooLarge` comes with the search endpoints (Phase B).
+- `ExpiredBundle` and `UnsupportedBundle` need signed bundles (Phase B); the Phase A evaluator never returns them.
 - A field the model does not know is not an error: it is masked, as if secret.
 
 **Bundles** (Phase B). The PDP loads a signed bundle per (tenant, rev). Each bundle carries the tenant key, `rev`, `issued_at`, `expires_at`, a schema version and a `min_pdp_version`. The PDP refuses a `rev` lower than the highest it has seen, an expired bundle, and a bundle with a bad signature. The max bundle age is set per action class; writes and admin actions fail closed sooner. The bundle body format is fixed in Phase B.

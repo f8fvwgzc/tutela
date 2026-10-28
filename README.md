@@ -152,6 +152,7 @@ Dependencies point down only: products → onto-intelli / texc-symphony → atta
 | Blocking CI (fmt, clippy, tests, docs, cargo-deny, cargo-audit) | In the first commit |
 | Week-1 spike with go/no-go numbers | Next (Phase A) |
 | Model language and compiler (`tutela-pdp`, module `model`; format in [docs/MANIFEST.md](docs/MANIFEST.md)) | In review (Phase A) |
+| Evaluator (`tutela-pdp`: `check`, `batch`, `list_filter`, `write_check`; [ADR-0013](docs/DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)) | In review (Phase A) |
 | Everything else | Planned, see [docs/ROADMAP.md](docs/ROADMAP.md) |
 
 Phases: **A** packages and library mode, **B** `tutelad` service and Tutela Console, **C** own login server (optional), **D** hardening. Honest size for Tutela alone: about 35–45 person-weeks for one strong engineer.
