@@ -42,7 +42,8 @@ tutela/
 ├── crates/
 │   ├── tutela-contracts/    wire types: ids, claims, Decision, audit.v1, event envelope   now (wire types)
 │   │                        (protos tutela.authz.v1, tutela.admin.v1: B)
-│   ├── tutela-pdp/          embedded decision engine: check, batch, list_filter,          A
+│   ├── tutela-pdp/          model compiler for tutela.resources.toml                      now (compiler)
+│   │                        embedded decision engine: check, batch, list_filter,          A
 │   │                        write_check
 │   ├── tutela-store/        Postgres schema and migrations: bindings, field rules, groups A
 │   ├── tutela-sdk/          token verifier, axum and tonic layers, decision cache         A
@@ -75,6 +76,7 @@ The files in `docs/` are the source of truth for every contract: APIs, proto pac
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Parts, crate jobs, where Tutela sits |
 | [docs/PERMISSION-MODEL.md](docs/PERMISSION-MODEL.md) | Levels, inheritance, field rules, delegation |
 | [docs/CONTRACTS.md](docs/CONTRACTS.md) | APIs, protos, claims, events, audit |
+| [docs/MANIFEST.md](docs/MANIFEST.md) | The `tutela.resources.toml` format, compiler checks, diff classes |
 | [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) | Threats and answers |
 | [docs/INTEGRATION.md](docs/INTEGRATION.md) | How cores and products adopt Tutela |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Phases and exit checks |

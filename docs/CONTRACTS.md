@@ -195,7 +195,7 @@ Rules:
 
 ## 2. Permission keys
 
-**First commit:** all grammars of section 2 are in `tutela-contracts`. The manifest that declares types, fields, actions and UI keys (`tutela.resources.toml`) is Phase A.
+**First commit:** all grammars of section 2 are in `tutela-contracts`. The manifest that declares types, fields, actions and UI keys (`tutela.resources.toml`) is Phase A; its format v1 is in [MANIFEST.md](MANIFEST.md), and its compiler is in `tutela-pdp`.
 
 ### 2.1 Names
 
@@ -246,9 +246,9 @@ Exactly one `:`. Example: `invoice:approve`. At most 129 characters.
 
 Notes:
 - [PERMISSION-MODEL.md §5.2](PERMISSION-MODEL.md#52-actions) explains "create" and "update" in words. On the wire both are `write` (create is `write` on the container). A product that needs `archive` apart from `delete` declares a custom action `archive` with level `full`.
-- Other owner-only admin actions use the same grammar (`<type>:<name>`). Proposed names, fixed in Phase A: `manage_fields`, `manage_boundaries`, `manage_agents`, `approve_move`, `read_audit` ([PERMISSION-MODEL.md §5.3](PERMISSION-MODEL.md#53-owner-only-admin-actions-blueprint)). The name is `read_audit`, not `audit.read`, because a `.` marks a field key.
+- Other owner-only admin actions use the same grammar (`<type>:<name>`). The names are fixed by the manifest format ([MANIFEST.md §6](MANIFEST.md#6-admin-keys)): `manage_fields`, `manage_boundaries`, `manage_agents`, `approve_move`, `read_audit` ([PERMISSION-MODEL.md §5.3](PERMISSION-MODEL.md#53-owner-only-admin-actions-blueprint)). A custom action may not use these names. The name is `read_audit`, not `audit.read`, because a `.` marks a field key.
 
-**Custom actions.** A product declares them per type in `tutela.resources.toml`, for example `contract:approve`. Each custom action names the level it needs (`read`, `write` or `full`), or says it is owner-only. A custom action may also need an explicit grant on the role ([PERMISSION-MODEL.md](PERMISSION-MODEL.md)). A custom action name must not be one of the built-in names above.
+**Custom actions.** A product declares them per type in `tutela.resources.toml` ([MANIFEST.md §4](MANIFEST.md#4-resource-types)), for example `contract:approve`. Each custom action names the level it needs (`read`, `write` or `full`), or says it is owner-only. A custom action may also need an explicit grant on the role ([PERMISSION-MODEL.md](PERMISSION-MODEL.md)). A custom action name must not be one of the built-in names above.
 
 ### 2.4 Permission keys
 
@@ -627,7 +627,7 @@ When the request carries actors (from the token's `act` chain):
 - Tutela evaluates the person and each actor. Each agent is also limited by its `ai_reach` ([PERMISSION-MODEL.md §11](PERMISSION-MODEL.md)).
 - `level` = the `min` of all of them.
 - `field_mask.read` and `field_mask.write` = the intersection of all of them.
-- `effect` = allow only if the action is allowed for **every** one of them. Custom grants count only if all hold them. Admin actions are never allowed through delegation.
+- `effect` = allow only if the action is allowed for **every** one of them. A custom action counts only if it is in every actor's allowed-action set ([PERMISSION-MODEL.md §6.3, §7.1 step 7](PERMISSION-MODEL.md#63-role-assignments)); raw grants are never pooled or intersected. Admin keys and owner-only custom actions are never allowed through delegation.
 - `rule_ids` lists the deciding rules of all of them.
 - attache's capability limits (`cap`) apply on top, inside attache. Tutela never reads `cap`.
 
@@ -1319,7 +1319,7 @@ When a credential format or key changes:
 |---|---|---|---|
 | 1 | The event that pushes the signing-key `kid` deny-list to SDKs ([THREAT-MODEL.md](THREAT-MODEL.md), TM-15). It is not in the v1 event list yet. | Add `tutela.signing_key.revoked.v1` (additive), sent over SSE and webhooks. | Phase B |
 | 2 | The final audience name of the remote check API. | `tutela-authz`. | Phase B |
-| 3 | The final names of admin actions and obligation kinds (2.3, 6.3). | As written in this file. | Phase A |
+| 3 | The final names of the obligation kinds (6.3). The admin action names (2.3) are **fixed** ([MANIFEST.md §6](MANIFEST.md#6-admin-keys), [ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)). | As written in this file. | Phase A |
 | 4 | The env name for the previous key pepper. | `TUTELA_KEY_PEPPER_PREVIOUS`. | Phase A |
 | 5 | Limits of `list_filter`: AST nodes, depth, size of `ids_in`; the ancestors column shape. | **Answered** by [ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator): limits in §6.6; an array of ancestor ids with a GIN index. | Week-1 spike |
 | 6 | The exact AuthZEN 1.0 page field names, and the retry schedule for webhooks. | Follow the final AuthZEN 1.0 text; at least 24 hours of retries. | Phase B |

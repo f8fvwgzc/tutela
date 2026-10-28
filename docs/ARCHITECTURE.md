@@ -141,6 +141,10 @@ The shared language. Every other package and every consumer uses these types.
 A small native Rust evaluator over the permission tables. No network calls.
 
 - API: `Pdp::check`, `Pdp::batch`, `Pdp::list_filter`, `Pdp::write_check`.
+- It also holds the model compiler (module `model`): it reads
+  `tutela.resources.toml` ([MANIFEST.md](MANIFEST.md)), refuses anything the
+  rules do not allow, and classifies a model change as narrowing, neutral or
+  widening. The compiler is built first; the evaluator comes next.
 - It resolves the effective level **once per (principal, scope)**. From the
   same code it produces both the decision and the SQL list filter
   (`ids_in` + `container_in` + condition AST; all values are bound

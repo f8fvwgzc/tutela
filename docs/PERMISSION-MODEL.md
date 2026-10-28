@@ -171,7 +171,7 @@ On the wire an action is an action key, `<type>:<action>`. Every type has four b
 | `write` on the container (create an item inside it) | Write on the container | The new item starts with the parent's rules. |
 | `write` on the item (update it) | Write on the item, plus Write on **each field** that changes | Checked per field by `Pdp::write_check`. Fields marked `grants_access` (for example an assignee or a label used by a condition) also need `manage_access`. |
 | `delete` | Full | Blueprint decision: Full includes delete and archive for issues, tasks, files and messages. A product that needs `archive` apart from `delete` declares it as a custom action with level Full. |
-| Custom, for example `contract:approve` | The level the type declares (for example Write) **and** the grant on the role | Declared in `tutela.resources.toml`. |
+| Custom, for example `contract:approve` | The level the type declares (for example Write) **and** the grant on the role | Declared in `tutela.resources.toml`. An owner-only custom action (`needs = "owner"`) needs **Full and** the grant ([MANIFEST.md §4](MANIFEST.md#4-resource-types)). |
 | Feature use, for example asking the AI | The feature level (`@ai` Write) | |
 | Admin actions | An admin key (see 5.3) | Never implied by Full. |
 
@@ -179,9 +179,9 @@ Anything the model does not know is denied: an unknown type, an undeclared actio
 
 ### 5.3 Owner-only admin actions (Blueprint)
 
-"Full is not configure." These sit above the four levels and are never given by default. On the wire each one is an action key, `<type>:<name>`. `manage_access` is already a built-in action in `tutela-contracts`. The other names are proposals; they are fixed in Phase A ([CONTRACTS.md §2.3](CONTRACTS.md#23-action-keys)).
+"Full is not configure." These sit above the four levels and are never given by default. On the wire each one is an action key, `<type>:<name>`. `manage_access` is already a built-in action in `tutela-contracts`. The names are fixed in [MANIFEST.md §6](MANIFEST.md#6-admin-keys) ([CONTRACTS.md §2.3](CONTRACTS.md#23-action-keys)).
 
-| Blueprint wording | Admin key (proposed) |
+| Blueprint wording | Admin key |
 |---|---|
 | Change roles, invite people | `manage_access` |
 | Set field protection | `manage_fields` |
@@ -191,8 +191,8 @@ Anything the model does not know is denied: an unknown type, an undeclared actio
 | Read the audit log | `read_audit` (blueprint decision: org admins for everything, scope owners for their own scope) |
 
 The seeded **Owner** role holds these keys at the scope where it is assigned. A tenant can build other admin roles. Two rules (New):
-- An **agent can never hold an admin key** or the Owner role.
-- Admin keys are never passed through delegation (see [11.3](#113-the-overlap-rule)).
+- An **agent can never hold an admin key, an owner-only custom action** or the Owner role. A role with an admin key is also never given to a **group**, because groups may hold agents ([ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)).
+- Admin keys and owner-only custom actions are never passed through delegation (see [11.3](#113-the-overlap-rule)).
 
 ---
 
@@ -200,7 +200,7 @@ The seeded **Owner** role holds these keys at the scope where it is assigned. A 
 
 ### 6.1 Seeded roles (Blueprint)
 
-Every tenant starts with these roles. Tenants can edit them and add their own.
+Every tenant starts with these roles. A manifest may replace Member, Viewer, Guest and Agent, and add its own roles. The Owner role is fixed and has no conditions ([MANIFEST.md §5.1](MANIFEST.md#51-seeded-roles), [ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)).
 
 | Role | Default levels | Admin keys | Notes |
 |---|---|---|---|
@@ -208,7 +208,7 @@ Every tenant starts with these roles. Tenants can edit them and add their own.
 | **Member** | Full | No | People added to a new team or project. |
 | **Viewer** | Read | No | |
 | **Guest** | Read, only on what they are invited to | No | Blueprint example: guests see only issues labelled `client-visible` (a condition). |
-| **Agent** | Read; Write only on items assigned to it (a condition) | Never | For AI agents. See [11](#11-ai-agents). |
+| **Agent** | Read. Never an admin key or an owner-only custom action. Write only on items assigned to it is a condition on a principal field, so the product declares it (the seeded role has no condition; see [MANIFEST.md §5.1](MANIFEST.md#51-seeded-roles)). | Never | For AI agents. See [11](#11-ai-agents). |
 
 The **org Owner** (the blueprint's workspace owner) is special (Blueprint guardrail): an org Owner keeps Full access everywhere in the org, also inside private scopes. Opening a hidden field this way needs a short reason and is always written to the audit log. This break-glass path is for people only. It never works through an agent (New).
 
@@ -218,7 +218,7 @@ A tenant defines a role as a list of levels and grants. In Phase A it comes from
 
 A role entry can set a level for:
 - a resource type (`contract = "write"`);
-- a single field of a type (`"contract.title" = "read"`). If the role does not set a field, the field uses the role's level for the type;
+- a single field of a type (`"contract.title" = "read"`). If the role does not set a field, the field uses the role's item level **after conditions** (step 4), and a field is never above that item level;
 - a feature of a type (`"contract.@ai" = "write"`);
 - custom action grants (`contract:approve`) and admin keys.
 
@@ -226,7 +226,7 @@ A role entry can set a level for:
 
 A role assignment gives one principal or one group one role at one scope. There is at most one direct assignment per principal per scope.
 
-Two assignments can meet at the same scope: one direct, one or more through groups. Proposed rule (New, see [Open points](#19-open-points)): **the direct assignment wins**; if there is none, the **highest** of the group assignments wins. This lets an owner narrow one person who sits in a wide group.
+Two assignments can meet at the same scope: one direct, one or more through groups. Proposed rule (New, see [Open points](#19-open-points)): **the direct assignment wins**; this lets an owner narrow one person who sits in a wide group. If there is none, **every** group role at that scope counts: each role is evaluated on its own (its own conditions and field rules), and the results are combined **component-wise**: the highest item level, and the highest level per field and feature. A **custom action** is allowed if **any** deciding role allows it with its own item level after its own conditions (`allows_custom_at`); raw grants are never pooled, so a grant cannot escape the conditions of the role that holds it. **Admin keys** are the union of the deciding roles' keys. The model diff relies on this ([ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)).
 
 ### 6.4 Groups (New)
 
@@ -259,20 +259,22 @@ Inputs: the verified token, the action, the resource `{type, id}` and, for write
 **Step 3. Walk the parent path. The closest assignment wins. A private scope stops inheritance.** (Blueprint)
 - If the principal is the org Owner, the level is Full. Go to step 4. (Blueprint guardrail; people only.)
 - Otherwise start at the resource itself and walk up: resource → parent → … → org.
-- At each node, look for an assignment for the principal: direct first, then through its groups (see [6.3](#63-role-assignments)).
-- **The first node with an assignment wins.** Its role is the deciding role. Stop walking.
+- At each node, look for assignments for the principal: direct first, then through its groups (see [6.3](#63-role-assignments)).
+- **The first node with an assignment wins.** Its roles are the deciding roles: the direct one, or else every group role there. Stop walking.
 - If the node is **private** and has no assignment for the principal, stop: nothing above it counts. The level is None.
 - If you reach the org with no assignment, the level is None. Default deny.
-- The item level is the deciding role's level for this resource type.
+- An assignment whose role the model no longer has, or whose role may no longer be given to that kind of subject (`assignable_to`), still **decides its node**: the walk stops there, and that role gives None and no grants. So removing a role, or narrowing who may hold it, only takes access away.
+- For each deciding role, the item level is that role's level for this resource type.
 
 **Step 4. Apply conditions.** (Blueprint)
-- The deciding role may carry conditions at that scope, for example `resource.assignee == principal` or `"client-visible" in resource.labels`.
+- Each deciding role may carry conditions at that scope, for example `resource.assignee == principal` or `"client-visible" in resource.labels`. Each role's own conditions lower only that role's item level.
 - Each condition has a level to use when it is false (for example Write when true, Read when false). That level is never higher than the role's level. Conditions only narrow.
 - Conditions come from a small list of **vetted templates** that compile both to Rust and to SQL. A model with anything else is rejected when it is compiled, not at request time.
+- A condition that names a group that does not exist is **false as a whole**, even under `not` (fail closed): the level drops to its `else` level ([MANIFEST.md §8](MANIFEST.md#8-conditions)).
 
 **Step 5. Field level = min(role level, closest field rule).** (Blueprint)
 - For each field and feature of the type:
-  - the **role level** is the role's level for that field if the role sets one, else the item level from step 4;
+  - the **role level** comes from one function the diff and the evaluator share (`effective_field_level`, [ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)). For a **data field**: the role's level for that field if the role sets one, else the item level from step 4, and **never above the item level from step 4** (a condition that drops the item to Read also drops its fields). For a **feature**: None when the item level is None; else the role's level for the feature if it sets one, else the item level (a feature may be above the item level: a Viewer may ask the AI). A field or feature the type does not declare is None;
   - the **closest field rule** is found by walking the same path upward: the first scope with a rule for this field wins. At one scope, a rule for this exact role wins over a rule for all roles;
   - **field level = the lower of the two.** If no rule exists anywhere, the field level is the role level.
 - A field marked confidential or secret gets an "all roles → None" rule at the org root when it is registered (Correction). So it starts hidden.
@@ -288,13 +290,18 @@ These can only lower the result, never raise it:
 **Step 7. Delegation overlap for agents.** (Correction)
 - Only for delegated tokens (`act` present).
 - Run steps 3–6 **again for the agent** with its own assignments. Also apply its `ai_reach`: the agent may only touch resources inside the scope of the work (`project`), or that scope's parent (`team`). Never the org root, never another branch.
-- **Overlap:** item level = min(person, agent). Each field level = min(person, agent). Custom grants = only those both hold. Admin keys = none.
+- **Overlap:** item level = min(person, agent). Each field level = min(person, agent). Custom actions = the **intersection of the allowed-action sets** of the person and the agent (each set as in [6.3](#63-role-assignments): actions some deciding role allows at its own item level after its own conditions), never raw grants. Admin keys and owner-only custom actions = none.
 - If the act chain is nested (an agent acting for an agent acting for a person), every actor must be allowed, and the chain holds at most 4 actors.
 - The person must be the one who caused the work and must still be enabled.
 - attache's capability limits (`cap` in the token) cap the rest. Tutela does not read `cap`; attache enforces tools, hosts and models on its side. Both must allow.
 
 **Step 8. Decision.**
-- **effect** = allow if the item level ≥ the action's minimum level, any required custom grant is held, and (for writes) every changed field passes `write_check`. Otherwise deny.
+- **effect** = allow if:
+  - for a built-in action: the item level ≥ the action's minimum level;
+  - for a custom action: it is in the **allowed-action set** of [6.3](#63-role-assignments) (some deciding role allows it with `allows_custom_at` at its own item level after its own conditions), and for a delegated token in the intersection of step 7;
+  - for an admin action: a key from the union of the deciding roles' admin keys (never through delegation);
+  - and, for writes, every changed field passes `write_check`.
+- Otherwise deny.
 - Build the decision object (7.3).
 - Write an audit event for every deny, every admin change, every move, every hidden-field opening and every export (Blueprint: "every change, and every denied attempt").
 
@@ -313,21 +320,30 @@ check(token, action, res_ref):
   d = evaluate(p.sub, res, model)                          # steps 3-6
   if p.act:                                                # step 7
       a = evaluate(p.act.sub, res, model, ai_reach=on)
-      d = overlap(d, a)                                    # min per item, per field
+      d = overlap(d, a)                                    # min per item and field;
+                                                           # intersection of allowed actions; no admin keys
   return decide(d, action)                                 # step 8
 
 evaluate(principal, res, model):
-  if is_org_owner(principal): role = Owner; level = Full    # people only
+  if is_org_owner(principal): roles = [Owner]                # people only
   else:
-      level = None
+      roles = []
       for node in res.path:                                # resource ... org
-          role = assignment(principal, node)               # direct, then groups
-          if role: level = role.level(res.type); break
+          roles = assignments(principal, node)             # direct, else all group roles
+          if roles: break
           if node.private: break                           # stops inheritance
-  level  = apply_conditions(role, res, principal, level)   # can only lower
-  fields = { f: min(role.level(f) or level, closest_field_rule(f, role, res.path))
-             for f in res.type.fields_and_features }
-  return guardrails(level, fields)                         # can only lower
+  results = []
+  for role in roles:                                       # each role on its own
+      level  = apply_conditions(role, res, principal, role.level(res.type))  # only lowers
+      fields = { f: min(effective_field_level(role, f, level),   # capped by `level`
+                        closest_field_rule(f, role, res.path))   # for data fields
+                 for f in res.type.fields_and_features }
+      actions = { a for a in res.type.custom_actions
+                  if allows_custom_at(role, a, level) }    # this role's own level
+      results.append((level, fields, actions, role.admin_keys))
+  level, fields, actions, admin = combine(results)         # max per item, field, feature;
+                                                           # union of allowed actions and admin keys
+  return guardrails(level, fields, actions, admin)         # can only lower
 ```
 
 The engine resolves the effective level **once per (principal, scope)** and caches it for that revision. The week-1 spike target is `check` p99 < 1 ms in-process with a large per-tenant model.
@@ -417,7 +433,7 @@ AI is the easiest place to leak data by accident, because a model will repeat an
 
 - Each agent has its own identity (`agent:agt_<uuidv7>`), shows up in member lists, and is added to a scope like a person, with a role (usually the seeded Agent role).
 - attache owns the agent registry and runtime. attache creates and disables agent principals through `tutela.admin.v1`. When attache quarantines an agent, the principal is disabled and its tokens stop working (see [INTEGRATION.md](INTEGRATION.md)).
-- An agent never holds the Owner role or an admin key (New).
+- An agent never holds the Owner role, an admin key or an owner-only custom action (New).
 
 ### 11.2 `ai_reach` (Blueprint)
 
@@ -443,7 +459,7 @@ An agent acting for a person **always** gets the overlap (Correction, see [ADR-0
 | Agent-to-agent work | The person at the start of the chain; every agent in the chain must also be allowed | New |
 
 More rules:
-- Per item **and per field**: min(person, agent). Custom grants: only those both hold. Admin keys: never.
+- Per item **and per field**: min(person, agent). Custom actions: the intersection of the person's and the agent's allowed actions (never raw grants). Admin keys and owner-only custom actions: never.
 - **Hidden fields are removed before the prompt is built.** The model never receives them, so it cannot repeat them. Filtering the answer afterwards is not reliable (Blueprint).
 - When the person is **disabled**, their scheduled work **stops**. The next run cannot get a delegated token for a disabled person, and the `tutela.principal.disabled.v1` event tells schedulers to stop (Correction).
 - The person's `epoch` is re-checked at every token exchange, so a revoked session ends long runs at the next hop (New).
@@ -496,7 +512,7 @@ Loading 500 issues and dropping the hidden ones afterwards is slow. Worse, the *
 
 ### 12.2 What `Pdp::list_filter` returns
 
-`Pdp::list_filter(principal, action)` comes from the **same evaluator** as `check()`. The action key names the type to list, for example `contract:read`. It returns a filter with three parts:
+`Pdp::list_filter(principal, action)` comes from the **same evaluator** as `check()`. The action key names the type to list, for example `contract:read`. For a custom action, a row matches only where some deciding role allows it (§6.3). It returns a filter with three parts:
 
 | Part | What it holds |
 |---|---|
@@ -594,7 +610,7 @@ The blueprint lists the places that each need **their own test before launch**. 
 A product declares UI keys in `tutela.resources.toml`. **Each key names the actions and the API routes behind it.** This stops the classic mistake: hiding the Approve button but forgetting the check on `POST /approve`.
 
 ```toml
-# tutela.resources.toml (draft shape; the format is fixed in Phase A)
+# tutela.resources.toml (format v1: MANIFEST.md)
 [ui."contracts.approve_button"]
 actions     = ["contract:approve"]
 routes      = ["POST /api/contracts/{id}/approve"]
@@ -748,13 +764,13 @@ People and agents:
 
 Roles that matter here:
 
-| Role | `contract` | Single fields set by the role | `invoice` | Features | Grants |
+| Role | `contract` | Single fields set by the role | `invoice` | Features | Allowed custom actions |
 |---|---|---|---|---|---|
 | Owner (seeded) | Full | — | Full | Full | admin keys at its scope |
 | Member (seeded) | Full | — | Full | Full | — |
-| Viewer (seeded; Kestrel lets viewers ask the AI) | Read | — | Read | `@chat` Read, `@ai` Write | — |
+| Viewer (declared by Kestrel; it replaces the seeded Viewer, so viewers may ask the AI) | Read | — | Read | `@chat` Read, `@ai` Write | — |
 | **Legal reviewer** (tenant-defined) | Write | `title`, `counterparty`, `assignee`: Read | Read | `@chat` Write, `@ai` Write | `contract:approve` |
-| Agent (seeded) | Read, or Write when assigned (condition C-1) | — | Read | — | — |
+| Agent (declared by Kestrel; it replaces the seeded Agent, which is Read only) | Write, narrowed to Read by condition C-1 when not assigned | — | Read | — | — |
 
 Rules:
 
@@ -779,7 +795,7 @@ Rules:
 | 5. Fields | `title`, `counterparty`, `assignee`: role sets Read → Read. `status`, `review_notes`: Write. `budget`: role level Write; closest rule: matter has FR-3 (Owner) and FR-4 (Agent), neither matches; org root FR-1 (all roles → None) → **None**. | budget hidden |
 | 6. Guardrails | Nothing lowers it further. | — |
 | 7. Delegation | Not an agent token. | skipped |
-| 8. Decision | **allow** `read`. Read mask: title, counterparty, status, review_notes, assignee. Write mask: status, review_notes. Mina also holds `contract:approve`. | |
+| 8. Decision | **allow** `read`. Read mask: title, counterparty, status, review_notes, assignee. Write mask: status, review_notes. `contract:approve` is allowed (Legal reviewer allows it at Write). | |
 
 In the UI: the Budget cell shows "Restricted" (`<Field>`), and the Approve button is shown (`<Can>`).
 
@@ -897,7 +913,7 @@ The first six table names come from the blueprint. The last five are new.
 | `field_registry` | Blueprint | `tenant_id`, `app`, `item_type`, `field_key`, `label`, `sensitivity` (public, internal, confidential, secret), `grants_access`, `created_by` (manifest, console, onto import, agent), `created_at` | Every field of every type. `grants_access` marks fields that conditions read (changing them needs `manage_access`). |
 | `audit_event` | Blueprint (follows `audit.v1`) | `tenant_id`, `id` (UUIDv7), `time` (blueprint `at`), `org_id`, `actor_kind`, `actor_id`, `on_behalf_of`, `action`, `resource_type` + `resource_id` (blueprint `target`), `decision_effect`, `rule_ids`, `rev`, `outcome`, `reason`, `before_digest`, `after_digest` (blueprint `before`, `after`), `trace_id`, `request_id`, `labels`, `seq`, `prev_hash`, `hash` | Append-only: UPDATE and DELETE are refused. Hash-chained. Copies can go to attache's evidence ledger. See [CONTRACTS.md](CONTRACTS.md). |
 | `resource_type` | New | `tenant_id`, `app`, `key`, `label`, `parent_types`, `container`, `starts` (open, private), `features`, `actions` (key → min level + grant key), `source` (manifest, console, onto), `rev` | Replaces the blueprint's fixed tree. Each app has its own namespace. |
-| `role` | New | `tenant_id`, `id`, `app` (null = tenant-wide), `key`, `name`, `kind` (seeded, custom), `levels` (type, `type.field` and `type.@feature` → level), `grants` (custom actions, admin keys), `assignable_to`, `rev` | A role with admin keys cannot be assigned to an agent. |
+| `role` | New | `tenant_id`, `id`, `app` (null = tenant-wide), `key`, `name`, `kind` (seeded, custom), `levels` (type, `type.field` and `type.@feature` → level), `grants` (custom actions, admin keys), `assignable_to`, `rev` | A role with admin keys or owner-only custom actions cannot be assigned to an agent or a group. |
 | `group` (+ `group_member`) | New | `group`: `tenant_id`, `id`, `org_id`, `key`, `name`. `group_member`: `tenant_id`, `group_id`, `member_kind`, `member_id`, `added_by` | Groups may contain groups. A closure table makes membership one lookup. |
 | `ui_component` | New | `tenant_id`, `app`, `key`, `actions`, `fields`, `routes` (method + path), `when_denied` (show, disable, hide, readonly), `reason`, `rev` | Source for `tutela codegen` (React constants and route guards). |
 | `model_revision` | New | `tenant_id`, `rev`, `parent_rev`, `app`, `author`, `approvers`, `diff`, `class` (narrowing, neutral, widening), `impact`, `state` (draft, proposed, published, rejected), `created_at`, `published_at`, `bundle_digest`, `signature` | One row per model change. `rev` is the tenant revision at publish; the tenant revision goes up in the same transaction as every change, including binding changes (which are recorded in `audit_event`, not here). |
@@ -910,10 +926,10 @@ These are not decided yet. Each has a proposal so work can start. Final answers 
 
 | # | Question | Proposal | When |
 |---|---|---|---|
-| 1 | A direct assignment and a group assignment at the same scope: which wins? | The direct one; else the highest group one. | Phase A |
+| 1 | A direct assignment and a group assignment at the same scope: which wins? | The direct one; else every group role there counts, each with its own conditions and field rules, combined component-wise: the highest item level, the highest level per field and feature, a custom action allowed when any of the roles allows it with its own item level (never a pool of raw grants), and the union of admin keys (§6.3, §7.1; the model diff relies on this, [ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)). Closed when the evaluator lands. | Phase A |
 | 2 | Where does a library-mode project (no `tutelad`) get an approval token for a widening diff? | A token signed by a tenant admin's key, bound to the diff digest. | Phase A |
 | 3 | How is a reader's clearance per label stored, for labelled output? | Treat each label like a field of that sensitivity in the scope, with the same defaults. | Phase A |
 | 4 | The ancestors column: array, `ltree` or closure table? Maximum path depth? | **Decided** ([ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator)): an array of ancestor ids, nearest first, with a GIN index. Depth cap 32. `bigint[]` was measured; the element type (for example UUID) and the query plan are measured again under ADR-0011 F2. | Week-1 spike |
 | 5 | Default max bundle age per action class. | Reads longer, writes shorter, revocation-sensitive actions online. Numbers measured in Phase B. | Phase B |
-| 6 | The list of condition templates in v1. | equals, in-list, attribute == principal, principal in group; and, or, not. | Phase A |
-| 7 | The final names of admin keys and obligation kinds. | As in [5.3](#53-owner-only-admin-actions-blueprint) and [7.3](#73-the-decision-object). | Phase A, in `tutela-contracts` |
+| 6 | The list of condition templates in v1. | **Fixed** in [MANIFEST.md §8](MANIFEST.md#8-conditions) ([ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)): `eq`, `in`, `contains`, `is_principal`, `in_group`; `and`, `or`, `not`. | Phase A |
+| 7 | The final names of admin keys and obligation kinds. | Admin keys: **fixed** as in [5.3](#53-owner-only-admin-actions-blueprint) ([MANIFEST.md §6](MANIFEST.md#6-admin-keys), [ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)). Obligation kinds: as in [7.3](#73-the-decision-object), still open. | Phase A, in `tutela-contracts` |
