@@ -191,8 +191,8 @@ Anything the model does not know is denied: an unknown type, an undeclared actio
 | Read the audit log | `read_audit` (blueprint decision: org admins for everything, scope owners for their own scope) |
 
 The seeded **Owner** role holds these keys at the scope where it is assigned. A tenant can build other admin roles. Two rules (New):
-- An **agent can never hold an admin key** or the Owner role. A role with an admin key is also never given to a **group**, because groups may hold agents ([ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)).
-- Admin keys are never passed through delegation (see [11.3](#113-the-overlap-rule)).
+- An **agent can never hold an admin key, an owner-only custom action** or the Owner role. A role with an admin key is also never given to a **group**, because groups may hold agents ([ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)).
+- Admin keys and owner-only custom actions are never passed through delegation (see [11.3](#113-the-overlap-rule)).
 
 ---
 
@@ -208,7 +208,7 @@ Every tenant starts with these roles. A manifest may replace Member, Viewer, Gue
 | **Member** | Full | No | People added to a new team or project. |
 | **Viewer** | Read | No | |
 | **Guest** | Read, only on what they are invited to | No | Blueprint example: guests see only issues labelled `client-visible` (a condition). |
-| **Agent** | Read. Write only on items assigned to it is a condition on a principal field, so the product declares it (the seeded role has no condition; see [MANIFEST.md §5.1](MANIFEST.md#51-seeded-roles)). | Never | For AI agents. See [11](#11-ai-agents). |
+| **Agent** | Read. Never an admin key or an owner-only custom action. Write only on items assigned to it is a condition on a principal field, so the product declares it (the seeded role has no condition; see [MANIFEST.md §5.1](MANIFEST.md#51-seeded-roles)). | Never | For AI agents. See [11](#11-ai-agents). |
 
 The **org Owner** (the blueprint's workspace owner) is special (Blueprint guardrail): an org Owner keeps Full access everywhere in the org, also inside private scopes. Opening a hidden field this way needs a short reason and is always written to the audit log. This break-glass path is for people only. It never works through an agent (New).
 
@@ -290,7 +290,7 @@ These can only lower the result, never raise it:
 **Step 7. Delegation overlap for agents.** (Correction)
 - Only for delegated tokens (`act` present).
 - Run steps 3–6 **again for the agent** with its own assignments. Also apply its `ai_reach`: the agent may only touch resources inside the scope of the work (`project`), or that scope's parent (`team`). Never the org root, never another branch.
-- **Overlap:** item level = min(person, agent). Each field level = min(person, agent). Custom actions = the **intersection of the allowed-action sets** of the person and the agent (each set as in [6.3](#63-role-assignments): actions some deciding role allows at its own item level after its own conditions), never raw grants. Admin keys = none.
+- **Overlap:** item level = min(person, agent). Each field level = min(person, agent). Custom actions = the **intersection of the allowed-action sets** of the person and the agent (each set as in [6.3](#63-role-assignments): actions some deciding role allows at its own item level after its own conditions), never raw grants. Admin keys and owner-only custom actions = none.
 - If the act chain is nested (an agent acting for an agent acting for a person), every actor must be allowed, and the chain holds at most 4 actors.
 - The person must be the one who caused the work and must still be enabled.
 - attache's capability limits (`cap` in the token) cap the rest. Tutela does not read `cap`; attache enforces tools, hosts and models on its side. Both must allow.
@@ -433,7 +433,7 @@ AI is the easiest place to leak data by accident, because a model will repeat an
 
 - Each agent has its own identity (`agent:agt_<uuidv7>`), shows up in member lists, and is added to a scope like a person, with a role (usually the seeded Agent role).
 - attache owns the agent registry and runtime. attache creates and disables agent principals through `tutela.admin.v1`. When attache quarantines an agent, the principal is disabled and its tokens stop working (see [INTEGRATION.md](INTEGRATION.md)).
-- An agent never holds the Owner role or an admin key (New).
+- An agent never holds the Owner role, an admin key or an owner-only custom action (New).
 
 ### 11.2 `ai_reach` (Blueprint)
 
@@ -459,7 +459,7 @@ An agent acting for a person **always** gets the overlap (Correction, see [ADR-0
 | Agent-to-agent work | The person at the start of the chain; every agent in the chain must also be allowed | New |
 
 More rules:
-- Per item **and per field**: min(person, agent). Custom actions: the intersection of the person's and the agent's allowed actions (never raw grants). Admin keys: never.
+- Per item **and per field**: min(person, agent). Custom actions: the intersection of the person's and the agent's allowed actions (never raw grants). Admin keys and owner-only custom actions: never.
 - **Hidden fields are removed before the prompt is built.** The model never receives them, so it cannot repeat them. Filtering the answer afterwards is not reliable (Blueprint).
 - When the person is **disabled**, their scheduled work **stops**. The next run cannot get a delegated token for a disabled person, and the `tutela.principal.disabled.v1` event tells schedulers to stop (Correction).
 - The person's `epoch` is re-checked at every token exchange, so a revoked session ends long runs at the next hop (New).
@@ -512,7 +512,7 @@ Loading 500 issues and dropping the hidden ones afterwards is slow. Worse, the *
 
 ### 12.2 What `Pdp::list_filter` returns
 
-`Pdp::list_filter(principal, action)` comes from the **same evaluator** as `check()`. The action key names the type to list, for example `contract:read`. It returns a filter with three parts:
+`Pdp::list_filter(principal, action)` comes from the **same evaluator** as `check()`. The action key names the type to list, for example `contract:read`. For a custom action, a row matches only where some deciding role allows it (§6.3). It returns a filter with three parts:
 
 | Part | What it holds |
 |---|---|
@@ -764,7 +764,7 @@ People and agents:
 
 Roles that matter here:
 
-| Role | `contract` | Single fields set by the role | `invoice` | Features | Grants |
+| Role | `contract` | Single fields set by the role | `invoice` | Features | Allowed custom actions |
 |---|---|---|---|---|---|
 | Owner (seeded) | Full | — | Full | Full | admin keys at its scope |
 | Member (seeded) | Full | — | Full | Full | — |
@@ -795,7 +795,7 @@ Rules:
 | 5. Fields | `title`, `counterparty`, `assignee`: role sets Read → Read. `status`, `review_notes`: Write. `budget`: role level Write; closest rule: matter has FR-3 (Owner) and FR-4 (Agent), neither matches; org root FR-1 (all roles → None) → **None**. | budget hidden |
 | 6. Guardrails | Nothing lowers it further. | — |
 | 7. Delegation | Not an agent token. | skipped |
-| 8. Decision | **allow** `read`. Read mask: title, counterparty, status, review_notes, assignee. Write mask: status, review_notes. Mina also holds `contract:approve`. | |
+| 8. Decision | **allow** `read`. Read mask: title, counterparty, status, review_notes, assignee. Write mask: status, review_notes. `contract:approve` is allowed (Legal reviewer allows it at Write). | |
 
 In the UI: the Budget cell shows "Restricted" (`<Field>`), and the Approve button is shown (`<Can>`).
 
@@ -913,7 +913,7 @@ The first six table names come from the blueprint. The last five are new.
 | `field_registry` | Blueprint | `tenant_id`, `app`, `item_type`, `field_key`, `label`, `sensitivity` (public, internal, confidential, secret), `grants_access`, `created_by` (manifest, console, onto import, agent), `created_at` | Every field of every type. `grants_access` marks fields that conditions read (changing them needs `manage_access`). |
 | `audit_event` | Blueprint (follows `audit.v1`) | `tenant_id`, `id` (UUIDv7), `time` (blueprint `at`), `org_id`, `actor_kind`, `actor_id`, `on_behalf_of`, `action`, `resource_type` + `resource_id` (blueprint `target`), `decision_effect`, `rule_ids`, `rev`, `outcome`, `reason`, `before_digest`, `after_digest` (blueprint `before`, `after`), `trace_id`, `request_id`, `labels`, `seq`, `prev_hash`, `hash` | Append-only: UPDATE and DELETE are refused. Hash-chained. Copies can go to attache's evidence ledger. See [CONTRACTS.md](CONTRACTS.md). |
 | `resource_type` | New | `tenant_id`, `app`, `key`, `label`, `parent_types`, `container`, `starts` (open, private), `features`, `actions` (key → min level + grant key), `source` (manifest, console, onto), `rev` | Replaces the blueprint's fixed tree. Each app has its own namespace. |
-| `role` | New | `tenant_id`, `id`, `app` (null = tenant-wide), `key`, `name`, `kind` (seeded, custom), `levels` (type, `type.field` and `type.@feature` → level), `grants` (custom actions, admin keys), `assignable_to`, `rev` | A role with admin keys cannot be assigned to an agent or a group. |
+| `role` | New | `tenant_id`, `id`, `app` (null = tenant-wide), `key`, `name`, `kind` (seeded, custom), `levels` (type, `type.field` and `type.@feature` → level), `grants` (custom actions, admin keys), `assignable_to`, `rev` | A role with admin keys or owner-only custom actions cannot be assigned to an agent or a group. |
 | `group` (+ `group_member`) | New | `group`: `tenant_id`, `id`, `org_id`, `key`, `name`. `group_member`: `tenant_id`, `group_id`, `member_kind`, `member_id`, `added_by` | Groups may contain groups. A closure table makes membership one lookup. |
 | `ui_component` | New | `tenant_id`, `app`, `key`, `actions`, `fields`, `routes` (method + path), `when_denied` (show, disable, hide, readonly), `reason`, `rev` | Source for `tutela codegen` (React constants and route guards). |
 | `model_revision` | New | `tenant_id`, `rev`, `parent_rev`, `app`, `author`, `approvers`, `diff`, `class` (narrowing, neutral, widening), `impact`, `state` (draft, proposed, published, rejected), `created_at`, `published_at`, `bundle_digest`, `signature` | One row per model change. `rev` is the tenant revision at publish; the tenant revision goes up in the same transaction as every change, including binding changes (which are recorded in `audit_event`, not here). |

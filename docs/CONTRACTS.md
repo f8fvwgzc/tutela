@@ -627,7 +627,7 @@ When the request carries actors (from the token's `act` chain):
 - Tutela evaluates the person and each actor. Each agent is also limited by its `ai_reach` ([PERMISSION-MODEL.md §11](PERMISSION-MODEL.md)).
 - `level` = the `min` of all of them.
 - `field_mask.read` and `field_mask.write` = the intersection of all of them.
-- `effect` = allow only if the action is allowed for **every** one of them. Custom grants count only if all hold them. Admin actions are never allowed through delegation.
+- `effect` = allow only if the action is allowed for **every** one of them. A custom action counts only if it is in every actor's allowed-action set ([PERMISSION-MODEL.md §6.3, §7.1 step 7](PERMISSION-MODEL.md#63-role-assignments)); raw grants are never pooled or intersected. Admin keys and owner-only custom actions are never allowed through delegation.
 - `rule_ids` lists the deciding rules of all of them.
 - attache's capability limits (`cap`) apply on top, inside attache. Tutela never reads `cap`.
 

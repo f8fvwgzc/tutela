@@ -575,8 +575,6 @@ fn roles(out: &mut Out, old: &Model, new: &Model) {
         }
         for t in core::iter::once(&ResourceType::ORG).chain(new.types.keys()) {
             let present = o.is_some() && (*t == ResourceType::ORG || old.types.contains_key(t));
-            // Nothing that this role's access on this type depends on has
-            // changed: there is nothing to compare.
             let before = Side {
                 model: old,
                 role: rk,
@@ -588,6 +586,8 @@ fn roles(out: &mut Out, old: &Model, new: &Model) {
                 present: true,
             };
             let (fk, ak) = keys.get(t).unwrap_or(&none);
+            // Nothing that this role's access on this type depends on has
+            // changed: there is nothing to compare.
             if present && same_type.contains(t) && unchanged(old, new, rk, t) {
                 // In test and debug builds, check that skipping is safe: the
                 // full comparison must find nothing.
