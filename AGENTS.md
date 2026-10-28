@@ -46,7 +46,7 @@ tutela/
 │   │                        embedded decision engine: check, batch, list_filter,          now (evaluator)
 │   │                        write_check
 │   ├── tutela-store/        Postgres schema and migrations: bindings, field rules, groups now
-│   ├── tutela-sdk/          token verifier (now); axum and tonic layers, decision cache  A
+│   ├── tutela-sdk/          token verifier, axum and tonic layers, decision cache, SQL   now
 │   ├── tutela-vault/        envelope encryption with a KMS trait                          now
 │   ├── tutela-safenet/      SSRF-safe outbound HTTP                                       now
 │   ├── tutela-cli/          the `tutela` CLI: init, check, codegen, migrate, apply,       now
