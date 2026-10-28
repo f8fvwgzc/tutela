@@ -1,0 +1,31 @@
+# check-latency: ./target/release/tutela-spike-week1 check-latency
+# start 2026-10-28 14:21:10 JST, load 3.59, Apple M2 Pro, git d9b4ae2
+model: generated and compiled in 0.0s
+model: types=200 roles=100 field_rules=5000 bindings=10000 conditions=200 users=10000 agents=100 groups=500 nodes=220001 private=2008
+groups: levels=8 transitive groups per user avg=43.8 max=111; direct members of group 0 = 10000
+workload inputs: users with a binding=5496 agents with a binding=100 resources=220000 deep(32)=6264 max path=32
+W1 mixed: n=1000000 p50=0.5us p90=0.6us p99=2.5us p99.9=5.0us max=62.3us  (allowed 2.3%, avg readable fields 0.9, wall 0.7s)
+W2 deep: n=1000000 p50=0.4us p90=0.5us p99=2.4us p99.9=3.0us max=21.2us  (allowed 2.4%, avg readable fields 0.8, wall 0.6s)
+W3 delegated: n=1000000 p50=0.5us p90=1.0us p99=2.0us p99.9=5.3us max=115.5us  (allowed 0.0%, avg readable fields 0.0, wall 0.8s)
+list_filter (info): n=1000 p50=205.5us p90=268.9us p99=480.2us p99.9=509.2us max=523.8us  max AST nodes=82 max container_in=282 max ids_in=3
+        2.35 real         2.30 user         0.03 sys
+            82067456  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+                5584  page reclaims
+                  44  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                   0  voluntary context switches
+                 191  involuntary context switches
+         32415439530  instructions retired
+          7970607023  cycles elapsed
+            77201840  peak memory footprint
+# exit 0
+# end 2026-10-28 14:21:13 JST, load 3.59
+valid: no cargo or rustc during check-latency

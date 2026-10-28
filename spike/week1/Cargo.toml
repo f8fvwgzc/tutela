@@ -1,0 +1,18 @@
+# THROWAWAY week-1 spike (docs/SPIKE-WEEK1.md). Not a workspace member and not
+# under the CI gates. Kept only so the numbers in ADR-0011 can be reproduced.
+[package]
+name = "tutela-spike-week1"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+# Its own workspace, so the main workspace never builds or lints it.
+[workspace]
+
+[dependencies]
+postgres = "0.19"
+rustc-hash = "2"
+
+[profile.release]
+debug = "line-tables-only"

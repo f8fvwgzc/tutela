@@ -1,0 +1,91 @@
+# differential: ./target/release/tutela-spike-week1 differential --threads 4
+# start 2026-10-28 13:54:58 JST, load 2.59, Apple M2 Pro, git d9b4ae2
+loaded seed 1: 104963 rows in 1.7s
+loaded seed 2: 104870 rows in 0.3s
+loaded seed 3: 103045 rows in 0.4s
+loaded seed 4: 103277 rows in 0.4s
+loaded seed 5: 102503 rows in 0.4s
+loaded seed 6: 101746 rows in 0.3s
+loaded seed 7: 104577 rows in 0.3s
+loaded seed 8: 104518 rows in 0.2s
+loaded seed 9: 103072 rows in 0.3s
+loaded seed 10: 101122 rows in 0.3s
+loaded seed 11: 103399 rows in 0.3s
+loaded seed 12: 101396 rows in 0.5s
+loaded seed 13: 103930 rows in 0.4s
+loaded seed 14: 104157 rows in 0.3s
+loaded seed 15: 103480 rows in 0.3s
+loaded seed 16: 102417 rows in 0.3s
+loaded seed 17: 101561 rows in 0.3s
+loaded seed 18: 101584 rows in 0.5s
+loaded seed 19: 102806 rows in 0.4s
+loaded seed 20: 102903 rows in 0.4s
+indexes in 10.0s
+seed 1: containers+rows=104963 private=925 assignments=1653 conditions=21 groups=32 tasks=160 checks=8198480 allowed=19.4% AST mismatches=0 SQL mismatched filters=0 (182.2s)
+seed 2: containers+rows=104870 private=530 assignments=653 conditions=16 groups=28 tasks=320 checks=8194760 allowed=10.1% AST mismatches=0 SQL mismatched filters=0 (20.0s)
+seed 3: containers+rows=103045 private=143 assignments=625 conditions=3 groups=39 tasks=280 checks=8121760 allowed=41.4% AST mismatches=0 SQL mismatched filters=0 (22.3s)
+seed 4: containers+rows=103277 private=584 assignments=1654 conditions=30 groups=26 tasks=280 checks=8131040 allowed=3.5% AST mismatches=0 SQL mismatched filters=0 (25.3s)
+seed 5: containers+rows=102503 private=68 assignments=517 conditions=25 groups=1 tasks=200 checks=8100080 allowed=14.1% AST mismatches=0 SQL mismatched filters=0 (16.1s)
+seed 6: containers+rows=101746 private=563 assignments=672 conditions=24 groups=20 tasks=200 checks=8069800 allowed=30.8% AST mismatches=0 SQL mismatched filters=0 (26.9s)
+seed 7: containers+rows=104577 private=1815 assignments=2020 conditions=23 groups=17 tasks=160 checks=8183040 allowed=20.8% AST mismatches=0 SQL mismatched filters=0 (45.9s)
+seed 8: containers+rows=104518 private=1132 assignments=1835 conditions=29 groups=35 tasks=320 checks=8180680 allowed=16.8% AST mismatches=0 SQL mismatched filters=0 (7.1s)
+seed 9: containers+rows=103072 private=474 assignments=2057 conditions=30 groups=35 tasks=200 checks=8122840 allowed=22.9% AST mismatches=0 SQL mismatched filters=0 (52.5s)
+seed 10: containers+rows=101122 private=352 assignments=1131 conditions=26 groups=4 tasks=320 checks=8044840 allowed=8.2% AST mismatches=0 SQL mismatched filters=0 (57.2s)
+seed 11: containers+rows=103399 private=35 assignments=2371 conditions=29 groups=4 tasks=320 checks=8135920 allowed=39.9% AST mismatches=0 SQL mismatched filters=0 (55.5s)
+seed 12: containers+rows=101396 private=373 assignments=669 conditions=30 groups=9 tasks=240 checks=8055800 allowed=9.3% AST mismatches=0 SQL mismatched filters=0 (39.1s)
+seed 13: containers+rows=103930 private=471 assignments=222 conditions=17 groups=30 tasks=240 checks=8157160 allowed=8.3% AST mismatches=0 SQL mismatched filters=0 (5.2s)
+seed 14: containers+rows=104157 private=341 assignments=1454 conditions=11 groups=5 tasks=200 checks=8166240 allowed=29.5% AST mismatches=0 SQL mismatched filters=0 (51.3s)
+seed 15: containers+rows=103480 private=567 assignments=781 conditions=2 groups=23 tasks=200 checks=8139160 allowed=20.4% AST mismatches=0 SQL mismatched filters=0 (14.1s)
+seed 16: containers+rows=102417 private=113 assignments=890 conditions=10 groups=15 tasks=320 checks=8096640 allowed=35.7% AST mismatches=0 SQL mismatched filters=0 (22.0s)
+seed 17: containers+rows=101561 private=222 assignments=1677 conditions=23 groups=23 tasks=280 checks=8062400 allowed=24.7% AST mismatches=0 SQL mismatched filters=0 (19.0s)
+seed 18: containers+rows=101584 private=34 assignments=166 conditions=18 groups=36 tasks=280 checks=8063320 allowed=23.3% AST mismatches=0 SQL mismatched filters=0 (4.4s)
+seed 19: containers+rows=102806 private=1094 assignments=214 conditions=12 groups=32 tasks=240 checks=8112200 allowed=6.4% AST mismatches=0 SQL mismatched filters=0 (6.3s)
+seed 20: containers+rows=102903 private=473 assignments=2357 conditions=8 groups=39 tasks=240 checks=8116080 allowed=17.2% AST mismatches=0 SQL mismatched filters=0 (9.6s)
+filter form: Levels
+coverage: Coverage {
+    checks: 162452240,
+    allowed: 32705164,
+    path32: 2921680,
+    private_in_private_rows: 14214800,
+    private_stop: 16210792,
+    closer_lower: 1045600,
+    via_group: 6214157,
+    direct_over_group: 4660816,
+    cond_true: 1764125,
+    cond_false: 2907991,
+    cond_with_null_attr: 2602227,
+    row_itself: 25459,
+    overlap_deny: 6079828,
+    org_owner: 4944424,
+    filters: 5000,
+    alternation: 1498544,
+    max_ast_nodes: 1150,
+    max_ast_depth: 7,
+    max_ids_in: 119,
+    max_container_in: 592,
+}
+SQL list query, array column, all seeds (info): n=5000 p50=3856.1us p90=103452.9us p99=1336109.4us p99.9=2480438.3us max=4393112.9us
+SQL list query, array column, seed 1 (info): n=160 p50=19918.5us p90=1067133.0us p99=1549742.4us p99.9=1744610.5us max=1744610.5us
+SQL list query, closure table, seed 1 (info): n=160 p50=77887.2us p90=2523944.8us p99=3559954.2us p99.9=3791300.9us max=3791300.9us  mismatched filters=0
+RESULT: row-level AST mismatches=0 SQL mismatched filters=0 SQL row mismatches=0 count mismatches=0 closure-variant mismatched filters=0
+      700.28 real        95.81 user         3.64 sys
+           173113344  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+              249862  page reclaims
+                 166  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+               63095  messages sent
+              170729  messages received
+                   0  signals received
+                 141  voluntary context switches
+              337154  involuntary context switches
+       1135428056020  instructions retired
+        315212528690  cycles elapsed
+           490652632  peak memory footprint
+# exit 0
+# end 2026-10-28 14:06:38 JST, load 9.25
+VOID: a cargo or rustc process ran during differential (see results/differential.sampler.txt)
