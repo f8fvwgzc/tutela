@@ -10,8 +10,14 @@ use tokio_postgres::Client;
 use crate::StoreError;
 
 /// The migrations, in order. Released migrations never change.
-const MIGRATIONS: &[(i32, &str, &str)] =
-    &[(1, "init", include_str!("../migrations/0001_init.sql"))];
+const MIGRATIONS: &[(i32, &str, &str)] = &[
+    (1, "init", include_str!("../migrations/0001_init.sql")),
+    (
+        2,
+        "approver_key",
+        include_str!("../migrations/0002_approver_key.sql"),
+    ),
+];
 
 /// One lock id for every migrator of this schema (`pg_advisory_xact_lock`).
 const LOCK_ID: i64 = 0x7475_7465_6c61_0001;

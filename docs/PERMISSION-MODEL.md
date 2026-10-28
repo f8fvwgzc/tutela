@@ -692,7 +692,7 @@ The Console also has **explain** (why did this check say yes or no: the walk and
 - New fields get their sensitivity default. Confidential and secret fields start at None.
 - Imported changes from onto-intelli become a **proposal** that a tenant admin publishes; they are never published automatically.
 
-Phase A ships the diff, the classification and the refusal. Phase B adds the impact report, approvals and two-person publish in `tutelad`.
+Phase A ships the diff, the classification, the refusal and approval tokens from registered approver keys ([ADR-0015](DECISIONS.md#adr-0015-approval-tokens-for-tutela-apply-in-library-mode), [MANIFEST.md §12](MANIFEST.md#12-applying-tutela-apply-and-approval-tokens)). Phase B adds the impact report, approvals in `tutelad` and two-person publish.
 
 ---
 
@@ -939,7 +939,7 @@ These are not decided yet. Each has a proposal so work can start. Final answers 
 | # | Question | Proposal | When |
 |---|---|---|---|
 | 1 | A direct assignment and a group assignment at the same scope: which wins? | **Decided** ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)): the direct one; else every group role there counts, each with its own conditions and field rules, combined component-wise: the highest item level, the highest level per field and feature, a custom action allowed when any of the roles allows it with its own item level (never a pool of raw grants), and the union of admin keys (§6.3, §7.1; the model diff relies on this, [ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)). | Phase A |
-| 2 | Where does a library-mode project (no `tutelad`) get an approval token for a widening diff? | A token signed by a tenant admin's key, bound to the diff digest. | Phase A |
+| 2 | Where does a library-mode project (no `tutelad`) get an approval token for a widening diff? | **Decided** ([ADR-0015](DECISIONS.md#adr-0015-approval-tokens-for-tutela-apply-in-library-mode)): an Ed25519 token from a registered approver key, bound to the app and the digests of the applied and the new manifest, valid for at most 24 hours ([MANIFEST.md §12](MANIFEST.md#12-applying-tutela-apply-and-approval-tokens)). | Phase A |
 | 3 | How is a reader's clearance per label stored, for labelled output? | Treat each label like a field of that sensitivity in the scope, with the same defaults. | Phase A |
 | 4 | The ancestors column: array, `ltree` or closure table? Maximum path depth? | **Decided** ([ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator)): an array of ancestor ids, nearest first, with a GIN index. Depth cap 32. `bigint[]` was measured; the element type (for example UUID) and the query plan are measured again under ADR-0011 F2. | Week-1 spike |
 | 5 | Default max bundle age per action class. | Reads longer, writes shorter, revocation-sensitive actions online. Numbers measured in Phase B. | Phase B |

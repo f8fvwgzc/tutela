@@ -294,3 +294,26 @@ A valid manifest can still give a `list_filter` above the filter limits of [CONT
 | `assignable_to` entries | 16 |
 | Problems reported | 100, then "and N more" |
 | Diff lines | 10,000, then "and N more"; the class stays exact |
+
+## 12. Applying: `tutela apply` and approval tokens
+
+`tutela apply` (library mode) works like this ([ADR-0015](DECISIONS.md#adr-0015-approval-tokens-for-tutela-apply-in-library-mode)):
+- It compiles the manifest and compares it with the applied one. For a first apply, it compares against an empty model of the same app.
+- It prints every diff line, the class, and the SHA-256 digests of both manifests (`from` is `none` for a first apply).
+- A **narrowing or neutral** diff is published at once.
+- A **widening** diff is refused (exit code 3) unless `--approval` carries a valid token for exactly this change. The refusal prints the `tutela approve` command for an approver.
+- Publishing stores the manifest and, in the same transaction, bumps every tenant's revision and records the change (`tutela-store`, [ADR-0014](DECISIONS.md#adr-0014-tutela-store-in-phase-a-the-schema-row-level-security-and-checked-writes)).
+
+An **approval token** is `tutela-approval-v1.<payload>.<signature>`. Both parts are base64url without padding.
+- **Payload:** the JSON object `{"app", "from", "to", "kid", "iat", "exp"}`. `from` and `to` are the manifest digests; `kid` is the approver key id; `iat` and `exp` are Unix seconds. Unknown keys are refused.
+- **Signature:** Ed25519 over the ASCII bytes `tutela-approval-v1.<payload>`.
+- **Key id:** `apk_` and the first 32 hex digits of SHA-256 of the 32-byte public key.
+- **Valid only when all of these hold:**
+  - the key is registered (`tutela approvers add`) and not revoked;
+  - the signature verifies with the key, and `kid` is that key's id;
+  - `app`, `from` and `to` match this exact change;
+  - `now < exp`, `iat` is not more than 5 minutes in the future, and `exp - iat` is at most 24 hours.
+- Since the diff is a function of the two manifests, the token approves exactly one diff. A revoked key approves nothing, also tokens it signed before.
+
+An approver reviews the printed diff and signs with `tutela approve --app <app> --from <digest> --to <digest> --key <private key file>`. `tutela approvers keygen` writes the private key file, readable by its owner only; it never leaves the approver's machine. The database holds only public keys.
+

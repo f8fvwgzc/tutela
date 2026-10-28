@@ -116,7 +116,7 @@ async fn db() -> Option<Db> {
     let url = with(&base, &name, OWNER, OWNER_PASSWORD);
     let mut client = connect(&url).await;
     let applied = crate::migrate(&mut client).await.unwrap();
-    assert_eq!(applied, [1]);
+    assert_eq!(applied, [1, 2]);
     Some(Db {
         admin,
         name,
