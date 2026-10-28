@@ -1,0 +1,27 @@
+[package]
+name = "tutela-sdk"
+description = "Tutela's SDK for Rust services: token verification with a cached JWKS"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+aws-lc-rs = { version = "1.18.2", default-features = false, features = ["aws-lc-sys", "alloc"] }
+base64 = "0.23.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["sync"] }
+tutela-contracts = { workspace = true }
+tutela-safenet = { workspace = true }
+
+[dev-dependencies]
+aws-lc-rs = { version = "1.18.2", default-features = false, features = ["aws-lc-sys", "alloc", "ring-io"] }
+tokio = { version = "1.54.1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
