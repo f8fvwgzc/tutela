@@ -58,7 +58,7 @@ pub enum Param {
 }
 
 impl Param {
-    fn as_sql(&self) -> &(dyn ToSql + Sync) {
+    pub(crate) fn as_sql(&self) -> &(dyn ToSql + Sync) {
         match self {
             Self::Text(v) => v,
             Self::Int(v) => v,
@@ -87,6 +87,9 @@ pub struct Columns {
 }
 
 fn ident(name: &str) -> Result<String, SqlError> {
+    if RESERVED.contains(&name) {
+        return Err(SqlError::Column(name.to_owned()));
+    }
     let ok = !name.is_empty()
         && name.len() <= 63
         && name
@@ -111,6 +114,100 @@ struct Builder<'a> {
     cols: &'a Columns,
     params: Vec<Param>,
     first: usize,
+    /// Compile groups of same-shape terms as one lookup (ADR-0016).
+    group: bool,
+}
+
+/// Groups smaller than this compile term by term.
+const GROUP_MIN: usize = 4;
+
+/// Scope lists longer than this are tested per ancestor with a hashed
+/// `= ANY` (array overlap compares every pair and is far slower at the
+/// limits); shorter ones keep `&&`, which a GIN index can serve.
+const HASH_MIN: usize = 64;
+
+/// "One of `scopes` (bound as `p`) is an ancestor", in the fast form for
+/// its size. Never NULL when the ancestors column is not NULL.
+fn under_sql(ancestors: &str, p: &str, len: usize) -> String {
+    if len > HASH_MIN {
+        format!(
+            "EXISTS (SELECT 1 FROM unnest({ancestors}) AS tutela_anc(tutela_scope) \
+             WHERE tutela_scope = ANY({p}))"
+        )
+    } else {
+        format!("{ancestors} && {p}")
+    }
+}
+
+/// Aliases the grouped form uses; product columns may not have these names.
+const RESERVED: [&str; 4] = ["tutela_anc", "tutela_scope", "tutela_term", "tutela_vals"];
+
+/// One term of an `or`: `under[scopes] AND rest`, where `rest` reads fields
+/// only.
+fn term(e: &FilterExpr) -> Option<(&[PathEntry], Vec<&FilterExpr>)> {
+    let FilterExpr::And { args } = e else {
+        return None;
+    };
+    let mut scopes = None;
+    let mut rest = Vec::new();
+    for a in args {
+        match a {
+            FilterExpr::Under { scopes: s } if scopes.is_none() => scopes = Some(s.as_slice()),
+            other => rest.push(other),
+        }
+    }
+    Some((scopes?, rest))
+}
+
+/// The shape of a condition that reads fields only: the AST with each value
+/// replaced by a typed slot, and the values in slot order. `None` for a part
+/// the grouped form cannot hold (`under`, `id_in`, `in`, an unknown op).
+fn shape(e: &FilterExpr, values: &mut Vec<serde_json::Value>) -> Option<String> {
+    fn slot(v: &FilterValue, values: &mut Vec<serde_json::Value>) -> &'static str {
+        match v {
+            FilterValue::String(s) => {
+                values.push(serde_json::Value::String(s.clone()));
+                "s"
+            }
+            FilterValue::Integer(i) => {
+                values.push(serde_json::Value::from(*i));
+                "i"
+            }
+            FilterValue::Boolean(b) => {
+                values.push(serde_json::Value::Bool(*b));
+                "b"
+            }
+        }
+    }
+    let list = |args: &[FilterExpr], values: &mut Vec<serde_json::Value>| {
+        args.iter()
+            .map(|a| shape(a, values))
+            .collect::<Option<Vec<_>>>()
+            .map(|v| v.join(","))
+    };
+    Some(match e {
+        FilterExpr::True => "t".to_owned(),
+        FilterExpr::False => "f".to_owned(),
+        FilterExpr::And { args } => format!("and({})", list(args, values)?),
+        FilterExpr::Or { args } => format!("or({})", list(args, values)?),
+        FilterExpr::Not { arg } => format!("not({})", shape(arg, values)?),
+        FilterExpr::Eq { attr, value } => format!("eq({attr},{})", slot(value, values)),
+        FilterExpr::Ne { attr, value } => format!("ne({attr},{})", slot(value, values)),
+        FilterExpr::Contains { attr, value } => {
+            values.push(serde_json::Value::String(value.clone()));
+            format!("contains({attr})")
+        }
+        FilterExpr::IsNull { attr } => format!("isnull({attr})"),
+        _ => return None,
+    })
+}
+
+/// A group of same-shape terms: one representative `rest`, and for each
+/// scope the value lists of the terms that name it.
+struct Group<'e> {
+    rest: Vec<&'e FilterExpr>,
+    by_scope: serde_json::Map<String, serde_json::Value>,
+    terms: Vec<&'e FilterExpr>,
 }
 
 impl Builder<'_> {
@@ -136,13 +233,146 @@ impl Builder<'_> {
         })
     }
 
+    /// `rest` with each value read from the term's slots (`tutela_vals`).
+    fn slotted(&mut self, e: &FilterExpr, next: &mut usize) -> Result<String, SqlError> {
+        let mut take = |v: Option<&FilterValue>| {
+            let j = *next;
+            *next += 1;
+            let cast = match v {
+                Some(FilterValue::Integer(_)) => "::bigint",
+                Some(FilterValue::Boolean(_)) => "::boolean",
+                _ => "",
+            };
+            format!("(tutela_vals ->> {j}){cast}")
+        };
+        Ok(match e {
+            FilterExpr::True => "true".to_owned(),
+            FilterExpr::False => "false".to_owned(),
+            FilterExpr::And { args } | FilterExpr::Or { args } => {
+                let op = if matches!(e, FilterExpr::And { .. }) {
+                    " AND "
+                } else {
+                    " OR "
+                };
+                let mut parts = Vec::with_capacity(args.len());
+                for a in args {
+                    parts.push(self.slotted(a, next)?);
+                }
+                format!("({})", parts.join(op))
+            }
+            FilterExpr::Not { arg } => format!("(NOT {})", self.slotted(arg, next)?),
+            FilterExpr::Eq { attr, value } => {
+                let c = self.field(attr)?;
+                format!("coalesce({c} = {}, false)", take(Some(value)))
+            }
+            FilterExpr::Ne { attr, value } => {
+                let c = self.field(attr)?;
+                format!("coalesce({c} <> {}, false)", take(Some(value)))
+            }
+            FilterExpr::Contains { attr, .. } => {
+                let c = self.field(attr)?;
+                format!("coalesce({} = ANY({c}), false)", take(None))
+            }
+            FilterExpr::IsNull { attr } => format!("({} IS NULL)", self.field(attr)?),
+            _ => return Err(SqlError::Unsupported),
+        })
+    }
+
+    /// An `or`: same-shape `under[S] AND rest` terms become one lookup per
+    /// shape; everything else compiles as it is.
+    fn or(&mut self, args: &[FilterExpr]) -> Result<String, SqlError> {
+        if !self.group {
+            return self.join(args, " OR ");
+        }
+        let mut groups: Vec<(String, Group<'_>)> = Vec::new();
+        let mut parts = Vec::new();
+        for a in args {
+            let mut values = Vec::new();
+            let grouped = term(a).and_then(|(scopes, rest)| {
+                let key = rest
+                    .iter()
+                    .map(|r| shape(r, &mut values))
+                    .collect::<Option<Vec<_>>>()?
+                    .join("&");
+                Some((scopes, rest, key))
+            });
+            let Some((scopes, rest, key)) = grouped else {
+                parts.push(self.expr(a)?);
+                continue;
+            };
+            let i = match groups.iter().position(|(k, _)| *k == key) {
+                Some(i) => i,
+                None => {
+                    groups.push((
+                        key,
+                        Group {
+                            rest,
+                            by_scope: serde_json::Map::new(),
+                            terms: Vec::new(),
+                        },
+                    ));
+                    groups.len() - 1
+                }
+            };
+            let Some((_, g)) = groups.get_mut(i) else {
+                return Err(SqlError::Unsupported);
+            };
+            g.terms.push(a);
+            for s in scopes {
+                let slot = g
+                    .by_scope
+                    .entry(entry_text(s))
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+                if let serde_json::Value::Array(list) = slot {
+                    list.push(serde_json::Value::Array(values.clone()));
+                }
+            }
+        }
+        let ancestors = ident(&self.cols.ancestors)?;
+        for (_, g) in groups {
+            if g.terms.len() < GROUP_MIN {
+                for t in g.terms {
+                    parts.push(self.expr(t)?);
+                }
+                continue;
+            }
+            let mut next = 0;
+            let mut rest = Vec::with_capacity(g.rest.len());
+            for r in &g.rest {
+                rest.push(self.slotted(r, &mut next)?);
+            }
+            let rest = if rest.is_empty() {
+                "true".to_owned()
+            } else {
+                rest.join(" AND ")
+            };
+            let scopes = self.bind(Param::TextArray(g.by_scope.keys().cloned().collect()));
+            let map = self.bind(Param::Text(
+                serde_json::Value::Object(g.by_scope).to_string(),
+            ));
+            // Only an ancestor in the group's scope set (a hashed test) looks
+            // its terms up in the map.
+            parts.push(format!(
+                "EXISTS (SELECT 1 FROM unnest({ancestors}) AS tutela_anc(tutela_scope) \
+                 WHERE tutela_scope = ANY({scopes}) AND EXISTS (SELECT 1 FROM \
+                 jsonb_array_elements(({map}::text::jsonb) -> tutela_scope) \
+                 AS tutela_term(tutela_vals) WHERE {rest}))"
+            ));
+        }
+        Ok(if parts.is_empty() {
+            "false".to_owned()
+        } else {
+            format!("({})", parts.join(" OR "))
+        })
+    }
+
     fn expr(&mut self, e: &FilterExpr) -> Result<String, SqlError> {
         let ancestors = ident(&self.cols.ancestors)?;
         Ok(match e {
             FilterExpr::True => "true".to_owned(),
             FilterExpr::False => "false".to_owned(),
             FilterExpr::And { args } => self.join(args, " AND ")?,
-            FilterExpr::Or { args } => self.join(args, " OR ")?,
+            FilterExpr::Or { args } => self.or(args)?,
             FilterExpr::Not { arg } => format!("(NOT {})", self.expr(arg)?),
             FilterExpr::Eq { attr, value } => {
                 let c = self.field(attr)?;
@@ -195,7 +425,10 @@ impl Builder<'_> {
             }
             FilterExpr::Under { scopes } => {
                 let p = self.bind(Param::TextArray(scopes.iter().map(entry_text).collect()));
-                format!("coalesce({ancestors} && {p}, false)")
+                format!(
+                    "coalesce({}, false)",
+                    under_sql(&ancestors, &p, scopes.len())
+                )
             }
             _ => return Err(SqlError::Unsupported),
         })
@@ -222,10 +455,31 @@ pub fn where_clause(
     cols: &Columns,
     first: usize,
 ) -> Result<(String, Vec<Param>), SqlError> {
+    compile(filter, cols, first, true)
+}
+
+/// [`where_clause`] without grouping: every term compiles on its own. The
+/// grouped form must list exactly the same rows (tested).
+#[cfg(test)]
+pub(crate) fn where_clause_plain(
+    filter: &ListFilter,
+    cols: &Columns,
+    first: usize,
+) -> Result<(String, Vec<Param>), SqlError> {
+    compile(filter, cols, first, false)
+}
+
+fn compile(
+    filter: &ListFilter,
+    cols: &Columns,
+    first: usize,
+    group: bool,
+) -> Result<(String, Vec<Param>), SqlError> {
     let mut b = Builder {
         cols,
         params: Vec::new(),
         first,
+        group,
     };
     let iss = ident(&cols.tenant_iss)?;
     let tid = ident(&cols.tenant_tid)?;
@@ -244,7 +498,8 @@ pub fn where_clause(
     // Inside the condition (under `not`) every test keeps its `coalesce`.
     let mut sql = format!(
         "{iss} = {p_iss} AND {tid} = {p_tid} AND cardinality({ancestors}) <= {MAX_PATH} \
-         AND ({id} = ANY({p_ids}) OR {ancestors} && {p_in})"
+         AND ({id} = ANY({p_ids}) OR {})",
+        under_sql(&ancestors, &p_in, filter.container_in.len())
     );
     if let Some(c) = &filter.condition {
         sql.push_str(" AND ");

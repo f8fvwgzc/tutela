@@ -61,7 +61,7 @@ A phase is not done, and nothing from it ships, until its gate passes. Gates add
 | Week-1 spike (go/no-go) | `check` p99 < 1 ms with a large per-tenant model; closure p99 measured at depth 32 with big groups; `list_filter` correct on 100k rows |
 | Property tests | No cross-tenant grant. No widening. Delegation ≤ person AND agent. `list_filter` returns exactly the rows that `check()` allows (differential test). |
 | Fuzzing | Fuzz tests run on the inputs Tutela parses and compiles: the manifest and the model compiler, tokens, and the SQL filter compiler |
-| Latency | The spike's p99 numbers still hold for the released packages. The list query in Postgres has p99 under 100 ms at the `list_filter` limits on the reference machine (table size fixed by ROADMAP Phase A item 6), and its statement timeout fails closed ([ADR-0011](docs/DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator) F2). Measured 2026-10-29 with `cargo bench -p tutela-sdk --bench list_query`: the timeout fails closed, but the p99 check **fails at the limits** ([#26](https://github.com/f8fvwgzc/tutela/issues/26)). |
+| Latency | The spike's p99 numbers still hold for the released packages. The list query in Postgres has p99 under 100 ms at the `list_filter` limits on the reference machine (table size fixed by ROADMAP Phase A item 6), and its statement timeout fails closed ([ADR-0011](docs/DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator) F2). Measured 2026-10-29 with `cargo bench -p tutela-sdk --bench list_query`: **passes**, p99 79.8 ms at the limits ([ADR-0016](docs/DECISIONS.md#adr-0016-the-list-query-grouped-terms-hashed-scope-tests-and-lower-filter-limits)). |
 | Release | v0.1 tagged and signed |
 
 ### Phase B: `tutelad` and Tutela Console (service gate)

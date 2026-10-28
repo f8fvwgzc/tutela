@@ -13,9 +13,10 @@
 //! rows each), `ancestors text[]` with a GIN index over the tenant and the
 //! ancestors (`btree_gin`). Two workloads, 200 queries each, every query
 //! `count(*)` with a 5 s statement timeout:
-//! - **limits**: 10,000 `container_in` entries, 4,000 `ids_in`, and a
-//!   condition of about 4,000 nodes (1,000 terms of under + not eq), so
-//!   about 20,000 bound entries: at the CONTRACTS.md 6.6 limits;
+//! - **limits**: at the CONTRACTS.md 6.6 limits, taken from `tutela-pdp`'s
+//!   constants: every `container_in` entry, a condition of
+//!   `MAX_FILTER_NODES / 4` terms (under + not eq), and `ids_in` filling the
+//!   total entries (see [`limits`]);
 //! - **typical**: 5 `container_in` scopes and 3 condition terms.
 //!
 //! The gate: p99 under 100 ms for **limits**. The binary exits 1 if it is
@@ -83,18 +84,33 @@ fn not_eq(rng: &mut Rng) -> Result<FilterExpr, Error> {
     })
 }
 
+/// The sizes at the limits of `tutela-pdp` (CONTRACTS.md 6.6): every
+/// `container_in` entry, a condition of `terms` terms (4 nodes each: and,
+/// under, not, eq), and `ids_in` filling the total entries. Overridden by
+/// `TUTELA_BENCH_LIMITS=container_in,ids_in,terms` to try other limits.
+fn limits() -> (usize, usize, usize) {
+    if let Ok(v) = std::env::var("TUTELA_BENCH_LIMITS") {
+        let n: Vec<usize> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+        if let [a, b, c] = n[..] {
+            return (a, b, c);
+        }
+    }
+    let terms = tutela_pdp::MAX_FILTER_NODES / 4;
+    let scopes = tutela_pdp::MAX_CONTAINER_IN;
+    let ids = tutela_pdp::MAX_FILTER_ENTRIES
+        .saturating_sub(scopes + terms)
+        .min(tutela_pdp::MAX_IDS_IN);
+    (scopes, ids, terms)
+}
+
 fn filter(rng: &mut Rng, at_limits: bool) -> Result<ListFilter, Error> {
     let t = rng.below(TENANTS);
-    let (scopes, ids, terms) = if at_limits {
-        (10_000, 4_000, 1_000)
-    } else {
-        (5, 0, 3)
-    };
+    let (scopes, ids, terms) = if at_limits { limits() } else { (5, 0, 3) };
     let mut container_in = Vec::with_capacity(scopes);
     for i in 0..scopes {
         // Real projects first, then ids that exist in no tenant (a filter at
         // the limit names more scopes than one tenant has).
-        container_in.push(if i < 1_000 {
+        container_in.push(if i < 1_000.min(scopes) {
             project(rng)?
         } else {
             entry("project", &format!("gone-{i}"))?

@@ -23,17 +23,17 @@ use crate::eval::{
 use crate::model::{RoleKey, Template, Value};
 
 /// At most this many condition nodes (CONTRACTS.md 6.6).
-pub const MAX_FILTER_NODES: usize = 4096;
+pub const MAX_FILTER_NODES: usize = 512;
 /// At most this condition depth.
 pub const MAX_FILTER_DEPTH: usize = 32;
 /// At most this many entries in `ids_in`.
-pub const MAX_IDS_IN: usize = 10_000;
+pub const MAX_IDS_IN: usize = 2_000;
 /// At most this many entries in `container_in`.
-pub const MAX_CONTAINER_IN: usize = 10_000;
+pub const MAX_CONTAINER_IN: usize = 2_000;
 /// At most this many entries in total: `ids_in`, `container_in`, and every
 /// `under.scopes`, `id_in.ids` and `in.values` inside the condition. Each
 /// one is a bound array element.
-pub const MAX_FILTER_ENTRIES: usize = 20_000;
+pub const MAX_FILTER_ENTRIES: usize = 4_000;
 
 /// A value in a condition: a JSON string, integer or boolean.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize)]
