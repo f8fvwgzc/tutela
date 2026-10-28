@@ -44,8 +44,8 @@ pub use api::{
     ScopePaths, WriteCheckRequest, WriteDecision,
 };
 pub use data::{
-    Binding, Group, LoadError, MAX_GROUP_CLOSURE, MAX_GROUP_DEPTH, Member, ScopeFieldRule, Subject,
-    TenantData,
+    Binding, Group, LoadError, MAX_GROUP_CLOSURE, MAX_GROUP_DEPTH, MAX_GROUP_WORK, Member,
+    ScopeFieldRule, Subject, TenantData,
 };
 pub use filter::{
     FilterExpr, FilterSize, FilterValue, ListFilter, MAX_CONTAINER_IN, MAX_FILTER_DEPTH,

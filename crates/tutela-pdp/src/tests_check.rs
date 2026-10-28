@@ -41,10 +41,11 @@ features  = ["chat", "files", "ai"]
 [types.contract.fields]
 title        = { sensitivity = "internal" }
 counterparty = { sensitivity = "internal" }
-status       = { sensitivity = "internal", grants_access = true }
+status       = { sensitivity = "internal" }
 review_notes = { sensitivity = "internal" }
 assignee     = { sensitivity = "internal", type = "principal", grants_access = true }
 budget       = { sensitivity = "confidential", type = "integer" }
+labels       = { sensitivity = "internal", type = "string_list", grants_access = true }
 
 [types.contract.actions]
 approve = { needs = "write" }
@@ -281,6 +282,7 @@ fn value_for(field: &str) -> AttrValue {
     match field {
         "budget" => AttrValue::Integer(1),
         "assignee" => AttrValue::String(user(0x42).to_string()),
+        "labels" => AttrValue::Strings(vec!["x".into()]),
         _ => AttrValue::String("x".into()),
     }
 }
@@ -319,9 +321,7 @@ fn mina_reads_c204_without_the_budget() {
             "title"
         ]
     );
-    // `status` decides access (`grants_access`): writing it also needs
-    // `manage_access`, which Mina does not hold, so it is not writable.
-    assert_eq!(names(d.field_mask.write()), ["review_notes"]);
+    assert_eq!(names(d.field_mask.write()), ["review_notes", "status"]);
     assert_eq!(d.reason.code(), "allowed");
     assert_eq!(d.rev, 42);
     assert!(d.rule_ids.contains(&rule("ra_mina_sup")));
@@ -770,9 +770,10 @@ fn a_grants_access_field_also_needs_manage_access() {
         .unwrap();
     assert_eq!(d.effect, Effect::Allow);
     assert_eq!(d.fields[0].needs, action("contract:manage_access"));
-    // Mina may write `status` as a field but holds no manage_access.
+    // Mina may write `labels` as a field (Legal reviewer has Write on the
+    // item and does not set the field) but holds no manage_access.
     let d = pdp
-        .write_check(&write_req(&user(MINA), vec![], "status"))
+        .write_check(&write_req(&user(MINA), vec![], "labels"))
         .unwrap();
     assert_eq!(d.effect, Effect::Deny);
     assert_eq!(d.fields[0].reason.code(), "admin_only");
@@ -1196,14 +1197,15 @@ fn a_path_with_a_repeat_or_the_resource_itself_is_refused() {
 fn tm03_an_agent_never_sees_a_grants_access_field_as_writable() {
     let pdp = kestrel();
     // Clause is C-204's assignee: Write on the item and on its fields, but
-    // `assignee` and `status` decide access and need `manage_access`.
+    // `assignee` and `labels` decide access and need `manage_access`.
     let d = pdp
         .check(&req(&agent(CLAUSE), "contract:read", c204()))
         .unwrap();
     assert_eq!(d.level, Level::Write);
     assert!(d.field_mask.can_write(&fname("review_notes")));
     assert!(!d.field_mask.can_write(&fname("assignee")));
-    assert!(!d.field_mask.can_write(&fname("status")));
+    assert!(!d.field_mask.can_write(&fname("labels")));
+    assert!(d.field_mask.can_write(&fname("status")));
     assert!(d.field_mask.can_read(&fname("assignee")));
     let w = pdp
         .write_check(&write_req(&agent(CLAUSE), vec![], "assignee"))
@@ -1224,4 +1226,80 @@ fn tm03_an_agent_never_sees_a_grants_access_field_as_writable() {
         .unwrap();
     assert!(!both.field_mask.can_write(&fname("assignee")));
     assert!(both.field_mask.can_write(&fname("review_notes")));
+}
+
+#[test]
+fn a_group_closure_that_takes_too_much_work_is_refused() {
+    // 100 top groups each hold the same 1,000 groups, and 50 users are in
+    // all 1,000: only 55,000 pairs, but about 5,000,000 steps to gather.
+    let tops: Vec<String> = (0..100).map(|i| format!("t{i}")).collect();
+    let bottoms: Vec<String> = (0..1_000).map(|i| format!("b{i}")).collect();
+    let users: Vec<Member> = (0..50)
+        .map(|i| Member::Principal(user(0x20_0000 + i)))
+        .collect();
+    let mut groups: Vec<Group> = tops
+        .iter()
+        .map(|t| {
+            let held = bottoms
+                .iter()
+                .map(|b| Member::Group(GroupKey::parse(b).unwrap()))
+                .collect();
+            group(t, held)
+        })
+        .collect();
+    groups.extend(bottoms.iter().map(|b| group(b, users.clone())));
+    let data = TenantData {
+        groups,
+        ..kestrel_data()
+    };
+    let model = Arc::new(Model::from_toml(KESTREL).unwrap());
+    assert_eq!(
+        Pdp::new().load(tenant(1), 1, model, data),
+        Err(LoadError::GroupClosureTooLarge)
+    );
+}
+
+#[test]
+fn tm05_a_refused_reload_changes_nothing() {
+    let model = Arc::new(Model::from_toml(KESTREL).unwrap());
+    let mut pdp = Pdp::new();
+    pdp.load(tenant(1), 1, Arc::clone(&model), kestrel_data())
+        .unwrap();
+    let other = TenantData {
+        orgs: [org_id(2)].into(),
+        ..TenantData::default()
+    };
+    pdp.load(tenant(2), 1, Arc::clone(&model), other).unwrap();
+    let probe = req(&user(MINA), "contract:read", c204());
+    let before = pdp.check(&probe).unwrap();
+
+    let cycle = TenantData {
+        groups: vec![
+            group("a", vec![Member::Group(GroupKey::parse("b").unwrap())]),
+            group("b", vec![Member::Group(GroupKey::parse("a").unwrap())]),
+        ],
+        ..kestrel_data()
+    };
+    let deep = TenantData {
+        groups: chain_of_groups(crate::MAX_GROUP_DEPTH + 1),
+        ..kestrel_data()
+    };
+    let claims_other = TenantData {
+        orgs: [org_id(1), org_id(2)].into(),
+        ..kestrel_data()
+    };
+    for bad in [cycle, deep, claims_other] {
+        assert!(pdp.load(tenant(1), 2, Arc::clone(&model), bad).is_err());
+        // The revision, the decisions and the org claims are as before.
+        assert_eq!(pdp.rev(&tenant(1)), Some(1));
+        assert_eq!(pdp.check(&probe).unwrap(), before);
+        let grab = TenantData {
+            orgs: [org_id(1)].into(),
+            ..TenantData::default()
+        };
+        assert_eq!(
+            pdp.load(tenant(2), 2, Arc::clone(&model), grab),
+            Err(LoadError::OrgClaimed(org_id(1)))
+        );
+    }
 }

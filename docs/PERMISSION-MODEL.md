@@ -233,7 +233,7 @@ Two assignments can meet at the same scope: one direct, one or more through grou
 - A group belongs to one org. Members are principals or other groups.
 - Tutela keeps a closure table, so "is this principal in that group" is one lookup. The week-1 spike measures this at depth 32 with big groups (see [ROADMAP.md](ROADMAP.md#very-next-steps)).
 - In Phase A, group keys are unique in the tenant, so a binding or an `in_group` condition names one group ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)).
-- Limits, checked when a tenant is loaded: groups nest at most 32 levels deep, and the closure holds at most 1,000,000 (principal, group) pairs. Data above a limit is refused for that tenant only; other tenants keep working.
+- Limits, checked when a tenant is loaded: groups nest at most 32 levels deep, the closure holds at most 1,000,000 (principal, group) pairs, and computing it takes at most 4,000,000 steps. Data above a limit is refused for that tenant only; its bundle loaded before and other tenants keep working.
 - Removing a principal from a group removes its access through that group in the same transaction as the revision bump.
 - Deleting a principal deletes its assignments and group memberships in the same transaction.
 
@@ -291,7 +291,7 @@ These can only lower the result, never raise it:
 
 **Step 7. Delegation overlap for agents.** (Correction)
 - Only for delegated tokens (`act` present).
-- Run steps 3–6 **again for the agent** with its own assignments. Also apply its `ai_reach`: the agent may only touch resources inside the scope of the work (`project`), or that scope's parent (`team`). Never the org root, never another branch.
+- Run steps 3–6 **again for the agent** with its own assignments. Also apply its `ai_reach`: the agent may only touch resources inside the scope of the work (`project`), or that scope's parent (`team`; in Phase A the same as `project`). Never the org root, never another branch.
   - In the evaluator ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)): the closest assignment is always on the resource's path, so `project` reach holds by itself. An agent whose closest assignment is at the org root gets None (`outside_ai_reach`). In Phase A, `team` reach is the same as `project`: it never adds access. Reach into sibling scopes needs its own ADR.
 - **Overlap:** item level = min(person, agent). Each field level = min(person, agent). Custom actions = the **intersection of the allowed-action sets** of the person and the agent (each set as in [6.3](#63-role-assignments): actions some deciding role allows at its own item level after its own conditions), never raw grants. Admin keys and owner-only custom actions = none.
 - If the act chain is nested (an agent acting for an agent acting for a person), every actor must be allowed, and the chain holds at most 4 actors.
@@ -546,15 +546,20 @@ For agents, the same is done for the person and the agent, `ai_reach` is applied
 Example shape (Jae from the worked example, listing contracts he may read):
 
 ```sql
--- filter: container_in = [Procurement, Supplier renewals 2027]
---         condition    = NOT under [Board pricing review]
-SELECT id, title, counterparty, status          -- from field_mask.read: no budget
+-- filter: tenant       = (iss, tid) of Kestrel Foods
+--         container_in = [Procurement, Supplier renewals 2027]
+--         condition    = (under [Procurement] AND NOT under [Board pricing review, Supplier renewals 2027])
+--                        OR under [Supplier renewals 2027]          -- one term per nesting level
+SELECT id, title, counterparty, status          -- no row of Jae's may read budget; each row
+                                                -- is then masked by its own decision
 FROM   contract
-WHERE  tenant_id = $1
-  AND  ancestors && $2::uuid[]                  -- container_in
-  AND  NOT (ancestors && $3::uuid[])            -- nested private scope Jae is not in
+WHERE  tenant_iss = $1 AND tenant_tid = $2      -- the filter's tenant
+  AND  cardinality(ancestors) <= 32             -- check refuses longer paths
+  AND  ancestors && $3::uuid[]                  -- container_in
+  AND  (    (ancestors && $4::uuid[] AND NOT (ancestors && $5::uuid[]))
+         OR ancestors && $6::uuid[] )           -- the condition
 ORDER  BY updated_at DESC
-LIMIT  $4;
+LIMIT  $7;
 
 -- the count uses the same WHERE clause, so it can never show hidden rows
 ```

@@ -726,3 +726,34 @@ fn the_filter_names_its_tenant() {
     assert_eq!(v["tenant"]["iss"], "https://auth.kestrel.test");
     assert_eq!(v["tenant"]["tid"], tenant(1).tid.to_string());
 }
+
+/// Paths that agree on every placed scope but give one unplaced entry two
+/// parents: `m-supplier-renewals` and `m-board-pricing` both sit below a
+/// scope `x` that is never placed itself, once under the department and
+/// once under another scope.
+struct SplitParent;
+
+impl ScopePaths for SplitParent {
+    fn ancestors(
+        &self,
+        _: &TenantKey,
+        scope: &PathEntry,
+    ) -> Result<Vec<PathEntry>, ScopePathError> {
+        let x = entry("department", "x");
+        if *scope == sup() {
+            Ok(vec![x, proc(), org()])
+        } else if *scope == crate::tests_check::board() {
+            Ok(vec![x, entry("department", "y"), org()])
+        } else {
+            Ok(path_of(scope))
+        }
+    }
+}
+
+#[test]
+fn tm10_two_parents_for_an_unplaced_entry_fail_the_whole_list() {
+    assert_eq!(
+        problem(with_jae(&SplitParent)),
+        ScopePathProblem::Inconsistent
+    );
+}

@@ -27,6 +27,12 @@ pub const MAX_GROUP_DEPTH: usize = 32;
 /// make the process allocate without bound (ADR-0013).
 pub const MAX_GROUP_CLOSURE: usize = 1_000_000;
 
+/// The most steps to compute the group closure of one tenant: every group
+/// copied into a set while each group's and each principal's groups are
+/// gathered. Like [`MAX_GROUP_CLOSURE`], it bounds the work one tenant's data
+/// can cause (ADR-0013).
+pub const MAX_GROUP_WORK: usize = 4 * MAX_GROUP_CLOSURE;
+
 /// Who a role assignment is for.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum Subject {
@@ -137,8 +143,11 @@ pub enum LoadError {
     /// Groups nest deeper than [`MAX_GROUP_DEPTH`].
     #[error("group `{0}` is nested more than 32 levels deep")]
     GroupsTooDeep(GroupKey),
-    /// The group closure is bigger than [`MAX_GROUP_CLOSURE`].
-    #[error("the group closure has more than 1,000,000 (principal, group) pairs")]
+    /// The group closure is bigger than [`MAX_GROUP_CLOSURE`], or takes more
+    /// than [`MAX_GROUP_WORK`] steps to compute.
+    #[error(
+        "the group closure has more than 1,000,000 (principal, group) pairs or takes more than 4,000,000 steps"
+    )]
     GroupClosureTooLarge,
     /// An org that another loaded tenant already claims.
     #[error("org `{0}` already belongs to another tenant")]
@@ -254,13 +263,44 @@ impl Index {
         if let Some(g) = find_cycle(&inside).and_then(|gi| groups.get(gi)) {
             return Err(LoadError::GroupCycle(g.key.clone()));
         }
-        if let Some(g) = too_deep(&inside).and_then(|gi| groups.get(gi)) {
+        let order = parents_first(&inside);
+        if let Some(g) = too_deep(&inside, &order).and_then(|gi| groups.get(gi)) {
             return Err(LoadError::GroupsTooDeep(g.key.clone()));
+        }
+        // Each group's own closure once (parents first), then each
+        // principal's as the union of its direct groups' closures.
+        let mut work = 0usize;
+        let mut spend = |n: usize| {
+            work = work.saturating_add(n);
+            if work > MAX_GROUP_WORK {
+                Err(LoadError::GroupClosureTooLarge)
+            } else {
+                Ok(())
+            }
+        };
+        let mut above: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); inside.len()];
+        for &g in &order {
+            let mut all = BTreeSet::from([g]);
+            for &p in inside.get(g).into_iter().flatten() {
+                if let Some(set) = above.get(p) {
+                    spend(set.len())?;
+                    all.extend(set.iter().copied());
+                }
+            }
+            if let Some(slot) = above.get_mut(g) {
+                *slot = all;
+            }
         }
         let mut member_of = HashMap::with_capacity(direct_groups.len());
         let mut pairs = 0usize;
         for (p, start) in direct_groups {
-            let all = closure(&inside, start);
+            let mut all = BTreeSet::new();
+            for g in start {
+                if let Some(set) = above.get(g) {
+                    spend(set.len())?;
+                    all.extend(set.iter().copied());
+                }
+            }
             pairs = pairs.saturating_add(all.len());
             if pairs > MAX_GROUP_CLOSURE {
                 return Err(LoadError::GroupClosureTooLarge);
@@ -434,11 +474,10 @@ fn find_cycle(inside: &[Vec<usize>]) -> Option<usize> {
     None
 }
 
-/// A group nested more than [`MAX_GROUP_DEPTH`] levels deep, if any. The
-/// groups have no cycle.
-fn too_deep(inside: &[Vec<usize>]) -> Option<usize> {
-    // `holds[g]`: the groups that `g` holds. Walk from the groups that are
-    // in no group, parents before children (Kahn's order).
+/// The groups in an order where every group comes after the groups that
+/// hold it (Kahn's order). The groups have no cycle.
+fn parents_first(inside: &[Vec<usize>]) -> Vec<usize> {
+    // `holds[g]`: the groups that `g` holds.
     let mut holds: Vec<Vec<usize>> = vec![Vec::new(); inside.len()];
     let mut parents: Vec<usize> = inside.iter().map(Vec::len).collect();
     for (child, ps) in inside.iter().enumerate() {
@@ -448,19 +487,13 @@ fn too_deep(inside: &[Vec<usize>]) -> Option<usize> {
             }
         }
     }
-    let mut depth = vec![1usize; inside.len()];
     let mut todo: Vec<usize> = (0..inside.len())
         .filter(|&g| parents.get(g) == Some(&0))
         .collect();
+    let mut order = Vec::with_capacity(inside.len());
     while let Some(g) = todo.pop() {
-        let d = depth.get(g).copied().unwrap_or(1);
-        if d > MAX_GROUP_DEPTH {
-            return Some(g);
-        }
+        order.push(g);
         for &c in holds.get(g).into_iter().flatten() {
-            if let Some(dc) = depth.get_mut(c) {
-                *dc = (*dc).max(d + 1);
-            }
             if let Some(n) = parents.get_mut(c) {
                 *n = n.saturating_sub(1);
                 if *n == 0 {
@@ -469,17 +502,26 @@ fn too_deep(inside: &[Vec<usize>]) -> Option<usize> {
             }
         }
     }
-    None
+    order
 }
 
-/// Every group reachable from `start` through `inside`, `start` included.
-fn closure(inside: &[Vec<usize>], start: Vec<usize>) -> BTreeSet<usize> {
-    let mut seen: BTreeSet<usize> = BTreeSet::new();
-    let mut todo = start;
-    while let Some(g) = todo.pop() {
-        if seen.insert(g) {
-            todo.extend(inside.get(g).into_iter().flatten().copied());
+/// A group nested more than [`MAX_GROUP_DEPTH`] levels deep, if any.
+fn too_deep(inside: &[Vec<usize>], order: &[usize]) -> Option<usize> {
+    let mut depth = vec![1usize; inside.len()];
+    for &g in order {
+        let d = inside
+            .get(g)
+            .into_iter()
+            .flatten()
+            .filter_map(|&p| depth.get(p))
+            .max()
+            .map_or(1, |d| d + 1);
+        if d > MAX_GROUP_DEPTH {
+            return Some(g);
+        }
+        if let Some(slot) = depth.get_mut(g) {
+            *slot = d;
         }
     }
-    seen
+    None
 }

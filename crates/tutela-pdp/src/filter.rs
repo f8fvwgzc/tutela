@@ -400,15 +400,15 @@ impl<P: ScopePaths + ?Sized> Placer<'_, P> {
         Ok(())
     }
 
-    /// Checks that the placed paths agree: when a scope on one path was
-    /// placed too, its own path is the rest of that path. This also refuses
-    /// two scopes that are each other's ancestors (a cycle).
+    /// Checks that the placed paths agree: every entry of every placed path
+    /// (the scope itself included) has one parent. Two paths that give one
+    /// entry two parents disagree, also when that entry was never placed
+    /// itself; this also refuses a cycle.
     fn check_consistent(&self) -> Result<(), PdpError> {
+        let mut parent: BTreeMap<&PathEntry, &PathEntry> = BTreeMap::new();
         for (scope, path) in &self.cache {
-            for (i, a) in path.iter().enumerate() {
-                if let Some(own) = self.cache.get(a)
-                    && path.get(i + 1..) != Some(own.as_slice())
-                {
+            for (child, up) in core::iter::once(scope).chain(path).zip(path) {
+                if *parent.entry(child).or_insert(up) != up {
                     return Err(PdpError::ScopePath {
                         scope: scope.clone(),
                         problem: ScopePathProblem::Inconsistent,

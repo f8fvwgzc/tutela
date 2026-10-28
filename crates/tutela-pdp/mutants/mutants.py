@@ -80,6 +80,9 @@ MUTANTS = [
     ("M13", "pdp.rs", "an org claimed by another tenant is accepted",
      ".is_some_and(|owner| *owner != tenant))",
      ".is_some_and(|owner| *owner != tenant && false))"),
+    ("M22", "pdp.rs", "a refused reload already gave up the tenant's org claims",
+     "        let index = Index::build(&model, data)?;\n        self.org_claims.retain(|_, owner| *owner != tenant);",
+     "        self.org_claims.retain(|_, owner| *owner != tenant);\n        let index = Index::build(&model, data)?;"),
     ("M14", "pdp.rs", "field values of the wrong type act like null",
      "        if !ok {\n            return Err(PdpError::invalid(format!(",
      "        if false && !ok {\n            return Err(PdpError::invalid(format!("),
@@ -185,11 +188,14 @@ def main():
         return 1 if bad else 0
     head = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT,
                           capture_output=True, text=True).stdout.strip()
+    dirty = subprocess.run(["git", "status", "--porcelain", "--", "crates/tutela-pdp/src"],
+                           cwd=ROOT, capture_output=True, text=True).stdout.strip()
+    tree = "with uncommitted changes in crates/tutela-pdp/src" if dirty else "clean tree"
     rustc = subprocess.run(["rustc", "--version"], cwd=ROOT,
                            capture_output=True, text=True).stdout.strip()
     header = [
         "Planted bugs in tutela-pdp, each run against `cargo test -p tutela-pdp --lib`.",
-        f"Date: {datetime.date.today()}. Base commit: {head} (plus the uncommitted tree, if any). {rustc}.",
+        f"Date: {datetime.date.today()}. Commit: {head} ({tree}). {rustc}.",
         "Every mutant must be caught. The sources are restored after each run.",
         "Each line names the tests that failed (the first six).",
         "",

@@ -746,7 +746,7 @@ pub trait ScopePaths {
 **Scope paths** ([ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator) F1, [ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)). Tutela does not store the product's tree, but the filter must know how the deciding scopes nest: the scopes where the principal has an assignment, and the private scopes inside them. So `list_filter` takes a scope-path provider:
 - It is keyed by **(tenant, type, id)** and returns the ancestors, nearest first, or an error. With ids that are the same across tenants, it must answer with the asking tenant's scope.
 - `list_filter` asks it for every scope where the principal (or the person and each actor) has an assignment, and for every private scope of the tenant, each at most once per call.
-- These are errors (`PdpError::ScopePath`): an unknown scope; a provider that cannot answer; a path that does not end at the tenant's own org; a path with an `org` before its end; a path longer than 32; a path that holds the scope itself or one entry twice (`Malformed`); two placed paths that disagree, for example two scopes that are each other's ancestors (`Inconsistent`). The caller fails closed: no rows. A missing path is never treated as "no ancestors".
+- These are errors (`PdpError::ScopePath`): an unknown scope; a provider that cannot answer; a path that does not end at the tenant's own org; a path with an `org` before its end; a path longer than 32; a path that holds the scope itself or one entry twice (`Malformed`); placed paths that disagree, where one entry gets two different parents, also an entry that was never placed itself, and also a cycle (`Inconsistent`). The caller fails closed: no rows. A missing path is never treated as "no ancestors".
 - The paths must be current. A stale path makes `list_filter` and `check` disagree, so a cache of paths needs a test that a move changes list results at once.
 - Every private scope of the tenant is placed, so **one private scope the provider does not know fails every list** of a principal with any assignment. That fails closed, but it is an outage. So a deleted scope must leave `TenantData` (assignments, private flag, field rules) in the same revision as the delete ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)).
 
@@ -776,6 +776,10 @@ JSON form:
 ```
 
 A row with more than 32 ancestors never passes: `check` refuses its path (`PathTooLong`), so the SQL adapter adds this bound (for example `cardinality(ancestors) <= 32`).
+
+The rows must also be well formed, because `check` refuses what is not, and the list must never show a row that `check` refuses. The SDK's migration helper makes the database keep these rules (CHECK constraints), or the adapter adds them as predicates:
+- the ancestors column never holds one entry twice, and never the row itself;
+- each field column has its declared type, and the column of a `principal` field holds only valid principal strings or `NULL` (SQL would compare the text, while `check` refuses a value that is not a principal).
 
 - "Row is under scope S" means S is one of the row's ancestors, at any depth. A row is not under itself.
 - `condition` missing means true.
