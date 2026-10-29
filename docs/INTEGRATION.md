@@ -113,7 +113,7 @@ service accounts, `tut_ak_…` for agents) and retire the old ones.
 
 | Repo | Old credential | Replaced by |
 | --- | --- | --- |
-| texc-symphony | None today: the API router has no token check | Tutela access token with `aud=symphony` |
+| texc-symphony | One static bearer token (`server.api_token` / `SYMPHONY_API_TOKEN`), required on any non-loopback bind and compared in constant time | Tutela access token with `aud=symphony` (texc-symphony PR #14: the old token stays behind `server.legacy_api_token`, on for one release, then off by default) |
 | attache | `att_` operator tokens (`services/embassy/src/token.rs`) | Humans: OIDC sign-in. Machines: Tutela service-account keys `tut_sk_…` |
 | onto-intelli | `onto1.` session tokens, `onto_sk_` project keys, `x-onto-act-*` headers (all in `crates/onto-grpc/src/auth.rs`) | Tutela access tokens, delegated agent tokens, `tut_sk_…` keys |
 | nexc-engine | HS256 session JWTs (`NEXC_JWT_SECRET`), `nexc_agt_` firewall API tokens (`backend/src/security/api_token.rs`), `NEXC_ONTO_TOKEN` | Tutela access tokens; `tut_ak_…` agent keys (the firewall moves to attache); one exchanged token per audience |
@@ -155,12 +155,17 @@ Phase B for delegated agent tokens.
 ### Shadow run and old credentials
 
 No shadow run is needed: symphony has no permission checks to replace.
-There is no old credential either. Suggested: keep a local single-user mode
+It does have an old credential: one static bearer token
+(`server.api_token` / `SYMPHONY_API_TOKEN`), required on any non-loopback
+bind. It goes through the window above behind `server.legacy_api_token`
+(on in the release that adds Tutela, off by default in the next, removed
+after), with a deprecation warning. Suggested: keep a local single-user mode
 that listens on `127.0.0.1` only; any other listen address requires tokens.
 
 ### What symphony stops doing
 
-Serving its task API without checking who calls.
+Accepting its one static API token as the way to call the task API: every
+caller becomes a Tutela-verified principal.
 
 ---
 
