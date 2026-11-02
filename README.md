@@ -160,6 +160,7 @@ Phase A, Rust side: built (items 1–9). Phase A is **not done**: fuzzing, the J
 | `tutela-safenet` (SSRF-safe outbound HTTP, THREAT-MODEL TM-18) | Done (Phase A) |
 | `tutela-vault` (envelope encryption with a KMS trait) | Done (Phase A) |
 | `tutela-sdk`: token verifier (CONTRACTS §4), auth layer for axum and tonic, route guards, decision cache, `list_filter` SQL adapter | Done (Phase A); the list-query gate benchmark is [#22](https://github.com/f8fvwgzc/tutela/issues/22) |
+| `tutelad`: the service binary with config, health, readiness, metrics, JSON logs, graceful shutdown and bearer-token checks on HTTP and gRPC ([ADR-0018](docs/DECISIONS.md#adr-0018-tutelad-the-stack-the-two-ports-and-the-config)) | Built (Phase B). It serves no permission API yet. |
 | Everything else | Planned, see [docs/ROADMAP.md](docs/ROADMAP.md) |
 
 Phases: **A** packages and library mode, **B** `tutelad` service and Tutela Console, **C** own login server (optional), **D** hardening. Honest size for Tutela alone: about 35–45 person-weeks for one strong engineer.

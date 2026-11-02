@@ -1,0 +1,47 @@
+[package]
+name = "tutelad"
+description = "The Tutela service: token verification, tenants and the permission store over HTTP and gRPC"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "tutelad"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+axum = { version = "0.8.9", features = ["http2"] }
+clap = { version = "4.6.7", features = ["derive", "env"] }
+deadpool-postgres = "0.14.2"
+prometheus-client = "0.25.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-postgres-rustls = { version = "0.14.0", features = ["aws-lc-rs"] }
+toml = "1.1.8"
+tonic = "0.14.9"
+tonic-health = "0.14.9"
+tower = { version = "0.5.3", features = ["util"] }
+tower-http = { version = "0.6", features = ["timeout"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+tutela-contracts = { workspace = true }
+tutela-safenet = { workspace = true }
+tutela-sdk = { workspace = true }
+tutela-store = { workspace = true }
+uuid = { version = "1.29.0", features = ["v7"] }
+
+[dev-dependencies]
+aws-lc-rs = { version = "1.18.2", default-features = false, features = ["aws-lc-sys", "alloc"] }
+base64 = "0.23.1"
+reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
+tokio = { version = "1.54.1", features = ["io-util", "process"] }

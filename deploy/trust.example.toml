@@ -1,0 +1,22 @@
+# The tutelad trust file: which issuers it accepts, and for which tenants
+# (docs/CONTRACTS.md 1.6). Copy it to trust.toml and edit it. It holds no secret.
+
+# Host names the JWKS fetch may reach on a private network.
+private_hosts = ["keycloak.internal"]
+
+# A Tutela issuer.
+[[issuer]]
+iss = "https://auth.example.test"
+jwks_uri = "https://auth.example.test/.well-known/jwks.json"
+algs = ["ES256"]
+tenants = ["ten_0193a1b2-c3d4-7e5f-8a6b-7c8d9e0f1a2b"]
+
+# An external issuer (docs/CONTRACTS.md 4.6): exactly one tenant, which comes
+# from this file and never from the token.
+[[issuer]]
+iss = "https://keycloak.internal/realms/acme"
+jwks_uri = "https://keycloak.internal/realms/acme/protocol/openid-connect/certs"
+algs = ["RS256"]
+tenants = ["ten_0193a1b2-c3d4-7e5f-8a6b-7c8d9e0f1a2c"]
+external = true
+allow_typ_jwt = true

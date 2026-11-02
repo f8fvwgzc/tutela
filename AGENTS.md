@@ -52,7 +52,9 @@ tutela/
 │   ├── tutela-safenet/      SSRF-safe outbound HTTP                                       now
 │   ├── tutela-cli/          the `tutela` CLI: init, check, codegen, migrate, apply,       now
 │   │                        approvals (apps, keys: B)
-│   └── tutelad/             the service; serves the Tutela Console                        B
+│   └── tutelad/             the service: config, ports, health, metrics, logs, shutdown   now
+│                            (check API, admin API, Console: B)
+├── deploy/                  production settings for tutelad                               now
 ├── sdk/
 │   ├── react/               @f8fvwgzc/tutela-react                                        A
 │   ├── node/                @f8fvwgzc/tutela-node                                         A

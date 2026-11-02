@@ -34,6 +34,7 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0015](#adr-0015-approval-tokens-for-tutela-apply-in-library-mode) | Approval tokens for `tutela apply` in library mode | Accepted |
 | [0016](#adr-0016-the-list-query-grouped-terms-hashed-scope-tests-and-lower-filter-limits) | The list query: grouped terms, hashed scope tests and lower filter limits | Accepted |
 | [0017](#adr-0017-opaque-public-errors-for-the-crates-that-touch-the-outside-world) | Opaque public errors for the crates that touch the outside world | Accepted |
+| [0018](#adr-0018-tutelad-the-stack-the-two-ports-and-the-config) | `tutelad`: the stack, the two ports and the config | Accepted |
 
 ---
 
@@ -692,3 +693,43 @@ Our public errors were `#[non_exhaustive]` enums with public variants, so every 
 - **Keep public enums and box only the causes** (the skill's middle ground). This keeps every variant public. The store's and the safenet's categories are still moving in Phase B.
 - **`anyhow` in the libraries.** It gives callers nothing to branch on.
 - **Make every error in the workspace opaque.** About thirty parse errors would change, with no dependency type to hide, and two consumers would pay for it.
+
+---
+
+## ADR-0018: `tutelad`: the stack, the two ports and the config
+
+**Status:** Accepted, 2026-11-02. Built in Phase B ([#48](https://github.com/f8fvwgzc/tutela/issues/48)).
+
+**Context.** The docs name `tutelad`, its env prefix, its image and what it serves. They name axum and tonic for the SDK's layers, and gRPC `tutela.authz.v1` for the service. They leave open the layout, the ports, the config format, the metrics and the pool.
+
+**Decision.**
+
+1. **A library plus a thin binary**, in `crates/tutelad`. The tests run the same `Server` as production, and `Server::bind` takes port 0. The modules are `config`, `api`, `db`, `telemetry` and `server`.
+2. **axum and tonic on one listener.** `api::api_router` looks at `content-type`: `application/grpc...` goes to the gRPC router, the rest to the HTTP router. They are two routers because each needs `AuthLayer` with its own `Protocol`, and because tonic's router has its own fallback. A later part adds an HTTP route in `api_router`, and a gRPC service next to the health service in `Server::bind`.
+3. **Two ports.**
+   - The API port needs a token on every request, also for an unknown path, so it says nothing to a caller without one.
+   - The ops port has `/healthz`, `/readyz` and `/metrics` with no token. It stays out of the public load balancer. A probe needs no token, and metrics never share a port with the API.
+4. **Config is `TUTELA_*` variables plus a trust file.**
+   - The trust file is TOML (`TUTELA_TRUST_FILE`), because a list of issuers with their tenants does not fit a variable. It holds no secret, so it can be a ConfigMap. Unknown keys are refused, and so is a file with no issuer.
+   - `TUTELA_DEV_MODE=1` allows `http` issuers and JWKS on loopback only.
+   - `Config`'s `Debug` leaves the database URL out, and errors never hold it.
+5. **Readiness needs the exact schema.** `/readyz` fails unless the newest migration in the database is the one this build knows. This keeps ADR-0014's rule that an old binary never writes to a newer schema. So during an upgrade, old replicas go not ready when the migration lands. Rust products keep answering from their bundles; the deploy should start new replicas right after the migration.
+6. **Liveness never reads the database.** A database outage must not restart every replica.
+7. **Metrics are the Prometheus text format** (`prometheus-client`), prefix `tutelad_`. A collector can scrape them. Labels hold a method, a route pattern, a status or a verification step, never a tenant, a token or a URL.
+8. **Logs are JSON on stdout** (`tracing-subscriber`), filter `TUTELA_LOG`. A request is logged by its route pattern, with a request id and the `traceparent` trace id. The tenant id goes in the request span once a handler has it. OTLP export is not built yet (ROADMAP Phase B status).
+9. **`AuthLayer` puts the failed `Step` in the response's extensions.** The wire still says nothing, and an outer layer can log and count the step, as CONTRACTS.md 4.2 asks. The SDK stays free of `tracing`.
+10. **The pool is `deadpool-postgres` with `RecyclingMethod::Clean`**, so `RESET ALL` runs on every reuse. Sessions start with `statement_timeout=5000` and `idle_in_transaction_session_timeout=10000`. The TLS rule is the CLI's: `tutela_store::database_config` is now the one copy of it. A database that is not on this machine needs `sslmode=require`, and the certificate is always verified.
+11. **Shutdown order.** On SIGTERM: readiness fails and gRPC health says not serving; the service keeps serving for `TUTELA_SHUTDOWN_DRAIN_SECS`; the API port stops and running requests get `TUTELA_SHUTDOWN_TIMEOUT_SECS` to finish; the ops port stops last.
+12. **The licence stays the workspace's MIT for now.** ADR-0010 leaves `tutelad`'s licence open until before Phase C or a public release.
+
+**Consequences.**
+- `RUST_BACKTRACE=1 RUST_LIB_BACKTRACE=0` is in `deploy/tutelad.env`, which `deploy/compose.yaml` reads ([#45](https://github.com/f8fvwgzc/tutela/issues/45)). A test keeps both there. The Helm chart must set the same values when it exists.
+- `TUTELA_MASTER_KEY` and `TUTELA_KEY_PEPPER` are not read yet, because nothing in `tutelad` uses them. The part that adds signing keys and API keys must make them required at start-up (TM-22).
+- Delegated tokens stay off in the verifier until the part that adds them.
+- The trust file is static. Tenants that token exchange makes at runtime will need the service's own issuer to trust the tenant directory; that part must change this.
+
+**Alternatives considered.**
+- **One port for everything.** Metrics would need auth or would leak on the public port, and a probe would need a token or an exception.
+- **gRPC health on the ops port.** It would prove nothing about gRPC on the API port. Health behind the token check proves `AuthLayer` with `Protocol::Grpc` over real HTTP/2.
+- **Add tonic with the first real gRPC service.** Then part 2 would have to solve the shared listener and the second auth layer together with the API.
+- **`sqlx`.** The store is built on `tokio-postgres`, and every call takes its `Transaction`.

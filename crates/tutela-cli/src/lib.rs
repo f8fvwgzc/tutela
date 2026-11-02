@@ -15,10 +15,9 @@ pub mod codegen;
 pub mod init;
 
 use std::io::Write;
-use std::str::FromStr;
 
 use tutela_pdp::model::{Issues, Model};
-use tutela_store::tokio_postgres::config::Host;
+pub use tutela_store::Transport;
 use tutela_store::tokio_postgres::{Client, Config, NoTls};
 
 /// The environment variable that names the database.
@@ -116,61 +115,16 @@ pub fn check(source: &str, out: &mut dyn Write) -> Result<Model, CliError> {
     }
 }
 
-/// How the CLI connects to the database.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Transport {
-    /// Plain text: only to a Unix socket or a loopback host.
-    Local,
-    /// TLS with a verified certificate (`sslmode=require`).
-    Tls,
-}
-
-/// Parses a database connection string and picks the transport.
-///
-/// - `sslmode=require` connects over TLS (rustls on aws-lc-rs, the
-///   platform verifier) and **always verifies the certificate**, which is
-///   stricter than libpq's `require`.
-/// - Without it, only a Unix socket or a loopback host is accepted, so a
-///   password and the manifest never cross a network in plain text.
-///   `sslmode=prefer` (the default) could fall back to plain text, so it
-///   does not count.
+/// Parses a database connection string and picks the transport, under the
+/// rules of [`tutela_store::database_config`].
 ///
 /// # Errors
 ///
 /// [`CliError::Database`] for a string that does not parse, or for a
 /// remote host without `sslmode=require`.
 pub fn database_config(url: &str) -> Result<(Config, Transport), CliError> {
-    use tutela_store::tokio_postgres::config::SslMode;
-    let config = Config::from_str(url)
-        .map_err(|_| CliError::Database("TUTELA_DATABASE_URL does not parse"))?;
-    if config.get_hosts().is_empty() && config.get_hostaddrs().is_empty() {
-        return Err(CliError::Database("TUTELA_DATABASE_URL names no host"));
-    }
-    if config.get_ssl_mode() == SslMode::Require {
-        return Ok((config, Transport::Tls));
-    }
-    let loopback_host = |h: &Host| match h {
-        Host::Tcp(name) => {
-            name == "localhost"
-                || name
-                    .trim_matches(['[', ']'])
-                    .parse::<std::net::IpAddr>()
-                    .is_ok_and(|ip| ip.is_loopback())
-        }
-        Host::Unix(_) => true,
-    };
-    if !config.get_hosts().iter().all(loopback_host)
-        || !config
-            .get_hostaddrs()
-            .iter()
-            .all(std::net::IpAddr::is_loopback)
-    {
-        return Err(CliError::Database(
-            "a database that is not on this machine needs TLS: add sslmode=require \
-             (the certificate is always verified)",
-        ));
-    }
-    Ok((config, Transport::Local))
+    tutela_store::database_config(url)
+        .map_err(|e| CliError::Database(e.detail().unwrap_or("TUTELA_DATABASE_URL is not valid")))
 }
 
 /// Connects to the database in `TUTELA_DATABASE_URL`.

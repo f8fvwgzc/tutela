@@ -649,13 +649,20 @@ services:
   # tutelad:
   #   image: ghcr.io/f8fvwgzc/tutelad:<release>
   #   environment:
-  #     TUTELA_DATABASE_URL: postgres://tutela:dev@postgres/tutela
+  #     TUTELA_DATABASE_URL: postgres://tutela_service:dev@postgres/tutela?sslmode=require
+  #                                                        # a role that owns nothing; TLS, because
+  #                                                        # the database is not on this machine
+  #     TUTELA_TRUST_FILE: /etc/tutela/trust.toml          # issuers and tenants
   #     TUTELA_MASTER_KEY: ${TUTELA_MASTER_KEY}            # dev value from .env.example
   #     TUTELA_KEY_PEPPER: ${TUTELA_KEY_PEPPER}            # separate from the master key
   #     TUTELA_KEY_PEPPER_VERSION: "1"
+  #     RUST_BACKTRACE: "1"                                # backtraces on panics only
+  #     RUST_LIB_BACKTRACE: "0"
 ```
 
 - Test users live in seed and fixture files. Never use real credentials.
+- The production settings for `tutelad` are in `deploy/`: `tutelad.env`,
+  `compose.yaml` and `trust.example.toml`.
 - Run `cargo run` in `api/` and your web dev server in `web/`.
 
 ## Step 10. Deploy with Helm (service mode: Phase B; chart hardening: Phase D)
