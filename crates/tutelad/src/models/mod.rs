@@ -21,7 +21,7 @@ use axum::http::StatusCode;
 use tutela_contracts::keys::{ActionKey, ResourceId, ResourceType};
 use tutela_contracts::principal::{Principal, PrincipalKind};
 use tutela_pdp::model::{Model, ModelDiff, diff};
-use tutela_pdp::{Attrs, CheckRequest, ResourceRef};
+use tutela_pdp::{Attrs, CheckRequest, ImpactReport, Pdp, ResourceRef, model_impact};
 use tutela_sdk::Identity;
 use tutela_store::approval;
 use tutela_store::{ActiveModel, StoreError, StoreErrorKind, TenantBundle, TenantPublish};
@@ -30,7 +30,7 @@ use crate::api::{AppState, Problem};
 use crate::authz::floor;
 use crate::cache::ActionClass;
 use crate::tenant::Tenant;
-use wire::{ActiveOut, PublishBody, PublishResult, VersionOut, VersionsOut};
+use wire::{ActiveOut, ChangeOut, ImpactOut, PublishBody, PublishResult, VersionOut, VersionsOut};
 
 /// What looking at a tenant's model needs, at every org.
 pub const READ_KEYS: [&str; 1] = ["read_audit"];
@@ -146,7 +146,6 @@ pub(crate) async fn compile(source: String) -> Result<Model, Problem> {
 
 /// The tenant now: one view of its data and its active model.
 pub(crate) struct Current {
-    #[allow(dead_code)] // the impact report reads it
     pub bundle: TenantBundle,
     pub active: ActiveModel,
     pub model: Arc<Model>,
@@ -163,6 +162,38 @@ pub(crate) async fn current(state: &AppState, tenant: &Tenant) -> Result<Current
         bundle,
         active,
         model,
+    })
+}
+
+/// Who gains or loses what if `candidate` replaced the active model, over
+/// the tenant's data as `now` holds it. Two evaluators are built for it on a
+/// blocking thread; no snapshot changes, and nothing is written.
+pub(crate) async fn report(
+    state: &AppState,
+    tenant: &Tenant,
+    now: &Current,
+    candidate: Arc<Model>,
+) -> Result<ImpactReport, Problem> {
+    let key = tenant.key().clone();
+    let (rev, data, paths) = (
+        now.bundle.rev,
+        now.bundle.data.clone(),
+        now.bundle.paths.clone(),
+    );
+    let active = Arc::clone(&now.model);
+    let limit = state.impact_work;
+    let built = tokio::task::spawn_blocking(move || {
+        let mut before = Pdp::new();
+        before.load(key.clone(), rev, active, data.clone()).ok()?;
+        let mut after = Pdp::new();
+        after.load(key.clone(), rev, candidate, data).ok()?;
+        model_impact(&before, &after, &key, &paths, limit).ok()
+    })
+    .await
+    .map_err(|_| Problem::stale("unavailable"))?;
+    built.ok_or_else(|| {
+        tracing::warn!("an impact report could not be made from the tenant's data");
+        Problem::stale("unavailable")
     })
 }
 
@@ -297,6 +328,9 @@ pub async fn publish(
         return Err(conflict("no_change", "this is the active model"));
     }
     let (d, text) = diff_of(&now.model, &candidate)?;
+    let candidate = Arc::new(candidate);
+    let impact = ImpactOut::of(&report(state, &tenant, &now, Arc::clone(&candidate)).await?);
+    let impact_text = serde_json::to_string(&impact).map_err(|_| Problem::stale("unavailable"))?;
     let mut approvers = Vec::new();
     if d.is_widening() {
         let app = candidate.app().as_str();
@@ -323,7 +357,7 @@ pub async fn publish(
             expected,
             class: d.class(),
             diff: &text,
-            impact: None,
+            impact: Some(&impact_text),
             author: Some(&author),
             approvers: &approvers,
             restores,
@@ -339,6 +373,35 @@ pub async fn publish(
         digest: to,
         class: d.class().as_str().to_ascii_lowercase(),
         restores,
+        impact,
+    })
+}
+
+/// `POST /v1/models/impact`: what a publish of this text would do now, and
+/// what an approval token for it must name. Nothing is written.
+///
+/// # Errors
+///
+/// A [`Problem`].
+pub async fn impact(
+    state: &AppState,
+    id: &Identity,
+    body: PublishBody,
+) -> Result<ChangeOut, Problem> {
+    let tenant = Tenant::of(id);
+    admin(state, id, &tenant, &READ_KEYS).await?;
+    let (source, _) = candidate_text(state, &tenant, body.source, body.restore).await?;
+    let candidate = compile(source.clone()).await?;
+    let now = current(state, &tenant).await?;
+    let (d, text) = diff_of(&now.model, &candidate)?;
+    let report = report(state, &tenant, &now, Arc::new(candidate)).await?;
+    Ok(ChangeOut {
+        version: now.active.version,
+        from: now.active.digest.clone(),
+        to: tutela_store::digest(&source),
+        class: d.class().as_str().to_ascii_lowercase(),
+        diff: text,
+        impact: ImpactOut::of(&report),
     })
 }
 

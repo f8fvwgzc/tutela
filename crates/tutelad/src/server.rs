@@ -201,6 +201,7 @@ pub fn state(config: &Config) -> anyhow::Result<AppState> {
         metrics,
         stopping: Arc::default(),
         dev_mode: config.dev_mode,
+        impact_work: config.impact_work,
     })
 }
 

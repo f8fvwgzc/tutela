@@ -125,12 +125,13 @@ Done:
 | Permission map, `POST /v1/authz/permissions` with ETag and 304 | Done | [ADR-0023](DECISIONS.md#adr-0023-the-permission-map-and-a-tag-that-covers-the-answer) |
 | `write_check` over the API, moves and links across scopes | Done | [ADR-0025](DECISIONS.md#adr-0025-moves-and-links-in-write_check) |
 | Model versioning: a tenant's own numbered versions, rollback as a new publish | Done | [ADR-0026](DECISIONS.md#adr-0026-a-tenant-owns-its-model-versions) |
+| Impact report: who gains or loses what, bounded, never "no impact" when cut short | Done | [ADR-0027](DECISIONS.md#adr-0027-the-impact-report) |
 
 Not started:
 
 | Work | Part | Note |
 |---|---|---|
-| Impact report, explain and simulate, two-person publish | 2b | |
+| Explain and simulate, two-person publish | 2b | |
 | Signed bundles for PDP caches and offline checks | 3 | After token exchange and SSE ([ADR-0024](DECISIONS.md#adr-0024-signed-bundles-wait-for-part-3)). Their `expires_at` must honour `next_expiry`. |
 | `tutela apply` against `tutelad`, `tutela apps create`, `tutela keys rotate` | 4 | `tutela apply` calls `POST /v1/models/publish`, per tenant. |
 | Webhooks, SSE `/v1/events` | 3 | |

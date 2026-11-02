@@ -389,6 +389,18 @@ impl Role {
     pub fn has_admin_key(&self) -> bool {
         self.grants.iter().any(|k| is_admin_key(k.action()))
     }
+
+    /// A role that gives nothing: what a role is in a model that lacks it.
+    pub(crate) fn nothing() -> Self {
+        Self {
+            label: None,
+            seeded: None,
+            levels: BTreeMap::new(),
+            field_levels: BTreeMap::new(),
+            grants: BTreeSet::new(),
+            assignable_to: BTreeSet::new(),
+        }
+    }
 }
 
 /// How a field hidden by a rule is shown.

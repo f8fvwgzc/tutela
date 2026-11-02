@@ -116,3 +116,18 @@ M55 moves.rs: caught by 1 test(s) - a move may leave its org
       tests_moves::tm05_a_move_stays_in_its_tenant_and_its_org
 M56 data.rs: caught by 8 test(s) - boundary rules are not loaded
       tests_moves::a_scope_further_out_adds_a_rule_only_when_it_set_one, tests_moves::an_owner_can_block_a_move_into_a_looser_scope, tests_moves::links_from_says_who_may_link_in, tests_moves::tm08_a_boundary_rule_stops_a_move_on_its_own_side, tests_moves::tm08_no_move_widens_past_the_rules, tests_moves::tm08_owners_of_a_scope_hold_approve_move and 2 more
+
+M57 impact.rs: caught by 1 test(s) - a report that stops early says it is complete
+      tests_impact::a_report_that_stops_early_never_says_no_impact
+M58 impact.rs: caught by 2 test(s) - a report forgets the members of groups
+      tests_impact::tm08_the_impact_report_holds_every_change, tests_impact::tm08_the_impact_test_compares_enough
+M59 impact.rs: caught by 1 test(s) - a report ignores changed conditions
+      tests_impact::tm08_the_impact_test_compares_enough
+M60 impact.rs: caught by 2 test(s) - a report ignores changed field rules
+      tests_impact::tm08_the_impact_report_holds_every_change, tests_impact::tm08_the_impact_test_compares_enough
+M62 impact.rs: caught by 1 test(s) - a report skips the types a stale scope may hold
+      tests_impact::tm08_the_impact_report_holds_every_change
+M63 impact.rs: caught by 1 test(s) - a report misses who may hold a role
+      tests_impact::tm08_the_impact_test_compares_enough
+M64 impact.rs: caught by 1 test(s) - no_impact ignores an incomplete report
+      tests_impact::a_report_that_stops_early_never_says_no_impact

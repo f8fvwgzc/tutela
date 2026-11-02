@@ -6,7 +6,7 @@ use serde::Deserialize;
 use tutela_sdk::Identity;
 
 use super::observed;
-use super::wire::{PublishBody, PublishResult, VersionOut, VersionsOut};
+use super::wire::{ChangeOut, PublishBody, PublishResult, VersionOut, VersionsOut};
 use crate::api::{AppState, Problem};
 use crate::authz::http::Body;
 
@@ -21,6 +21,15 @@ pub async fn publish(
     Body(body): Body<PublishBody>,
 ) -> Result<Json<PublishResult>, Problem> {
     observed(&state, "publish", super::publish(&state, &id, body).await).map(Json)
+}
+
+/// `POST /v1/models/impact`.
+pub async fn impact(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Body(body): Body<PublishBody>,
+) -> Result<Json<ChangeOut>, Problem> {
+    observed(&state, "impact", super::impact(&state, &id, body).await).map(Json)
 }
 
 /// The query of `GET /v1/models`.
