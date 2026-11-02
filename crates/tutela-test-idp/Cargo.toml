@@ -1,0 +1,32 @@
+[package]
+name = "tutela-test-idp"
+description = "A test OpenID provider shaped like Keycloak 26, on loopback only, for Tutela's tests and a local demo of the Console. Never part of tutelad."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "tutela-test-idp"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+aws-lc-rs = { version = "1.18.2", default-features = false, features = ["aws-lc-sys", "alloc", "ring-io"] }
+axum = { version = "0.8.9" }
+base64 = "0.23.1"
+clap = { version = "4.6.7", features = ["derive"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+serde_urlencoded = "0.7.1"
+tokio = { version = "1.54.1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+uuid = { version = "1.29.0", features = ["v7"] }
+
+[dev-dependencies]
+reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
