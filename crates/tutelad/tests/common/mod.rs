@@ -468,8 +468,13 @@ fn scope(kind: &str, id: &str) -> tutela_pdp::PathEntry {
 }
 
 pub async fn seed(owner: &mut Client, user: &str, role: &str) -> Seed {
+    seed_of(owner, ISS, user, role).await
+}
+
+/// [`seed`], for a tenant of `iss`.
+pub async fn seed_of(owner: &mut Client, iss: &str, user: &str, role: &str) -> Seed {
     use tutela_pdp::Subject;
-    let key = tenant(owner).await;
+    let key = tenant_of(owner, iss).await;
     let tx = owner.transaction().await.unwrap();
     let (org, _) = tutela_store::add_org(&tx, &key).await.unwrap();
     let org = tutela_pdp::PathEntry::org(&org).unwrap();
@@ -560,9 +565,14 @@ impl World {
 impl Issuer {
     /// A token of `sub` in tenant `tid`, carrying `rev`.
     pub fn token(&self, sub: &str, tid: &str, rev: u64) -> String {
+        self.token_of(ISS, sub, tid, rev)
+    }
+
+    /// [`Issuer::token`], from issuer `iss`.
+    pub fn token_of(&self, iss: &str, sub: &str, tid: &str, rev: u64) -> String {
         let now = now();
         let mut claims = json!({
-            "iss": ISS, "sub": sub, "aud": AUD, "azp": "crm-web",
+            "iss": iss, "sub": sub, "aud": AUD, "azp": "crm-web",
             "exp": now + 300, "iat": now, "nbf": now,
             "jti": uuid::Uuid::now_v7().to_string(),
             "tid": tid, "epoch": 0, "rev": rev,

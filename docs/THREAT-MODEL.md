@@ -125,7 +125,7 @@ Each threat has an id (TM-01 ... TM-23). Its tests carry the id in their name, f
 | TM-10 | List and count leaks | SQL filters from the same evaluator | A, B | **Partly**: `list_filter` ≡ `check` in `tutela-pdp`, and scope paths that are current after a move in `tutela-store` (`tm10_*`); and the `tutela-sdk` SQL adapter, whose rows equal the rows `check` allows on Postgres, with no other tenant's rows and an exact count (`tm10_*`) |
 | TM-11 | Field leaks into search, vectors, exports, audit, prompts | Field masks on every exit path | A, B | No |
 | TM-12 | UI-only checks | Codegen route guards; SDK refuses to start without them | A | No |
-| TM-13 | Stale permission caches and slow revocation | `rev`, bundle expiry, refuse lower rev, documented delay | A, B | **Partly**: `tutela-pdp` refuses a lower or stale revision (`tm13_*`) |
+| TM-13 | Stale permission caches and slow revocation | `rev`, bundle expiry, refuse lower rev, documented delay | A, B | **Partly**: `tutela-pdp` refuses a lower or stale revision (`tm13_*`). `tutelad` replicas: built and tested end to end, with the delay measured (`crates/tutelad/tests/ha.rs`). Signed bundles: not built ([ADR-0024](DECISIONS.md#adr-0024-signed-bundles-wait-for-part-3)) |
 | TM-14 | Row-level security mistakes | `FORCE` RLS, `SET LOCAL`, app roles own no tables | A, B | **Yes** for `tutela-store` and `tutelad`: forced RLS on every tenant table, the tenant only from the verified token, a non-owner role, `check_isolation` at start-up and in readiness. Tested on a real Postgres in `crates/tutelad/tests/rls.rs` ([ADR-0019](DECISIONS.md#adr-0019-tenants-in-tutelad-the-tenant-comes-from-the-token-and-rls-is-checked)). Soft-delete of tenants is not built |
 | TM-15 | Signing key theft and rotation mistakes | `Signer` trait, per-tenant keys, KMS option, rotation timing, kid deny-list | B, C | **Partly**: `tutela-vault` master-key rotation (old blobs open with `TUTELA_MASTER_KEY_PREVIOUS` and are re-wrapped, `tm15_*`) and its KMS trait; token signing keys are Phase B; the `tutela-sdk` `kid` deny-list, the rate-limited refetch of an unknown `kid`, and fail-closed stale keys (`tm15_*`) |
 | TM-16 | API key theft | Separate, versioned pepper; hashed keys | B | No |
@@ -135,7 +135,7 @@ Each threat has an id (TM-01 ... TM-23). Its tests carry the id in their name, f
 | TM-20 | Audit tampering and gaps | Local hash chain; producer signatures; sequence numbers; acknowledged Append | B | No |
 | TM-21 | Supply chain | `cargo-deny`, `cargo-audit`, signed images, registered names, pinned git deps | first commit, A, D | **Partly**: blocking CI with `cargo-deny` and `cargo-audit`, workspace lints |
 | TM-22 | Insecure self-hosted defaults | TLS required, signup off, no dev mode outside loopback | B, D | No |
-| TM-23 | Outage and overload of `tutelad` | Offline token checks; in-process PDP; fail closed | A, B, D | No |
+| TM-23 | Outage and overload of `tutelad` | Offline token checks; in-process PDP; fail closed | A, B, D | **Partly**: replicas fail closed in a database outage, and a batch over 200 items is refused (`crates/tutelad/tests/ha.rs`, `tests/authz.rs`). Rate limits and load tests: Phase D |
 
 ### 5.1 Tokens and identity
 
@@ -324,7 +324,7 @@ Each threat has an id (TM-01 ... TM-23). Its tests carry the id in their name, f
   - Tokens never carry permission lists, so a token cannot keep old permissions alive.
   - Short lifetimes: access tokens 10 minutes; delegated hops 60–120 s; admin tokens 5 minutes.
   - 2+ `tutelad` replicas.
-  - **Documented delay.** Worst case for a revoked role = the max bundle age of that action class. Worst case for a disabled principal or a revoked session = the time to receive the event, and never more than the token lifetime plus clock skew. The exact numbers are set in Phase B and written in [ARCHITECTURE.md](ARCHITECTURE.md).
+  - **Documented delay.** On a `tutelad` replica: at most 1.5 s in normal running, measured at a worst case of 1.010 s over 60 rounds on two real processes. Cut off from the database, the max age of the action's class: 60 s for reads, 10 s for other actions, 1 s for admin keys and owner-only actions ([PERMISSION-MODEL.md 16.1](PERMISSION-MODEL.md#161-how-long-until-a-revocation-takes-effect), [ARCHITECTURE.md section 7](ARCHITECTURE.md#7-availability)). Worst case for a disabled principal or a revoked session = the time to receive the event, and never more than the token lifetime plus clock skew.
 - **Phase.** A (rev-keyed decision cache; bundle rules in `tutela-pdp`). B (revisions in `tutelad`, signed bundles, SSE).
 - **Test.** Phase B exit: a revoked role takes effect within the documented delay, measured end to end. The PDP is fed a lower-rev bundle → refused. An expired bundle → 503, never an allow. A bundle with a bad signature → refused. A read with `at_least_revision` on a lagging replica → waits or fails, never answers from the old revision.
 
@@ -522,7 +522,7 @@ Everything in section 5 is unbuilt, except the CI and lint parts of TM-21 and th
 
 **Open items** (decide and record in [DECISIONS.md](DECISIONS.md)):
 
-- The exact revocation delay numbers and max bundle ages per action class (TM-13).
+- Max bundle ages per action class, for a PDP outside `tutelad` (TM-13). A replica's numbers are set.
 - Rate-limit numbers for token, exchange, search and signup endpoints (TM-23).
 - Account recovery and MFA reset, and how to resist help-desk social engineering (Phase C).
 - Tenant offboarding: key destruction, crypto-shredding, data export and erasure, and how erasure fits with the hash-chained audit (TM-20).
