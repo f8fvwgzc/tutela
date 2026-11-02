@@ -1,7 +1,7 @@
 //! The service end to end, over real sockets: the two ports, bearer tokens
 //! on HTTP and gRPC, metrics, logs and the graceful shutdown.
+#![cfg(test)]
 
-#[cfg(test)]
 mod common;
 
 use std::time::Duration;
