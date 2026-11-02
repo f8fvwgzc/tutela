@@ -1345,6 +1345,7 @@ A verified token for a tenant that is not in the directory gets 403 `unknown_ten
 |---|---|
 | `GET /v1/models` | The active model and a page of versions, newest first. Query: `before`, `limit` (at most 100). The texts are left out. |
 | `GET /v1/models/{version}` | One version, with its text. 404 for a version this tenant does not have. |
+| `GET /v1/models/active` | The model the tenant runs on now, with its text: `{"version", "digest", "own", "source"}`. Also while the tenant follows the app's manifest and has no version (`version` 0, `own: false`). A change made in a UI (the Console's role editor) starts from `source` and sends `version` as `expected_version`. |
 | `POST /v1/models/impact` | A dry run: what a publish of this text would do now. Nothing is written. Needs what looking needs. |
 | `POST /v1/models/publish` | A new version. |
 
@@ -1572,7 +1573,7 @@ Registering, moving and deleting scopes, their private flag, role assignments an
 
 #### 7.13.4 Model versions over gRPC
 
-`ListModelVersions`, `GetModelVersion`, `ModelImpact`, `PublishModel`, `GetModelSettings`, `PutModelSettings`, `ProposeModel`, `ListProposals`, `GetProposal`, `ApproveProposal` and `RejectProposal` are the routes of 7.9, with their fields as message fields and the route's JSON answer as `result_json`.
+`ListModelVersions`, `GetModelVersion`, `GetActiveModel`, `ModelImpact`, `PublishModel`, `GetModelSettings`, `PutModelSettings`, `ProposeModel`, `ListProposals`, `GetProposal`, `ApproveProposal` and `RejectProposal` are the routes of 7.9, with their fields as message fields and the route's JSON answer as `result_json`.
 
 #### 7.13.5 The tenant, its orgs and its people
 

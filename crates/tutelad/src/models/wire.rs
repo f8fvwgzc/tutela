@@ -150,6 +150,20 @@ pub struct ActiveOut {
     pub own: bool,
 }
 
+/// `GET /v1/models/active`: the model a tenant runs on, with its text.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct ActiveSourceOut {
+    /// The newest version number. 0 when the tenant has none.
+    pub version: i64,
+    /// SHA-256 of the text.
+    pub digest: String,
+    /// `true` when the tenant published it itself, `false` when it follows
+    /// the app's manifest.
+    pub own: bool,
+    /// The `tutela.resources.toml` text: what a change starts from.
+    pub source: String,
+}
+
 /// One version.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct VersionOut {

@@ -274,6 +274,15 @@ impl Admin for AdminService {
         json(&crate::models::observed(&self.state, "publish", out)?)
     }
 
+    async fn get_active_model(
+        &self,
+        req: Request<pb::GetActiveModelRequest>,
+    ) -> Result<Response<pb::JsonResult>, Status> {
+        let id = identity(&req)?;
+        let out = crate::models::active(&self.state, &id).await;
+        json(&crate::models::observed(&self.state, "active", out)?)
+    }
+
     async fn get_model_settings(
         &self,
         req: Request<pb::GetModelSettingsRequest>,
