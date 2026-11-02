@@ -92,6 +92,52 @@ pub struct ScopeFieldRule {
     pub max: Level,
 }
 
+/// Who may move items across a scope's boundary (PERMISSION-MODEL.md 10).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub enum MoveRule {
+    /// Whoever may write in the scope.
+    Members,
+    /// Whoever holds `approve_move` on the scope.
+    Owners,
+    /// Nobody.
+    Nobody,
+}
+
+/// What happens to a move that would give someone more access
+/// (PERMISSION-MODEL.md 10).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub enum OnLooser {
+    /// It waits for the source owner's approval.
+    Approve,
+    /// It is refused.
+    Block,
+}
+
+/// Where a link into a scope may come from (PERMISSION-MODEL.md 9).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub enum LinksFrom {
+    /// Any scope of the org.
+    Any,
+    /// Only from under the scope's parent.
+    Team,
+    /// Only from inside the scope.
+    Nobody,
+}
+
+/// The move and link rules of one scope. `None` is the default of
+/// PERMISSION-MODEL.md 8.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct BoundaryRule {
+    /// Who may move items out.
+    pub moves_out: Option<MoveRule>,
+    /// Who may move items in.
+    pub moves_in: Option<MoveRule>,
+    /// What a move into a looser scope does.
+    pub on_looser: Option<OnLooser>,
+    /// Where links into this scope may come from.
+    pub links_from: Option<LinksFrom>,
+}
+
 /// Everything the evaluator reads about one tenant besides the model.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct TenantData {
@@ -108,6 +154,9 @@ pub struct TenantData {
     pub private_scopes: BTreeSet<PathEntry>,
     /// The field rules at single scopes.
     pub field_rules: Vec<ScopeFieldRule>,
+    /// The move and link rules of single scopes. A scope not listed has the
+    /// defaults.
+    pub boundaries: BTreeMap<PathEntry, BoundaryRule>,
 }
 
 /// Why [`crate::Pdp::load`] refused a bundle.
@@ -178,6 +227,8 @@ pub(crate) struct ScopeIndex {
     pub groups: BTreeMap<usize, usize>,
     /// `true` if the scope stops inheritance.
     pub private: bool,
+    /// The move and link rules here.
+    pub boundary: BoundaryRule,
     /// The field rules here.
     pub rules: HashMap<FieldKey, NodeCaps>,
 }
@@ -226,6 +277,7 @@ impl Index {
             groups,
             private_scopes,
             field_rules,
+            boundaries,
         } = data;
         let orgs: HashSet<OrgId> = orgs.into_iter().collect();
         let check_scope = |scope: &PathEntry| -> Result<(), LoadError> {
@@ -340,6 +392,12 @@ impl Index {
         for p in &private_scopes {
             check_scope(p)?;
             scopes.entry(p.clone()).or_default().private = true;
+        }
+
+        // Move and link rules.
+        for (scope, rule) in boundaries {
+            check_scope(&scope)?;
+            scopes.entry(scope).or_default().boundary = rule;
         }
 
         // Field rules at single scopes.

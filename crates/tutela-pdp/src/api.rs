@@ -9,6 +9,8 @@ use tutela_contracts::keys::{ActionKey, FieldName, KeyError, ResourceId, Resourc
 use tutela_contracts::principal::Principal;
 use tutela_contracts::tenant::{OrgId, TenantKey};
 
+use crate::impact::ImpactLine;
+
 /// The longest path: at most 32 ancestors (CONTRACTS.md 6.5, ADR-0011).
 pub const MAX_PATH: usize = 32;
 
@@ -21,6 +23,12 @@ pub const MAX_BATCH: usize = 1_000;
 /// The most entries in `fields`, `attrs` or `new_attrs` of one request. A
 /// type has at most 256 fields and features (MANIFEST.md 11).
 pub const MAX_FIELDS: usize = 512;
+
+/// The most new links in one `write_check`.
+pub const MAX_LINKS: usize = 64;
+
+/// The most approvers named in one `write_check`.
+pub const MAX_APPROVERS: usize = 8;
 
 /// One node of a resource tree: a type and the product's own id
 /// (CONTRACTS.md 6.5). In JSON: `{"type": "matter", "id": "m-12"}`.
@@ -162,9 +170,15 @@ pub struct WriteCheckRequest {
     pub resource: ResourceRef,
     /// The changed fields only, with their new values. At least one.
     pub new_attrs: Attrs,
-    /// `Some` when the write moves the item to a new parent. Moves are
-    /// refused until boundary rules exist (ROADMAP Phase A item 5).
+    /// `Some` when the write moves the item to a new parent: the new
+    /// ancestors, nearest first (PERMISSION-MODEL.md 10).
     pub new_path: Option<Vec<PathEntry>>,
+    /// The resources this write links to, loaded server-side like
+    /// `resource`. At most [`MAX_LINKS`] (PERMISSION-MODEL.md 9).
+    pub new_links: Vec<ResourceRef>,
+    /// Who approved a move into a looser scope, in the product's own flow.
+    /// Each one is judged here, at this revision. At most [`MAX_APPROVERS`].
+    pub approved_by: Vec<Principal>,
     /// Sent by callers after their own writes.
     pub at_least_revision: Option<u64>,
 }
@@ -172,12 +186,71 @@ pub struct WriteCheckRequest {
 /// The answer of `write_check` (CONTRACTS.md 6.7).
 #[derive(Clone, PartialEq, Eq, Debug, Serialize)]
 pub struct WriteDecision {
-    /// Allow only if every changed field is allowed.
+    /// Allow only if every changed field, the move and every link are.
     pub effect: Effect,
     /// The tenant revision that was used.
     pub rev: u64,
     /// One verdict per changed field, sorted by field name.
     pub fields: Vec<FieldVerdict>,
+    /// The verdict on the move, when the write moves the item.
+    #[serde(rename = "move", skip_serializing_if = "Option::is_none")]
+    pub moved: Option<MoveDecision>,
+    /// One verdict per new link, in the order of the request.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<LinkVerdict>,
+}
+
+/// How a move ended.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MoveOutcome {
+    /// It may go ahead.
+    Allowed,
+    /// It would give someone more access, and waits for an owner of each
+    /// scope in `approve_at`.
+    NeedsApproval,
+    /// It is refused.
+    Refused,
+}
+
+/// The verdict on a move (PERMISSION-MODEL.md 10).
+#[derive(Clone, PartialEq, Eq, Debug, Serialize)]
+pub struct MoveDecision {
+    /// Allow only when `outcome` is `allowed`.
+    pub effect: Effect,
+    /// How it ended.
+    pub outcome: MoveOutcome,
+    /// Same format as `Decision.reason`.
+    pub reason: Reason,
+    /// The stored rules that decided.
+    pub rule_ids: Vec<RuleId>,
+    /// The scopes the item leaves, nearest first.
+    pub left: Vec<PathEntry>,
+    /// The scopes the item enters, nearest first.
+    pub entered: Vec<PathEntry>,
+    /// `true` when someone would gain access, or when the comparison could
+    /// not finish (`complete` is then `false`).
+    pub looser: bool,
+    /// `false` when the comparison hit a bound. Such a move counts as looser.
+    pub complete: bool,
+    /// The scopes that still need an owner's approval.
+    pub approve_at: Vec<PathEntry>,
+    /// Who would gain what. Bounded; it holds other principals, so a person
+    /// who asks about itself does not get it from `tutelad`.
+    pub gains: Vec<ImpactLine>,
+}
+
+/// The verdict on one new link (PERMISSION-MODEL.md 9).
+#[derive(Clone, PartialEq, Eq, Debug, Serialize)]
+pub struct LinkVerdict {
+    /// What the link points to.
+    pub target: PathEntry,
+    /// Allow or deny.
+    pub effect: Effect,
+    /// Same format as `Decision.reason`.
+    pub reason: Reason,
+    /// The stored rules that decided.
+    pub rule_ids: Vec<RuleId>,
 }
 
 /// The verdict for one changed field.

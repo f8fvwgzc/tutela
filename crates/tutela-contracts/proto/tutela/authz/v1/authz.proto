@@ -16,6 +16,8 @@ service Authz {
   rpc SearchSubject(SearchRequest) returns (SearchSubjectResponse);
   // POST /v1/authz/permissions.
   rpc Permissions(PermissionsRequest) returns (PermissionsResponse);
+  // POST /v1/authz/write-check.
+  rpc WriteCheck(WriteCheckRequest) returns (WriteCheckResponse);
 }
 
 // One link of the `act` chain: subject.properties.act in JSON.
@@ -170,6 +172,28 @@ message SearchSubjectResponse {
   repeated Subject results = 1;
   PageResponse page = 2;
   uint64 rev = 3;
+}
+
+message PathEntries {
+  repeated PathEntry entries = 1;
+}
+
+message WriteCheckRequest {
+  Subject subject = 1;
+  Resource resource = 2;
+  map<string, AttrValue> new_attrs = 3;
+  // Set for a move.
+  optional PathEntries new_path = 4;
+  repeated Resource new_links = 5;
+  repeated string approved_by = 6;
+  Context context = 7;
+}
+
+message WriteCheckResponse {
+  bool decision = 1;
+  uint64 rev = 2;
+  // context.tutela of the JSON answer, as JSON text.
+  string decision_json = 3;
 }
 
 message PermissionsRequest {

@@ -305,6 +305,10 @@ pub enum ReasonCode {
     BreakGlass,
     /// `not_allowed`: a generic deny, where the real reason must stay hidden.
     NotAllowed,
+    /// `boundary_rule`: a boundary rule of a scope stopped a move or a link.
+    BoundaryRule,
+    /// `approval_required`: a move into a looser scope waits for an owner.
+    ApprovalRequired,
 }
 
 impl ReasonCode {
@@ -323,6 +327,8 @@ impl ReasonCode {
         Self::TenantMismatch,
         Self::BreakGlass,
         Self::NotAllowed,
+        Self::BoundaryRule,
+        Self::ApprovalRequired,
     ];
 
     /// The wire name.
@@ -342,6 +348,8 @@ impl ReasonCode {
             Self::TenantMismatch => "tenant_mismatch",
             Self::BreakGlass => "break_glass",
             Self::NotAllowed => "not_allowed",
+            Self::BoundaryRule => "boundary_rule",
+            Self::ApprovalRequired => "approval_required",
         }
     }
 
@@ -364,6 +372,8 @@ impl ReasonCode {
                 | Self::ConditionFailed
                 | Self::DelegationOverlap
                 | Self::NotAllowed
+                | Self::BoundaryRule
+                | Self::ApprovalRequired
         )
     }
 }
@@ -1071,8 +1081,8 @@ mod tests {
             .copied()
             .filter(|c| c.is_safe_to_show())
             .collect();
-        assert_eq!(shown.len(), 7);
-        assert_eq!(ReasonCode::ALL.len(), 13);
+        assert_eq!(shown.len(), 9);
+        assert_eq!(ReasonCode::ALL.len(), 15);
         for &code in ReasonCode::ALL {
             assert_eq!(ReasonCode::from_code(code.as_str()), Some(code));
             assert_eq!(Reason::new(code).known_code(), Some(code));

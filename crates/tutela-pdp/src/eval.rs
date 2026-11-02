@@ -205,6 +205,28 @@ pub(crate) fn resolve<'a, 'm>(
     attrs: &Attrs,
     p: &'a Principal,
 ) -> Side<'a, 'm> {
+    resolve_with(ctx, walk, ty, Some(attrs), p)
+}
+
+/// [`resolve`] for a node whose field values Tutela does not have, for
+/// example a scope above a resource. Every condition counts as false, so the
+/// answer can only be too low.
+pub(crate) fn resolve_unseen<'a, 'm>(
+    ctx: Ctx<'m>,
+    walk: &Walk<'_, '_>,
+    ty: &ResourceType,
+    p: &'a Principal,
+) -> Side<'a, 'm> {
+    resolve_with(ctx, walk, ty, None, p)
+}
+
+fn resolve_with<'a, 'm>(
+    ctx: Ctx<'m>,
+    walk: &Walk<'_, '_>,
+    ty: &ResourceType,
+    attrs: Option<&Attrs>,
+    p: &'a Principal,
+) -> Side<'a, 'm> {
     let mut side = Side {
         principal: p,
         outcome: Outcome::NoRole,
@@ -265,7 +287,9 @@ pub(crate) fn resolve<'a, 'm>(
                     eval.item = Level::None;
                     continue;
                 };
-                if !condition_holds(ctx, &c.when, attrs, &p_text, groups) {
+                let holds =
+                    attrs.is_some_and(|a| condition_holds(ctx, &c.when, a, &p_text, groups));
+                if !holds {
                     eval.item = eval.item.min(c.otherwise);
                     eval.fired.push(ci);
                 }
@@ -369,7 +393,7 @@ pub(crate) fn condition_id(ci: usize) -> Option<RuleId> {
 /// The closest field rule for one role and field: walk up from the item;
 /// the first scope with a rule for this role or for all roles wins, a rule
 /// for the role first; else the model's org-root rules.
-fn closest_cap(
+pub(crate) fn closest_cap(
     ctx: Ctx<'_>,
     rule_nodes: &[&ScopeIndex],
     role: &RoleKey,

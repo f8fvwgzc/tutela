@@ -104,7 +104,7 @@ fn data() -> TenantData {
         ],
         groups: vec![],
         private_scopes: [entry("project", "p2")].into(),
-        field_rules: vec![],
+        ..TenantData::default()
     }
 }
 

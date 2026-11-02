@@ -793,6 +793,7 @@ pub(crate) fn tenant_world(rng: &mut Rng, n: u32, roles: &[String]) -> Tenant {
             groups,
             private_scopes,
             field_rules,
+            ..TenantData::default()
         },
         nodes,
     }

@@ -209,6 +209,7 @@ pub(crate) fn kestrel_data() -> TenantData {
             fr("fr_3", "owner", Level::Full),
             fr("fr_4", "agent", Level::Read),
         ],
+        ..TenantData::default()
     }
 }
 
@@ -299,6 +300,8 @@ fn write_req(p: &Principal, actors: Vec<Principal>, field: &str) -> WriteCheckRe
         resource: c204(),
         new_attrs,
         new_path: None,
+        new_links: vec![],
+        approved_by: vec![],
         at_least_revision: None,
     }
 }
@@ -814,10 +817,10 @@ fn write_check_names_every_field_and_denies_unknown_ones() {
 }
 
 #[test]
-fn write_check_refuses_moves_and_empty_writes() {
+fn write_check_refuses_a_bad_new_path_and_an_empty_write() {
     let pdp = kestrel();
     let mut r = write_req(&user(OMAR), vec![], "review_notes");
-    r.new_path = Some(path_of(&entry("contract", "c-219")));
+    r.new_path = Some(vec![]);
     assert!(matches!(
         pdp.write_check(&r),
         Err(PdpError::InvalidInput { .. })

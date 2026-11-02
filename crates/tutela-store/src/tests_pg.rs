@@ -1558,3 +1558,53 @@ async fn assignments_for_a_principal_come_through_its_groups() {
     drop(tx);
     db.finish().await;
 }
+
+#[tokio::test]
+async fn boundary_rules_are_stored_with_a_revision_and_keep_the_private_flag() {
+    use tutela_pdp::{BoundaryRule, LinksFrom, MoveRule, OnLooser};
+    let Some(mut db) = db().await else { return };
+    let (t, o) = tenant(&mut db.client).await;
+    let scope = entry("project", "p-1");
+    let rule = BoundaryRule {
+        moves_out: Some(MoveRule::Owners),
+        moves_in: Some(MoveRule::Nobody),
+        on_looser: Some(OnLooser::Block),
+        links_from: Some(LinksFrom::Team),
+    };
+    let tx = db.client.transaction().await.unwrap();
+    assert_eq!(
+        kind(crate::set_boundary(&tx, &t, &scope, &rule).await),
+        Some(StoreErrorKind::NotFound)
+    );
+    tx.rollback().await.unwrap();
+
+    let tx = db.client.transaction().await.unwrap();
+    assert_eq!(
+        kind(crate::set_boundary(&tx, &t, &org(&o), &rule).await),
+        Some(StoreErrorKind::Invalid)
+    );
+    tx.rollback().await.unwrap();
+
+    let tx = db.client.transaction().await.unwrap();
+    let before = crate::put_scope(&tx, &t, &scope, &[org(&o)], true)
+        .await
+        .unwrap();
+    let after = crate::set_boundary(&tx, &t, &scope, &rule).await.unwrap();
+    assert_eq!(after, before + 1);
+    tx.commit().await.unwrap();
+
+    let b = load(&mut db.client, &t).await;
+    assert_eq!(b.data.boundaries.get(&scope), Some(&rule));
+    assert!(b.data.private_scopes.contains(&scope));
+
+    // Clearing the rules keeps the flag, and an empty rule is no rule.
+    let tx = db.client.transaction().await.unwrap();
+    crate::set_boundary(&tx, &t, &scope, &BoundaryRule::default())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let b = load(&mut db.client, &t).await;
+    assert!(b.data.boundaries.is_empty());
+    assert!(b.data.private_scopes.contains(&scope));
+    db.finish().await;
+}

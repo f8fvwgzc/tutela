@@ -247,6 +247,7 @@ pub fn api_router(state: &AppState, grpc: Router, request_timeout: Duration) -> 
             post(authz::http::search_subject),
         )
         .route("/v1/authz/permissions", post(authz::http::permissions))
+        .route("/v1/authz/write-check", post(authz::http::write_check))
         .route(
             "/.well-known/authzen-configuration",
             get(authz::http::metadata),

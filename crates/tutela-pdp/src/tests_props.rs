@@ -34,7 +34,7 @@ use crate::{
     SubjectSearchRequest, WriteCheckRequest,
 };
 
-fn pdp_of(model: &Arc<Model>, tenants: &[&Tenant]) -> Pdp {
+pub(crate) fn pdp_of(model: &Arc<Model>, tenants: &[&Tenant]) -> Pdp {
     let mut pdp = Pdp::new();
     for t in tenants {
         pdp.load(t.key.clone(), 7, Arc::clone(model), t.data.clone())
@@ -45,7 +45,7 @@ fn pdp_of(model: &Arc<Model>, tenants: &[&Tenant]) -> Pdp {
 
 /// Who asks: every principal alone, every user with every agent, and one
 /// chain of two agents.
-fn askers() -> Vec<(Principal, Vec<Principal>)> {
+pub(crate) fn askers() -> Vec<(Principal, Vec<Principal>)> {
     let mut out: Vec<(Principal, Vec<Principal>)> =
         principals().into_iter().map(|p| (p, vec![])).collect();
     for u in [user(1), user(2), user(3)] {
@@ -57,7 +57,7 @@ fn askers() -> Vec<(Principal, Vec<Principal>)> {
     out
 }
 
-fn check_req(
+pub(crate) fn check_req(
     t: &Tenant,
     p: &Principal,
     actors: &[Principal],
@@ -112,7 +112,7 @@ fn is_allowed(d: Option<&Decision>) -> bool {
 
 /// What the differential runs hit, to show the cases are really covered.
 #[derive(Default, Debug)]
-struct Seen {
+pub(crate) struct Seen {
     row_checks: usize,
     allowed: usize,
     filters: usize,
@@ -133,7 +133,7 @@ struct Seen {
 }
 
 /// `list_filter` ≡ `check` for every asker, action and row of both tenants.
-fn differential(seed: u64, w: &World, seen: &mut Seen) {
+pub(crate) fn differential(seed: u64, w: &World, seen: &mut Seen) {
     let pdp = pdp_of(&w.model, &w.tenants.iter().collect::<Vec<_>>());
     let paths = Paths::of(&w.tenants);
     let indexed = Paths {
@@ -473,6 +473,8 @@ fn write_check_agrees(seed: u64, w: &World) {
             resource: row.resource(),
             new_attrs,
             new_path: None,
+            new_links: vec![],
+            approved_by: vec![],
             at_least_revision: None,
         }
     };

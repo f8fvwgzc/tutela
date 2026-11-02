@@ -90,7 +90,7 @@ A gate is a list of checks. A phase is not done until its gate passes. No produc
 - Permission map for UIs: `POST /v1/authz/permissions` with ETag/304. **Done.**
 - Signed bundles for PDP caches and offline checks. Moved to part 3 ([ADR-0024](DECISIONS.md#adr-0024-signed-bundles-wait-for-part-3)).
 - Model versioning, impact report ("12 users gain read on contract"), explain and simulate, two-person publish (optional per tenant).
-- Moves and links across scopes: `moves_out`, `moves_in`, `on_looser` and `links_from` from `boundary_rule`, checked in `write_check` with the before/after impact calculation (PERMISSION-MODEL §9, §10). Assignment expiry with a revision bump when it passes ([ADR-0014](DECISIONS.md#adr-0014-tutela-store-in-phase-a-the-schema-row-level-security-and-checked-writes)): **done** ([ADR-0020](DECISIONS.md#adr-0020-the-bindings-store-closures-at-read-time-and-assignment-expiry)).
+- Moves and links across scopes: `moves_out`, `moves_in`, `on_looser` and `links_from` from `boundary_rule`, checked in `write_check` with the before/after impact calculation (PERMISSION-MODEL §9, §10): **done** ([ADR-0025](DECISIONS.md#adr-0025-moves-and-links-in-write_check)). Assignment expiry with a revision bump when it passes ([ADR-0014](DECISIONS.md#adr-0014-tutela-store-in-phase-a-the-schema-row-level-security-and-checked-writes)): **done** ([ADR-0020](DECISIONS.md#adr-0020-the-bindings-store-closures-at-read-time-and-assignment-expiry)).
 - CLI: `tutela apply` against `tutelad` (adds the impact report and approvals; still refuses a widening diff without an approval token), `tutela apps create`, `tutela keys rotate`.
 - Webhooks (transactional outbox, Standard Webhooks signatures) and SSE `/v1/events`.
 - Local hash-chained audit log. Optional forwarding to attache's evidence ledger through its Append API.
@@ -123,13 +123,13 @@ Done:
 | Evaluation API: `POST /access/v1/evaluation`, `/access/v1/evaluations`, gRPC `tutela.authz.v1`, per-tenant snapshots with a revision lease | Done | [ADR-0021](DECISIONS.md#adr-0021-the-check-api-one-code-path-a-snapshot-per-tenant-and-a-revision-lease) |
 | Search: `/access/v1/search/resource`, `/access/v1/search/subject` | Done | [ADR-0022](DECISIONS.md#adr-0022-the-searches-live-next-to-the-evaluator) |
 | Permission map, `POST /v1/authz/permissions` with ETag and 304 | Done | [ADR-0023](DECISIONS.md#adr-0023-the-permission-map-and-a-tag-that-covers-the-answer) |
+| `write_check` over the API, moves and links across scopes | Done | [ADR-0025](DECISIONS.md#adr-0025-moves-and-links-in-write_check) |
 
 Not started:
 
 | Work | Part | Note |
 |---|---|---|
 | Model versioning, impact report, explain and simulate, two-person publish | 2b | |
-| Moves and links in `write_check` | 2b | |
 | Signed bundles for PDP caches and offline checks | 3 | After token exchange and SSE ([ADR-0024](DECISIONS.md#adr-0024-signed-bundles-wait-for-part-3)). Their `expires_at` must honour `next_expiry`. |
 | `tutela apply` against `tutelad`, `tutela apps create`, `tutela keys rotate` | 4 | `grant_service` gives no write on `app_manifest` yet. |
 | Webhooks, SSE `/v1/events` | 3 | |
