@@ -25,6 +25,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[3]
 OUT = pathlib.Path(__file__).resolve().parent / "results.txt"
 MODELS = "crates/tutelad/src/models/mod.rs"
 EXPLAIN = "crates/tutelad/src/authz/explain.rs"
+TWO = ["-p", "tutelad", "--test", "two_person"]
 
 # (id, file, what it breaks, old text, new text, cargo test arguments).
 # `old` must occur once.
@@ -65,6 +66,30 @@ MUTANTS = [
      "        what_if(&mut data, &c)?;\n",
      "        let _ = &c;\n",
      ["-p", "tutelad", "--test", "explain"]),
+    ("S10", MODELS, "the proposer approves its own proposal",
+     "    if by == p.proposed_by {\n",
+     "    if false && by == p.proposed_by {\n",
+     TWO),
+    ("S11", MODELS, "a proposal whose report changed is approved",
+     "(impact.digest != p.impact_digest)",
+     "(false && impact.digest != p.impact_digest)",
+     TWO),
+    ("S12", MODELS, "a proposal with a report cut short ignores changes",
+     "} else if !p.impact_complete && now.bundle.rev != p.rev {",
+     "} else if false && !p.impact_complete && now.bundle.rev != p.rev {",
+     TWO),
+    ("S13", "crates/tutela-store/src/models.rs", "a direct publish ignores two-person",
+     "    require_one_person(tx, &tid).await?;\n",
+     "",
+     TWO),
+    ("S14", "crates/tutela-store/src/proposals.rs", "one person turns two-person off",
+     "(false, true, Some(first)) if first != by => TwoPerson {",
+     "(false, true, _) => TwoPerson {",
+     TWO),
+    ("S15", MODELS, "a proposal ignores a new active model",
+     "let why = if now.active.version != p.base_version || now.active.digest != p.base_digest {",
+     "let why = if false {",
+     TWO),
 ]
 
 

@@ -1,4 +1,4 @@
-//! Model versions over the API (CONTRACTS.md 7.10, ADR-0026).
+//! Model versions over the API (CONTRACTS.md 7.9, ADR-0026).
 //!
 //! A tenant's model is its own: a publish here writes one tenant's version
 //! and bumps one tenant's revision, so the cache picks it up as it picks up
@@ -30,7 +30,10 @@ use crate::api::{AppState, Problem};
 use crate::authz::floor;
 use crate::cache::ActionClass;
 use crate::tenant::Tenant;
-use wire::{ActiveOut, ChangeOut, ImpactOut, PublishBody, PublishResult, VersionOut, VersionsOut};
+use wire::{
+    ActiveOut, ApproveBody, ChangeOut, ImpactOut, ProposalOut, PublishBody, PublishResult,
+    SettingsBody, SettingsOut, VersionOut, VersionsOut,
+};
 
 /// What looking at a tenant's model needs, at every org.
 pub const READ_KEYS: [&str; 1] = ["read_audit"];
@@ -292,10 +295,15 @@ pub(crate) async fn approved(
 }
 
 fn store_conflict(e: StoreError) -> Problem {
-    if e.kind() == StoreErrorKind::Exists {
-        return conflict("version_conflict", "a newer model; compare again");
+    match e.kind() {
+        StoreErrorKind::Exists => conflict("version_conflict", "a newer model; compare again"),
+        StoreErrorKind::TwoPerson => Problem::new(
+            StatusCode::FORBIDDEN,
+            "two_person_required",
+            "this tenant publishes through a proposal another person approves",
+        ),
+        _ => e.into(),
     }
-    e.into()
 }
 
 /// `POST /v1/models/publish`: a new version, from new text or from a kept
@@ -453,4 +461,296 @@ pub async fn version(state: &AppState, id: &Identity, version: i64) -> Result<Ve
     let found = tutela_store::model_version(&tx, tenant.key(), version).await?;
     tx.commit().await?;
     found.map(VersionOut::of).ok_or_else(not_found)
+}
+
+// ---------- Two-person publish (ADR-0029) ----------
+
+/// How many times an approval checks again when the tenant moves under it.
+const TRIES: usize = 3;
+
+fn stale_proposal(why: &'static str) -> Problem {
+    Problem {
+        detail: Some(why.to_owned()),
+        ..conflict(
+            "stale_proposal",
+            "the tenant moved since the proposal; propose again",
+        )
+    }
+}
+
+/// `GET /v1/models/settings`.
+///
+/// # Errors
+///
+/// A [`Problem`].
+pub async fn settings(state: &AppState, id: &Identity) -> Result<SettingsOut, Problem> {
+    let tenant = Tenant::of(id);
+    admin(state, id, &tenant, &READ_KEYS).await?;
+    let mut conn = state.db.conn().await?;
+    let tx = conn.begin(&tenant).await?;
+    let t = tutela_store::two_person(&tx, tenant.key()).await?;
+    tx.commit().await?;
+    Ok(SettingsOut::of(t))
+}
+
+/// `PUT /v1/models/settings`. On takes one person; off takes two.
+///
+/// # Errors
+///
+/// A [`Problem`].
+pub async fn set_settings(
+    state: &AppState,
+    id: &Identity,
+    body: SettingsBody,
+) -> Result<SettingsOut, Problem> {
+    let tenant = Tenant::of(id);
+    let actor = admin(state, id, &tenant, &WRITE_KEYS).await?;
+    let on = body
+        .two_person
+        .ok_or_else(|| Problem::invalid("invalid_request", "`two_person` is missing".to_owned()))?;
+    let mut conn = state.db.conn().await?;
+    let tx = conn.begin(&tenant).await?;
+    let t = tutela_store::set_two_person(&tx, tenant.key(), on, &actor.to_string()).await?;
+    tx.commit().await?;
+    tracing::info!(
+        on = t.on,
+        waiting = t.off_requested_by.is_some(),
+        "two-person publish set"
+    );
+    Ok(SettingsOut::of(t))
+}
+
+/// `POST /v1/models/proposals`: a change that waits for another person.
+///
+/// # Errors
+///
+/// A [`Problem`].
+pub async fn propose(
+    state: &AppState,
+    id: &Identity,
+    body: PublishBody,
+) -> Result<ProposalOut, Problem> {
+    let tenant = Tenant::of(id);
+    let actor = admin(state, id, &tenant, &WRITE_KEYS).await?;
+    let expected = body.expected_version.ok_or_else(|| {
+        Problem::invalid(
+            "invalid_request",
+            "`expected_version` is missing".to_owned(),
+        )
+    })?;
+    let (source, restores) = candidate_text(state, &tenant, body.source, body.restore).await?;
+    let candidate = Arc::new(compile(source.clone()).await?);
+    let now = current(state, &tenant).await?;
+    if now.active.version != expected {
+        return Err(conflict("version_conflict", "a newer model; compare again"));
+    }
+    if tutela_store::digest(&source) == now.active.digest {
+        return Err(conflict("no_change", "this is the active model"));
+    }
+    let (d, text) = diff_of(&now.model, &candidate)?;
+    let impact = ImpactOut::of(&report(state, &tenant, &now, Arc::clone(&candidate)).await?);
+    let impact_text = serde_json::to_string(&impact).map_err(|_| Problem::stale("unavailable"))?;
+    let by = actor.to_string();
+    let mut conn = state.db.conn().await?;
+    let tx = conn.begin(&tenant).await?;
+    let pid = tutela_store::propose(
+        &tx,
+        tenant.key(),
+        &tutela_store::NewProposal {
+            app: candidate.app(),
+            source: &source,
+            base_version: expected,
+            base_digest: &now.active.digest,
+            restores,
+            class: d.class(),
+            diff: &text,
+            impact: &impact_text,
+            impact_digest: &impact.digest,
+            impact_complete: impact.complete,
+            rev: now.bundle.rev,
+            proposed_by: &by,
+        },
+    )
+    .await?;
+    let stored = tutela_store::proposal(&tx, tenant.key(), &pid)
+        .await?
+        .ok_or_else(|| Problem::stale("unavailable"))?;
+    tx.commit().await?;
+    Ok(ProposalOut::of(stored))
+}
+
+/// `GET /v1/models/proposals`.
+///
+/// # Errors
+///
+/// A [`Problem`].
+pub async fn proposals(state: &AppState, id: &Identity) -> Result<Vec<ProposalOut>, Problem> {
+    let tenant = Tenant::of(id);
+    admin(state, id, &tenant, &READ_KEYS).await?;
+    let mut conn = state.db.conn().await?;
+    let tx = conn.begin(&tenant).await?;
+    let list = tutela_store::proposals(&tx, tenant.key()).await?;
+    tx.commit().await?;
+    Ok(list.into_iter().map(ProposalOut::of).collect())
+}
+
+async fn open(
+    state: &AppState,
+    tenant: &Tenant,
+    pid: &str,
+) -> Result<tutela_store::Proposal, Problem> {
+    let mut conn = state.db.conn().await?;
+    let tx = conn.begin(tenant).await?;
+    let found = tutela_store::proposal(&tx, tenant.key(), pid).await?;
+    tx.commit().await?;
+    found.ok_or_else(|| Problem::new(StatusCode::NOT_FOUND, "not_found", "no such proposal"))
+}
+
+/// `GET /v1/models/proposals/{id}`, with its text.
+///
+/// # Errors
+///
+/// A [`Problem`].
+pub async fn proposal(state: &AppState, id: &Identity, pid: &str) -> Result<ProposalOut, Problem> {
+    let tenant = Tenant::of(id);
+    admin(state, id, &tenant, &READ_KEYS).await?;
+    open(state, &tenant, pid).await.map(ProposalOut::of)
+}
+
+async fn close(
+    state: &AppState,
+    tenant: &Tenant,
+    pid: &str,
+    stale: bool,
+    by: Option<&str>,
+) -> Result<(), Problem> {
+    let mut conn = state.db.conn().await?;
+    let tx = conn.begin(tenant).await?;
+    tutela_store::close_proposal(&tx, tenant.key(), pid, stale, by)
+        .await
+        .map_err(|e| match e.kind() {
+            StoreErrorKind::NotFound => conflict("not_open", "this proposal is not open"),
+            _ => e.into(),
+        })?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// `POST /v1/models/proposals/{id}/reject`. Anyone who may change the model
+/// may reject an open proposal; its proposer may withdraw it.
+///
+/// # Errors
+///
+/// A [`Problem`].
+pub async fn reject(state: &AppState, id: &Identity, pid: &str) -> Result<ProposalOut, Problem> {
+    let tenant = Tenant::of(id);
+    let actor = admin(state, id, &tenant, &WRITE_KEYS).await?;
+    close(state, &tenant, pid, false, Some(&actor.to_string())).await?;
+    open(state, &tenant, pid).await.map(ProposalOut::of)
+}
+
+/// `POST /v1/models/proposals/{id}/approve`: another person approves, and
+/// the proposal publishes in the same transaction.
+///
+/// The proposal is stale, and is closed as such, when the active model is
+/// not the one it was compared against, or when its impact report, made
+/// again now, differs from the one the proposer saw. A report that stopped
+/// at its bound saw only part of the tenant, so then any change of the
+/// tenant's revision makes it stale.
+///
+/// # Errors
+///
+/// A [`Problem`]. 403 `same_person` when the approver proposed it.
+pub async fn approve(
+    state: &AppState,
+    id: &Identity,
+    pid: &str,
+    body: ApproveBody,
+) -> Result<PublishResult, Problem> {
+    let tenant = Tenant::of(id);
+    let actor = admin(state, id, &tenant, &WRITE_KEYS).await?;
+    let p = open(state, &tenant, pid).await?;
+    if p.state != "proposed" {
+        return Err(conflict("not_open", "this proposal is not open"));
+    }
+    let by = actor.to_string();
+    if by == p.proposed_by {
+        return Err(Problem::new(
+            StatusCode::FORBIDDEN,
+            "same_person",
+            "the proposer cannot approve its own proposal",
+        ));
+    }
+    let source = p
+        .source
+        .clone()
+        .ok_or_else(|| Problem::stale("unavailable"))?;
+    let candidate = Arc::new(compile(source).await?);
+    for _ in 0..TRIES {
+        let now = current(state, &tenant).await?;
+        let why = if now.active.version != p.base_version || now.active.digest != p.base_digest {
+            Some("the active model is not the one it was compared against")
+        } else if !p.impact_complete && now.bundle.rev != p.rev {
+            Some("its impact report was cut short, and the tenant has changed since")
+        } else {
+            let impact =
+                ImpactOut::of(&report(state, &tenant, &now, Arc::clone(&candidate)).await?);
+            (impact.digest != p.impact_digest)
+                .then_some("its impact report would say something else now")
+        };
+        if let Some(why) = why {
+            close(state, &tenant, pid, true, None).await?;
+            return Err(stale_proposal(why));
+        }
+        let mut approvers = Vec::new();
+        if p.class == "widening" {
+            approvers.push(
+                approved(
+                    state,
+                    &tenant,
+                    body.approval.as_deref(),
+                    candidate.app().as_str(),
+                    &p.base_digest,
+                    &p.digest,
+                )
+                .await?,
+            );
+        }
+        let mut conn = state.db.conn().await?;
+        let tx = conn.begin(&tenant).await?;
+        match tutela_store::publish_proposal(
+            &tx,
+            tenant.key(),
+            pid,
+            &by,
+            &approvers,
+            now.bundle.rev,
+        )
+        .await
+        {
+            Ok((version, rev)) => {
+                tx.commit().await?;
+                tracing::info!(version, rev, "a proposal was approved and published");
+                return Ok(PublishResult {
+                    version,
+                    rev,
+                    digest: p.digest.clone(),
+                    class: p.class.clone(),
+                    restores: p.restores,
+                    impact: serde_json::from_str(&p.impact)
+                        .map_err(|_| Problem::stale("unavailable"))?,
+                });
+            }
+            // The tenant moved between the check and the write: check again.
+            Err(e) if e.kind() == StoreErrorKind::Exists => continue,
+            Err(e) if e.kind() == StoreErrorKind::NotFound => {
+                return Err(conflict("not_open", "this proposal is not open"));
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Err(conflict(
+        "busy",
+        "the tenant changed during each try; approve again",
+    ))
 }

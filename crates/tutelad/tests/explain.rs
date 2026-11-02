@@ -1,5 +1,5 @@
 //! Explain and simulate through the real auth layer on a real Postgres
-//! (CONTRACTS.md 7.11, ADR-0028).
+//! (CONTRACTS.md 7.10, ADR-0028).
 #![cfg(test)]
 
 mod common;

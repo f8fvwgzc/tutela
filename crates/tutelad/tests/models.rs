@@ -1,5 +1,5 @@
 //! Model versions over the API, through the real auth layer on a real
-//! Postgres (CONTRACTS.md 7.10, ADR-0026).
+//! Postgres (CONTRACTS.md 7.9, ADR-0026).
 #![cfg(test)]
 
 mod common;

@@ -38,6 +38,7 @@ mod load;
 mod manifest;
 mod migrate;
 mod models;
+mod proposals;
 mod write;
 
 #[cfg(test)]
@@ -64,6 +65,10 @@ pub use migrate::{applied as applied_migration, latest as latest_migration, migr
 pub use models::{
     ActiveModel, MAX_VERSION_PAGE, ModelVersion, TenantPublish, active_model, model_version,
     model_versions, publish_tenant_model,
+};
+pub use proposals::{
+    MAX_PROPOSAL_PAGE, NewProposal, Proposal, TwoPerson, close_proposal, proposal, proposals,
+    propose, publish_proposal, set_two_person, two_person,
 };
 pub use tokio_postgres;
 pub use write::{
@@ -104,6 +109,8 @@ pub enum StoreErrorKind {
     /// This transaction already entered another tenant. A transaction
     /// belongs to one tenant, so a bug that passes the wrong key fails here.
     TenantMismatch,
+    /// The tenant publishes only through an approved proposal (ADR-0029).
+    TwoPerson,
 }
 
 /// Why a store call failed. A failed call leaves the caller's transaction in a
@@ -113,7 +120,7 @@ pub enum StoreErrorKind {
 pub struct StoreError(#[from] Repr);
 
 #[derive(Debug, thiserror::Error)]
-enum Repr {
+pub(crate) enum Repr {
     #[error("database error")]
     Db(#[source] tokio_postgres::Error),
     #[error("the database has migration {0}, which this build does not know")]
@@ -136,6 +143,8 @@ enum Repr {
     Isolation(&'static str),
     #[error("this transaction belongs to another tenant")]
     TenantMismatch,
+    #[error("this tenant publishes only through an approved proposal")]
+    TwoPerson,
 }
 
 impl StoreError {
@@ -154,6 +163,7 @@ impl StoreError {
             Repr::RevOutOfRange => StoreErrorKind::RevOutOfRange,
             Repr::Isolation(_) => StoreErrorKind::Isolation,
             Repr::TenantMismatch => StoreErrorKind::TenantMismatch,
+            Repr::TwoPerson => StoreErrorKind::TwoPerson,
         }
     }
 
@@ -247,7 +257,7 @@ impl<T> DbResult<T> for Result<T, tokio_postgres::Error> {
 }
 
 /// A new UUIDv7.
-fn uuid7() -> Result<Uuid7, StoreError> {
+pub(crate) fn uuid7() -> Result<Uuid7, StoreError> {
     Uuid7::from_uuid(uuid::Uuid::now_v7()).map_err(|_| StoreError::corrupt("uuid"))
 }
 

@@ -147,7 +147,7 @@ Dependencies point down only: products → onto-intelli / texc-symphony → atta
 
 Phase A, Rust side: built, and tagged as the pre-release `v0.1.0` (items 1–9). Phase A is **not done**: fuzzing, the JS and Python SDKs and the template product are open. The list-query latency gate passes ([ADR-0016](docs/DECISIONS.md#adr-0016-the-list-query-grouped-terms-hashed-scope-tests-and-lower-filter-limits)). Details: [ROADMAP.md, Phase A](docs/ROADMAP.md#phase-a-packages-library-mode).
 
-Phase B: parts 1 and 2a are merged: tenants, the bindings store, the check API over HTTP and gRPC, search, the permission map, and two-replica checks with a measured revocation delay. Phase B is **not done**: there are no signed bundles, model versioning, token exchange, audit log, Console or Helm chart yet, and the service gate does not pass yet. GitHub Actions has not run (account billing), so every merge was gated by local `make`. Details: [ROADMAP.md, Phase B status](docs/ROADMAP.md#phase-b-status).
+Phase B: parts 1, 2a and 2b are merged: tenants, the bindings store, the check API over HTTP and gRPC, search, the permission map, two-replica checks with a measured revocation delay, `write_check` with moves and links, model versions per tenant with an impact report, explain and simulate, and two-person publish. Phase B is **not done**: there are no signed bundles, model versioning, token exchange, audit log, Console or Helm chart yet, and the service gate does not pass yet. GitHub Actions has not run (account billing), so every merge was gated by local `make`. Details: [ROADMAP.md, Phase B status](docs/ROADMAP.md#phase-b-status).
 
 | Item | State |
 |------|-------|
@@ -171,6 +171,7 @@ Phase B: parts 1 and 2a are merged: tenants, the bindings store, the check API o
 | Model versions: each tenant's published models kept and numbered, with rollback as a new publish and widening refused without an approval token ([ADR-0026](docs/DECISIONS.md#adr-0026-a-tenant-owns-its-model-versions)) | Done (Phase B) |
 | Impact report for a model change: who gains or loses what, from the tenant's own data ([ADR-0027](docs/DECISIONS.md#adr-0027-the-impact-report)) | Done (Phase B) |
 | Explain and simulate over HTTP and gRPC, for whoever holds `read_audit` on the resource ([ADR-0028](docs/DECISIONS.md#adr-0028-explain-and-simulate-need-read_audit-on-the-resource)) | Done (Phase B) |
+| Two-person publish, optional per tenant: another principal approves, and a proposal goes stale when its impact report would change ([ADR-0029](docs/DECISIONS.md#adr-0029-two-person-publish)) | Done (Phase B) |
 | Signed bundles for offline checks | Not built: part 3 ([ADR-0024](docs/DECISIONS.md#adr-0024-signed-bundles-wait-for-part-3)) |
 | Everything else | Planned, see [docs/ROADMAP.md](docs/ROADMAP.md) |
 

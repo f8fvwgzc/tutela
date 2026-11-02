@@ -6,7 +6,10 @@ use serde::Deserialize;
 use tutela_sdk::Identity;
 
 use super::observed;
-use super::wire::{ChangeOut, PublishBody, PublishResult, VersionOut, VersionsOut};
+use super::wire::{
+    ApproveBody, ChangeOut, ProposalOut, PublishBody, PublishResult, SettingsBody, SettingsOut,
+    VersionOut, VersionsOut,
+};
 use crate::api::{AppState, Problem};
 use crate::authz::http::Body;
 
@@ -63,4 +66,72 @@ pub async fn version(
         super::version(&state, &id, version).await,
     )
     .map(Json)
+}
+
+/// `GET /v1/models/settings`.
+pub async fn settings(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+) -> Result<Json<SettingsOut>, Problem> {
+    observed(&state, "settings", super::settings(&state, &id).await).map(Json)
+}
+
+/// `PUT /v1/models/settings`.
+pub async fn set_settings(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Body(body): Body<SettingsBody>,
+) -> Result<Json<SettingsOut>, Problem> {
+    let out = super::set_settings(&state, &id, body).await;
+    observed(&state, "set_settings", out).map(Json)
+}
+
+/// `POST /v1/models/proposals`.
+pub async fn propose(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Body(body): Body<PublishBody>,
+) -> Result<Json<ProposalOut>, Problem> {
+    observed(&state, "propose", super::propose(&state, &id, body).await).map(Json)
+}
+
+/// `GET /v1/models/proposals`.
+pub async fn proposals(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+) -> Result<Json<Vec<ProposalOut>>, Problem> {
+    observed(&state, "proposals", super::proposals(&state, &id).await).map(Json)
+}
+
+/// `GET /v1/models/proposals/{id}`.
+pub async fn proposal(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(pid): Path<String>,
+) -> Result<Json<ProposalOut>, Problem> {
+    observed(&state, "proposal", super::proposal(&state, &id, &pid).await).map(Json)
+}
+
+/// `POST /v1/models/proposals/{id}/approve`.
+pub async fn approve(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(pid): Path<String>,
+    Body(body): Body<ApproveBody>,
+) -> Result<Json<PublishResult>, Problem> {
+    observed(
+        &state,
+        "approve",
+        super::approve(&state, &id, &pid, body).await,
+    )
+    .map(Json)
+}
+
+/// `POST /v1/models/proposals/{id}/reject`.
+pub async fn reject(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(pid): Path<String>,
+) -> Result<Json<ProposalOut>, Problem> {
+    observed(&state, "reject", super::reject(&state, &id, &pid).await).map(Json)
 }

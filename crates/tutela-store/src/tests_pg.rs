@@ -97,7 +97,7 @@ fn with(url: &str, db: &str, user: &str, password: &str) -> String {
 async fn db() -> Option<Db> {
     let mut db = empty_db().await?;
     let applied = crate::migrate(&mut db.client).await.unwrap();
-    assert_eq!(applied, [1, 2, 3, 4]);
+    assert_eq!(applied, [1, 2, 3, 4, 5]);
     Some(db)
 }
 

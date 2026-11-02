@@ -1,6 +1,6 @@
 # Tutela roadmap
 
-Status: **pre-alpha**. `v0.1.0` is a pre-release of the Rust crates in library mode. Parts 1 and 2a of Phase B are merged: the `tutelad` service, tenant isolation, the bindings store, the check API, the permission map and the replica checks. Nothing is usable in production yet. See [Phase B status](#phase-b-status).
+Status: **pre-alpha**. `v0.1.0` is a pre-release of the Rust crates in library mode. Parts 1, 2a and 2b of Phase B are merged: the `tutelad` service, tenant isolation, the bindings store, the check API, the permission map, the replica checks, `write_check` with moves and links, model versions per tenant, the impact report, explain and simulate, and two-person publish. Nothing is usable in production yet. See [Phase B status](#phase-b-status).
 
 This file lists the four phases (A, B, C, D), what each one builds, how we know it is done, and how long it takes. The reasons behind the big choices are in [DECISIONS.md](DECISIONS.md). The design is in [ARCHITECTURE.md](ARCHITECTURE.md) and [PERMISSION-MODEL.md](PERMISSION-MODEL.md).
 
@@ -89,7 +89,7 @@ A gate is a list of checks. A phase is not done until its gate passes. No produc
 - AuthZEN 1.0-shaped API: `/access/v1/evaluation`, `/access/v1/evaluations`, `/access/v1/search/resource`, `/access/v1/search/subject`; gRPC `tutela.authz.v1`. **Done.**
 - Permission map for UIs: `POST /v1/authz/permissions` with ETag/304. **Done.**
 - Signed bundles for PDP caches and offline checks. Moved to part 3 ([ADR-0024](DECISIONS.md#adr-0024-signed-bundles-wait-for-part-3)).
-- Model versioning, impact report ("12 users gain read on contract"), explain and simulate, two-person publish (optional per tenant).
+- Model versioning, impact report ("12 users gain read on contract"), explain and simulate, two-person publish (optional per tenant): **done** ([ADR-0026](DECISIONS.md#adr-0026-a-tenant-owns-its-model-versions) to [ADR-0029](DECISIONS.md#adr-0029-two-person-publish)).
 - Moves and links across scopes: `moves_out`, `moves_in`, `on_looser` and `links_from` from `boundary_rule`, checked in `write_check` with the before/after impact calculation (PERMISSION-MODEL §9, §10): **done** ([ADR-0025](DECISIONS.md#adr-0025-moves-and-links-in-write_check)). Assignment expiry with a revision bump when it passes ([ADR-0014](DECISIONS.md#adr-0014-tutela-store-in-phase-a-the-schema-row-level-security-and-checked-writes)): **done** ([ADR-0020](DECISIONS.md#adr-0020-the-bindings-store-closures-at-read-time-and-assignment-expiry)).
 - CLI: `tutela apply` against `tutelad` (adds the impact report and approvals; still refuses a widening diff without an approval token), `tutela apps create`, `tutela keys rotate`.
 - Webhooks (transactional outbox, Standard Webhooks signatures) and SSE `/v1/events`.
@@ -110,7 +110,7 @@ A gate is a list of checks. A phase is not done until its gate passes. No produc
 
 ### Phase B status
 
-**State on 2026-11-02: parts 1 and 2a are merged. Phase B is not done, and the service gate does not pass yet.** v0.2.0 is not tagged. attache and texc-symphony stay on `v0.1.0`.
+**State on 2026-11-02: parts 1, 2a and 2b are merged. Phase B is not done, and the service gate does not pass yet.** v0.2.0 is not tagged. attache and texc-symphony stay on `v0.1.0`.
 
 Done:
 
@@ -127,12 +127,12 @@ Done:
 | Model versioning: a tenant's own numbered versions, rollback as a new publish | Done | [ADR-0026](DECISIONS.md#adr-0026-a-tenant-owns-its-model-versions) |
 | Impact report: who gains or loses what, bounded, never "no impact" when cut short | Done | [ADR-0027](DECISIONS.md#adr-0027-the-impact-report) |
 | Explain and simulate, behind `read_audit` on the resource | Done | [ADR-0028](DECISIONS.md#adr-0028-explain-and-simulate-need-read_audit-on-the-resource) |
+| Two-person publish, optional per tenant; a proposal goes stale when its impact report would change | Done | [ADR-0029](DECISIONS.md#adr-0029-two-person-publish) |
 
 Not started:
 
 | Work | Part | Note |
 |---|---|---|
-| Two-person publish | 2b | |
 | Signed bundles for PDP caches and offline checks | 3 | After token exchange and SSE ([ADR-0024](DECISIONS.md#adr-0024-signed-bundles-wait-for-part-3)). Their `expires_at` must honour `next_expiry`. |
 | `tutela apply` against `tutelad`, `tutela apps create`, `tutela keys rotate` | 4 | `tutela apply` calls `POST /v1/models/publish`, per tenant. |
 | Webhooks, SSE `/v1/events` | 3 | |
@@ -154,9 +154,11 @@ The service gate:
 | 2+ replicas | **Passes**: two real `tutelad` processes on one Postgres answer together, share a sweep (one expiry, one revision), and one keeps serving when the other stops (`crates/tutelad/tests/ha.rs`) |
 | Bundle expiry | **Half.** The cache half passes: a replica's snapshot stops at its age limit and at `next_expiry`, also during an outage, and fails closed (`crates/tutelad/tests/ha.rs`). Signed bundles are **not built** ([ADR-0024](DECISIONS.md#adr-0024-signed-bundles-wait-for-part-3)), so this check stays open |
 | A revoked role takes effect within the documented delay | **Passes on replicas**: documented at most 1.5 s, measured p50 0.61 s, worst 1.010 s over 60 rounds under steady traffic. The test fails above 1.5 s. A replica cut off from the database stops at the age limit of the action, also tested ([PERMISSION-MODEL.md 16.1](PERMISSION-MODEL.md#161-how-long-until-a-revocation-takes-effect)) |
-| Sign-in, the permission map and runtime role editing, end to end | **Not built** |
+| Sign-in, the permission map and runtime role editing, end to end | **Not built.** Runtime role editing exists in the service: a tenant publishes its own model through `tutelad` (ADR-0026). Sign-in waits for token exchange (part 3) and the Console (part 4) |
 
 #### Notes for part 2b
+
+Part 2b is done; these notes stay for what they say about the code.
 
 Read these with [ADR-0021](DECISIONS.md#adr-0021-the-check-api-one-code-path-a-snapshot-per-tenant-and-a-revision-lease), [ADR-0022](DECISIONS.md#adr-0022-the-searches-live-next-to-the-evaluator), [ADR-0023](DECISIONS.md#adr-0023-the-permission-map-and-a-tag-that-covers-the-answer) and [ADR-0024](DECISIONS.md#adr-0024-signed-bundles-wait-for-part-3).
 
@@ -176,6 +178,25 @@ Read these with [ADR-0021](DECISIONS.md#adr-0021-the-check-api-one-code-path-a-s
 - **Secrets.** Nothing reads `TUTELA_MASTER_KEY` or `TUTELA_KEY_PEPPER` yet. The part that adds signing keys or API keys must make them required at start-up (TM-22).
 - **Upgrades.** Old replicas stop answering when a migration lands (ADR-0018 item 5). The deploy order is `tutelad migrate`, then new replicas at once.
 - **`make` is the gate.** Run it as its own command and read its exit code before a merge; a background job's "exit 0" is the shell's, not `make`'s. `tests/*.rs` need `#![cfg(test)]`, or clippy denies `unwrap` in helpers there.
+
+#### Notes for part 3
+
+Read these with [ADR-0025](DECISIONS.md#adr-0025-moves-and-links-in-write_check) to [ADR-0029](DECISIONS.md#adr-0029-two-person-publish).
+
+- **New code.** `authz/write.rs` (`write_check`), `authz/explain.rs` (explain, simulate), and `models/` (`mod.rs` the operations, `wire.rs`, `http.rs`). `tutela-pdp` has `moves.rs`, `impact.rs` (the before/after comparison, shared by moves and the report) and `explain.rs`. `tutela-store` has `models.rs`, `proposals.rs` and `approval.rs` (the token, moved from the CLI). `crates/tutelad/mutants/mutants.py` plants bugs in the service; it is not part of `make`.
+- **The model is per tenant now** (ADR-0026). `read_tenant` reads `tutela_store::active_model`: the tenant's own newest version, else the app's manifest. `TenantCache` keeps 32 compiled models by digest. **A signed bundle must carry the tenant's active model**, not `app_manifest`, and its tag the digest of what was compiled.
+- **The audience.** The model routes, explain and simulate take a `tutela-authz` token today, with admin keys at every org (or `read_audit` on the resource). CONTRACTS.md 4.4 and TM-01 want `aud=tutela-admin` with step-up MFA for the Console. When token exchange issues it, accept it on these routes and check `acr`; decide whether `tutela-authz` tokens keep working for `tutela apply` in a pipeline.
+- **Delegated tokens.** When `verifier_config` turns them on, nothing more is needed here: `models::principal` refuses them for every model call, explain and simulate, and `write_check` evaluates the chain (a delegated approver never counts). `tests/two_person.rs` already runs a replica with them on.
+- **What the audit log must record** (one `audit.v1` record each, in the same transaction as the change where there is one):
+  - `write_check`: every deny, with the denied fields; every move verdict with `left`, `entered`, `looser`, `complete`, `approve_at` and `approved_by`; every link deny.
+  - `POST /v1/models/publish` and an approval: the version, the revision, the author, the approvers (principal and approval key id), the class, `restores`, and the impact report's digest. A refused publish too (`approval_required`, `two_person_required`).
+  - Proposals: proposed, approved, rejected, and closed as stale with the reason. `PUT /v1/models/settings`: on, off asked, off.
+  - `explain`, `simulate` and `POST /v1/models/impact`: who asked about whom. They read other people's access.
+  - `set_boundary` and `move_scope` in the store: the product's admin calls, with the scope.
+- **Events.** `tutela.model.published.v1 {rev}` for a tenant publish and an approved proposal, from `publish_tenant_model` and `publish_proposal`, in their transactions. `tutela.permissions.changed.v1 {rev}` for `set_boundary` and `move_scope`. A proposal and a setting change no access; if the Console needs to hear of them, add event types (CONTRACTS.md 8, additive).
+- **`tutela.admin.v1`.** The model routes are HTTP only; give them gRPC methods there. `set_boundary` needs an admin route that checks `manage_boundaries` on the scope.
+- **The publish API for `tutela apply` (part 4):** `POST /v1/models/impact {source}` gives `version`, `from`, `to`, `class`, `diff` and the report; then `POST /v1/models/publish {source, expected_version, approval}`. With two-person on, `POST /v1/models/proposals` and a second person's `POST …/approve`. A token for `tutelad` needs `tutela approve --tenant <tid>`. The error codes are in CONTRACTS.md 7.9.
+- **Open limits**, each in its ADR: a type that stopped being a container can hold rows the model does not show (moves, ADR-0025); `restricted_links` and `ai_reach` are not read; a tenant cannot go back to following the app's manifest (ADR-0026); a large tenant with a changed role held by a group of everyone reaches the report's bound (ADR-0027); proposals have no expiry (ADR-0029).
 
 ## Phase C: own login server (optional)
 

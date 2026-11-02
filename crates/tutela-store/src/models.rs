@@ -16,6 +16,7 @@ use tutela_contracts::tenant::TenantKey;
 use tutela_pdp::model::{AppName, Class};
 
 use crate::manifest::class_text;
+use crate::proposals::require_one_person;
 use crate::{DbResult as _, StoreError, applied_manifest, begin_write, digest, enter, to_rev};
 
 /// The most versions in one page.
@@ -227,7 +228,9 @@ pub async fn model_version(
 /// # Errors
 ///
 /// [`Exists`](crate::StoreErrorKind::Exists) if the newest version is not
-/// `expected` (another publish came first), or a database error.
+/// `expected` (another publish came first),
+/// [`TwoPerson`](crate::StoreErrorKind::TwoPerson) while the tenant publishes
+/// only through approved proposals, or a database error.
 pub async fn publish_tenant_model(
     tx: &Transaction<'_>,
     tenant: &TenantKey,
@@ -235,6 +238,20 @@ pub async fn publish_tenant_model(
 ) -> Result<(i64, u64), StoreError> {
     let rev = begin_write(tx, tenant).await?;
     let tid = tenant.tid.to_string();
+    require_one_person(tx, &tid).await?;
+    let version = insert_version(tx, &tid, rev, p).await?;
+    Ok((version, rev))
+}
+
+/// Writes a version at revision `rev`, which the caller's write took. The
+/// newest version must be `p.expected`.
+pub(crate) async fn insert_version(
+    tx: &Transaction<'_>,
+    tid: &str,
+    rev: u64,
+    p: &TenantPublish<'_>,
+) -> Result<i64, StoreError> {
+    let tid = tid.to_owned();
     let head: i64 = tx
         .query_one(
             "SELECT coalesce(max(version), 0) FROM tutela.model_revision WHERE tenant_id = $1",
@@ -294,5 +311,5 @@ pub async fn publish_tenant_model(
     )
     .await
     .db()?;
-    Ok((version, rev))
+    Ok(version)
 }
