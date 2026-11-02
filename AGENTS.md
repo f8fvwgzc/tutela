@@ -124,7 +124,7 @@ cargo install --locked cargo-deny cargo-audit
 Notes:
 
 - Run `make` before every commit and every pull request.
-- `tutela-store`'s tests need a Postgres. Set `TUTELA_TEST_DATABASE_URL` to a key=value connection string for a role that may create roles and databases, for example `host=127.0.0.1 port=5432 user=postgres password=postgres dbname=postgres`. Without it they print `skipped` and pass; CI sets `TUTELA_REQUIRE_DATABASE=1`, so there a missing database fails.
+- The tests of `tutela-store`, `tutela-sdk`, `tutela-cli` and `tutelad` need a Postgres. Set `TUTELA_TEST_DATABASE_URL` to a key=value connection string for a role that may create roles and databases, for example `host=127.0.0.1 port=5432 user=postgres password=postgres dbname=postgres`. Without it they print `skipped` and pass; CI sets `TUTELA_REQUIRE_DATABASE=1`, so there a missing database fails.
 - The gates run with `--locked`. When you add a dependency, run `make lint LOCKED=` once, then commit the new `Cargo.lock` with the change.
 - An advisory ignore in `deny.toml` needs an id, a reason and a review date.
 - The later phases add more gates (fuzzing, property tests, latency numbers, RLS tests, conformance). They are listed in [SECURITY.md](SECURITY.md).

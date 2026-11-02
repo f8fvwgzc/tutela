@@ -4,7 +4,7 @@ Tutela is a self-hostable identity and permissions core, like Clerk or Auth0, fo
 
 **The name.** Tutela was the Roman goddess of protection and guardianship. In Roman law, *tutela* is a guardian's legal power to act for someone else, which is exactly what delegation is when an AI agent acts for a person.
 
-> **Status: pre-alpha.** The first commit has only the design docs, the `tutela-contracts` crate and CI. Nothing here is usable in production yet. See [Status](#status).
+> **Status: pre-alpha.** `v0.1.0` is a pre-release of the Rust crates in library mode. The `tutelad` service exists, but serves no permission API yet. Nothing here is usable in production yet. See [Status](#status).
 
 ## Is Tutela required?
 
@@ -27,7 +27,7 @@ UI hiding is never security. Every server checks again.
 
 ## Packages it will publish
 
-Nothing is published yet. The phase column says when each package is planned.
+Nothing is published to a registry yet. Other repos depend on the Rust crates by the `v0.1.0` git tag. The phase column says when each package is planned.
 
 | Kind | Name | What it does | Phase |
 |------|------|--------------|-------|
@@ -145,13 +145,15 @@ Dependencies point down only: products → onto-intelli / texc-symphony → atta
 
 ## Status
 
-Phase A, Rust side: built (items 1–9). Phase A is **not done**: fuzzing, the JS and Python SDKs, the template product and v0.1 are open. The list-query latency gate passes ([ADR-0016](docs/DECISIONS.md#adr-0016-the-list-query-grouped-terms-hashed-scope-tests-and-lower-filter-limits)). Details: [ROADMAP.md, Phase A](docs/ROADMAP.md#phase-a-packages-library-mode).
+Phase A, Rust side: built, and tagged as the pre-release `v0.1.0` (items 1–9). Phase A is **not done**: fuzzing, the JS and Python SDKs and the template product are open. The list-query latency gate passes ([ADR-0016](docs/DECISIONS.md#adr-0016-the-list-query-grouped-terms-hashed-scope-tests-and-lower-filter-limits)). Details: [ROADMAP.md, Phase A](docs/ROADMAP.md#phase-a-packages-library-mode).
+
+Phase B: part 1 of 4 is merged. Phase B is **not done**: there is no check API, permission map, token exchange, audit log, Console or Helm chart yet, and the service gate does not pass yet. GitHub Actions has not run (account billing), so every merge was gated by local `make`. Details: [ROADMAP.md, Phase B status](docs/ROADMAP.md#phase-b-status).
 
 | Item | State |
 |------|-------|
-| Design docs in `docs/` | In the first commit |
-| `tutela-contracts` crate | In the first commit (wire types and their format checks only; no I/O) |
-| Blocking CI (fmt, clippy, tests, docs, cargo-deny, cargo-audit) | In the first commit |
+| Design docs in `docs/` | Kept current |
+| `tutela-contracts` crate | Done (wire types and their format checks only; no I/O) |
+| Blocking CI (fmt, clippy, tests, docs, cargo-deny, cargo-audit) | Written, but it has not run: local `make` is the gate |
 | Week-1 spike with go/no-go numbers | Done: **go** ([ADR-0011](docs/DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator)) |
 | Model language and compiler (`tutela-pdp`, module `model`; format in [docs/MANIFEST.md](docs/MANIFEST.md)) | Done (Phase A; [ADR-0012](docs/DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)) |
 | Evaluator (`tutela-pdp`: `check`, `batch`, `list_filter`, `write_check`; [ADR-0013](docs/DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)) | Done (Phase A; [ADR-0013](docs/DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)) |
@@ -159,7 +161,7 @@ Phase A, Rust side: built (items 1–9). Phase A is **not done**: fuzzing, the J
 | `tutela` CLI: `init`, `check`, `migrate`, `apply` with approval tokens ([ADR-0015](docs/DECISIONS.md#adr-0015-approval-tokens-for-tutela-apply-in-library-mode)), `codegen` | Done (Phase A); the generated denied-route test comes with `tutela-sdk` |
 | `tutela-safenet` (SSRF-safe outbound HTTP, THREAT-MODEL TM-18) | Done (Phase A) |
 | `tutela-vault` (envelope encryption with a KMS trait) | Done (Phase A) |
-| `tutela-sdk`: token verifier (CONTRACTS §4), auth layer for axum and tonic, route guards, decision cache, `list_filter` SQL adapter | Done (Phase A); the list-query gate benchmark is [#22](https://github.com/f8fvwgzc/tutela/issues/22) |
+| `tutela-sdk`: token verifier (CONTRACTS §4), auth layer for axum and tonic, route guards, decision cache, `list_filter` SQL adapter | Done (Phase A) |
 | `tutelad`: the service binary with config, health, readiness, metrics, JSON logs, graceful shutdown and bearer-token checks on HTTP and gRPC ([ADR-0018](docs/DECISIONS.md#adr-0018-tutelad-the-stack-the-two-ports-and-the-config)) | Built (Phase B). It serves no permission API yet. |
 | Bindings and groups store: reads, closures at query time, assignment expiry with a revision bump, and the sweep in `tutelad` ([ADR-0020](docs/DECISIONS.md#adr-0020-the-bindings-store-closures-at-read-time-and-assignment-expiry)) | Built (Phase B) |
 | Tenant isolation in `tutelad`: forced row-level security, a non-owner role, the tenant only from the verified token, and the Service gate's two checks on a real Postgres ([ADR-0019](docs/DECISIONS.md#adr-0019-tenants-in-tutelad-the-tenant-comes-from-the-token-and-rls-is-checked)) | Built (Phase B) |
