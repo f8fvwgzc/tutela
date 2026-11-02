@@ -4,8 +4,10 @@
 //! `at_least_revision` on its next check.
 
 use std::collections::BTreeSet;
+use std::time::SystemTime;
 
 use tokio_postgres::Transaction;
+use tokio_postgres::types::ToSql;
 use tutela_contracts::decision::RuleId;
 use tutela_contracts::keys::FieldKey;
 use tutela_contracts::level::Level;
@@ -14,9 +16,10 @@ use tutela_contracts::tenant::{Issuer, OrgId, TenantId, TenantKey};
 use tutela_pdp::model::{GroupKey, RoleKey};
 use tutela_pdp::{MAX_PATH, Member, PathEntry, Subject};
 
+use crate::bindings::{Assignment, assignment_row};
 use crate::{
     DbResult as _, StoreError, begin_write, entry_text, finish_write, new_rule_id, parse_entry,
-    set_tenant, uuid7,
+    set_tenant, to_rev, uuid7,
 };
 
 /// The longest group name.
@@ -69,11 +72,11 @@ pub async fn add_org(tx: &Transaction<'_>, tenant: &TenantKey) -> Result<(OrgId,
 ///
 /// # Errors
 ///
-/// [`NotFound`](crate::StoreErrorKind::NotFound) for an unregistered scope or
-/// an unknown group, [`Exists`](crate::StoreErrorKind::Exists) if the subject
-/// already has an assignment at the scope (one per (subject, scope)),
-/// [`Refused`](crate::StoreErrorKind::Refused) if the data would break a rule,
-/// or a database error.
+/// [`NotFound`](crate::StoreErrorKind::NotFound) for an unregistered scope
+/// or an unknown group, [`Exists`](crate::StoreErrorKind::Exists) if the
+/// subject already has an assignment at the scope (one per (subject,
+/// scope)), [`Refused`](crate::StoreErrorKind::Refused) if the data would
+/// break a rule, or a database error.
 pub async fn assign(
     tx: &Transaction<'_>,
     tenant: &TenantKey,
@@ -82,21 +85,75 @@ pub async fn assign(
     scope: &PathEntry,
     granted_by: Option<&Principal>,
 ) -> Result<(RuleId, u64), StoreError> {
+    insert_assignment(tx, tenant, subject, role, scope, granted_by, None).await
+}
+
+/// As [`assign`], for an assignment that ends at `expires_at`. It counts
+/// until then. A sweep ([`expire_assignments`]) then removes it and bumps
+/// the revision (ADR-0020).
+///
+/// # Errors
+///
+/// As [`assign`], and [`Invalid`](crate::StoreErrorKind::Invalid) for a time
+/// that has passed by the database's clock.
+pub async fn assign_until(
+    tx: &Transaction<'_>,
+    tenant: &TenantKey,
+    subject: &Subject,
+    role: &RoleKey,
+    scope: &PathEntry,
+    granted_by: Option<&Principal>,
+    expires_at: SystemTime,
+) -> Result<(RuleId, u64), StoreError> {
+    insert_assignment(
+        tx,
+        tenant,
+        subject,
+        role,
+        scope,
+        granted_by,
+        Some(expires_at),
+    )
+    .await
+}
+
+async fn insert_assignment(
+    tx: &Transaction<'_>,
+    tenant: &TenantKey,
+    subject: &Subject,
+    role: &RoleKey,
+    scope: &PathEntry,
+    granted_by: Option<&Principal>,
+    expires_at: Option<SystemTime>,
+) -> Result<(RuleId, u64), StoreError> {
     let rev = begin_write(tx, tenant).await?;
     let tid = tenant.tid.to_string();
+    require_future(tx, expires_at).await?;
     require_scope(tx, &tid, scope).await?;
     let (kind, id) = subject_row(tx, &tid, subject).await?;
+    let same = "WHERE tenant_id = $1 AND principal_kind = $2 \
+                AND principal_id = $3 AND scope_kind = $4 AND scope_id = $5";
+    let row: [&(dyn ToSql + Sync); 5] = [
+        &tid,
+        &kind,
+        &id,
+        &scope.type_name.as_str(),
+        &scope.id.as_str(),
+    ];
+    // A row past its expiry no longer counts, so it does not hold the place.
+    tx.execute(
+        &format!(
+            "DELETE FROM tutela.role_assignment {same} \
+             AND expires_at IS NOT NULL AND expires_at <= clock_timestamp()"
+        ),
+        &row,
+    )
+    .await
+    .db()?;
     let taken = tx
         .query_opt(
-            "SELECT 1 FROM tutela.role_assignment WHERE tenant_id = $1 AND principal_kind = $2 \
-             AND principal_id = $3 AND scope_kind = $4 AND scope_id = $5",
-            &[
-                &tid,
-                &kind,
-                &id,
-                &scope.type_name.as_str(),
-                &scope.id.as_str(),
-            ],
+            &format!("SELECT 1 FROM tutela.role_assignment {same}"),
+            &row,
         )
         .await
         .db()?;
@@ -108,8 +165,8 @@ pub async fn assign(
     let rule = new_rule_id("ra")?;
     tx.execute(
         "INSERT INTO tutela.role_assignment (tenant_id, id, principal_kind, principal_id, \
-         scope_kind, scope_id, role_id, granted_by, rev) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+         scope_kind, scope_id, role_id, granted_by, expires_at, rev) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         &[
             &tid,
             &rule.as_str(),
@@ -119,12 +176,193 @@ pub async fn assign(
             &scope.id.as_str(),
             &role.as_str(),
             &granted_by.map(ToString::to_string),
+            &expires_at,
             &db_rev(rev)?,
         ],
     )
     .await
     .db()?;
     Ok((rule, finish_write(tx, tenant, rev).await?))
+}
+
+/// Changes when an assignment ends, or with `None` makes it permanent.
+///
+/// # Errors
+///
+/// [`NotFound`](crate::StoreErrorKind::NotFound) for an assignment that does
+/// not exist or has already expired,
+/// [`Invalid`](crate::StoreErrorKind::Invalid) for a time that has passed,
+/// or a database error.
+pub async fn set_assignment_expiry(
+    tx: &Transaction<'_>,
+    tenant: &TenantKey,
+    id: &RuleId,
+    expires_at: Option<SystemTime>,
+) -> Result<u64, StoreError> {
+    let rev = begin_write(tx, tenant).await?;
+    require_future(tx, expires_at).await?;
+    let changed = tx
+        .execute(
+            "UPDATE tutela.role_assignment SET expires_at = $3, rev = $4 \
+             WHERE tenant_id = $1 AND id = $2 \
+             AND (expires_at IS NULL OR expires_at > clock_timestamp())",
+            &[
+                &tenant.tid.to_string(),
+                &id.as_str(),
+                &expires_at,
+                &db_rev(rev)?,
+            ],
+        )
+        .await
+        .db()?;
+    if changed == 0 {
+        return Err(StoreError::not_found("assignment"));
+    }
+    finish_write(tx, tenant, rev).await
+}
+
+/// A time must be ahead of the database's clock.
+async fn require_future(
+    tx: &Transaction<'_>,
+    expires_at: Option<SystemTime>,
+) -> Result<(), StoreError> {
+    let Some(at) = expires_at else {
+        return Ok(());
+    };
+    let ahead: bool = tx
+        .query_one("SELECT $1::timestamptz > clock_timestamp()", &[&at])
+        .await
+        .db()?
+        .try_get(0)
+        .db()?;
+    if ahead {
+        Ok(())
+    } else {
+        Err(StoreError::invalid("an expiry must be in the future"))
+    }
+}
+
+/// What a sweep removed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Expired {
+    /// The assignments that passed their expiry and are now gone.
+    pub assignments: Vec<Assignment>,
+    /// The new tenant revision.
+    pub rev: u64,
+}
+
+/// Removes the assignments of `tenant` that are past their expiry, and bumps
+/// the revision in the same transaction, so every cache at an older revision
+/// reloads. Returns `None` when nothing has expired, with no bump.
+///
+/// Several replicas may run this at once: the second waits for the first on
+/// the revision row, then finds nothing, so one expiry is one bump. It does
+/// not run the load checks: taking a row out cannot break them, and a tenant
+/// whose data no longer loads must still lose an expired grant.
+///
+/// `tutelad` runs this on a timer. A product in library mode calls it
+/// itself; until then an expired assignment already does not count, but the
+/// revision does not move.
+///
+/// # Errors
+///
+/// [`UnknownTenant`](crate::StoreErrorKind::UnknownTenant), or a database
+/// error.
+pub async fn expire_assignments(
+    tx: &Transaction<'_>,
+    tenant: &TenantKey,
+) -> Result<Option<Expired>, StoreError> {
+    crate::enter(tx, tenant).await?;
+    let tid = tenant.tid.to_string();
+    // The usual answer is no. Find that out without taking a lock.
+    let due: bool = tx
+        .query_one(
+            "SELECT EXISTS (SELECT 1 FROM tutela.role_assignment WHERE tenant_id = $1 \
+             AND expires_at IS NOT NULL AND expires_at <= clock_timestamp())",
+            &[&tid],
+        )
+        .await
+        .db()?
+        .try_get(0)
+        .db()?;
+    if !due {
+        return Ok(None);
+    }
+    tx.query_opt(
+        "SELECT 1 FROM tutela.tenant_rev WHERE tenant_id = $1 FOR UPDATE",
+        &[&tid],
+    )
+    .await
+    .db()?
+    .ok_or(StoreError::corrupt("tenant revision row"))?;
+    let gone = tx
+        .query(
+            "WITH gone AS (DELETE FROM tutela.role_assignment a WHERE a.tenant_id = $1 \
+             AND a.expires_at IS NOT NULL AND a.expires_at <= clock_timestamp() \
+             RETURNING a.*) \
+             SELECT a.id, a.principal_kind, a.principal_id, a.scope_kind, a.scope_id, \
+             a.role_id, a.granted_by, a.created_at, a.expires_at, a.rev, g.key \
+             FROM gone a LEFT JOIN tutela.\"group\" g ON a.principal_kind = 'group' \
+             AND g.tenant_id = a.tenant_id AND g.id = a.principal_id ORDER BY a.id",
+            &[&tid],
+        )
+        .await
+        .db()?;
+    if gone.is_empty() {
+        return Ok(None);
+    }
+    let rev = tx
+        .query_opt(
+            "UPDATE tutela.tenant_rev SET rev = rev + 1 WHERE tenant_id = $1 RETURNING rev",
+            &[&tid],
+        )
+        .await
+        .db()?
+        .ok_or(StoreError::corrupt("tenant revision row"))?
+        .try_get(0)
+        .db()?;
+    Ok(Some(Expired {
+        assignments: gone.iter().map(assignment_row).collect::<Result<_, _>>()?,
+        rev: to_rev(rev)?,
+    }))
+}
+
+/// Removes a principal from a tenant: its assignments and its group
+/// memberships go in one revision (PERMISSION-MODEL.md 6.4). Call it in the
+/// transaction that deletes the principal.
+///
+/// # Errors
+///
+/// [`NotFound`](crate::StoreErrorKind::NotFound) when the principal has
+/// neither, or a database error.
+pub async fn remove_principal(
+    tx: &Transaction<'_>,
+    tenant: &TenantKey,
+    who: &Principal,
+) -> Result<u64, StoreError> {
+    let rev = begin_write(tx, tenant).await?;
+    let tid = tenant.tid.to_string();
+    let (kind, id) = principal_row(who)?;
+    let assignments = tx
+        .execute(
+            "DELETE FROM tutela.role_assignment WHERE tenant_id = $1 \
+             AND principal_kind = $2 AND principal_id = $3",
+            &[&tid, &kind, &id],
+        )
+        .await
+        .db()?;
+    let memberships = tx
+        .execute(
+            "DELETE FROM tutela.group_member WHERE tenant_id = $1 \
+             AND member_kind = $2 AND member_id = $3",
+            &[&tid, &kind, &id],
+        )
+        .await
+        .db()?;
+    if assignments + memberships == 0 {
+        return Err(StoreError::not_found("principal"));
+    }
+    finish_write(tx, tenant, rev).await
 }
 
 /// Removes a role assignment.
@@ -708,7 +946,7 @@ async fn check_path(
     Ok(())
 }
 
-async fn group_id(
+pub(crate) async fn group_id(
     tx: &Transaction<'_>,
     tid: &str,
     key: &GroupKey,
@@ -725,7 +963,7 @@ async fn group_id(
 }
 
 /// (kind, id) of a principal, as stored.
-fn principal_row(p: &Principal) -> Result<(String, String), StoreError> {
+pub(crate) fn principal_row(p: &Principal) -> Result<(String, String), StoreError> {
     let text = p.to_string();
     let (kind, id) = text
         .split_once(':')
@@ -733,7 +971,7 @@ fn principal_row(p: &Principal) -> Result<(String, String), StoreError> {
     Ok((kind.to_owned(), id.to_owned()))
 }
 
-async fn subject_row(
+pub(crate) async fn subject_row(
     tx: &Transaction<'_>,
     tid: &str,
     subject: &Subject,

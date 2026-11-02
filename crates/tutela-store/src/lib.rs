@@ -30,6 +30,7 @@
 //! [`docs/PERMISSION-MODEL.md`]: https://github.com/f8fvwgzc/tutela/blob/main/docs/PERMISSION-MODEL.md
 
 mod approvers;
+mod bindings;
 mod connect;
 mod isolation;
 mod load;
@@ -49,6 +50,10 @@ use tutela_pdp::model::Model;
 use tutela_pdp::{LoadError, PathEntry, Pdp, TenantData};
 
 pub use approvers::{Approver, add_approver, approver, approver_id, approvers, revoke_approver};
+pub use bindings::{
+    Assignment, AssignmentQuery, GroupInfo, MAX_PAGE, ancestors, assignment, assignments,
+    assignments_for, group_members, groups, groups_of, members_of, scopes_below, tenants,
+};
 pub use connect::{Transport, database_config};
 pub use isolation::{check_isolation, grant_service};
 pub use load::{ScopePathSnapshot, TenantBundle, load, rev};
@@ -56,8 +61,9 @@ pub use manifest::{Publish, StoredManifest, digest, manifest, publish_manifest};
 pub use migrate::{applied as applied_migration, latest as latest_migration, migrate};
 pub use tokio_postgres;
 pub use write::{
-    add_member, add_org, assign, create_group, create_tenant, delete_field_rule, delete_group,
-    delete_scope, move_scope, put_field_rule, put_scope, remove_member, set_private, unassign,
+    Expired, add_member, add_org, assign, assign_until, create_group, create_tenant,
+    delete_field_rule, delete_group, delete_scope, expire_assignments, move_scope, put_field_rule,
+    put_scope, remove_member, remove_principal, set_assignment_expiry, set_private, unassign,
 };
 
 /// What kind of failure a [`StoreError`] is.

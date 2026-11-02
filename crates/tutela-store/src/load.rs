@@ -1,6 +1,7 @@
 //! Reading a tenant: its revision, [`TenantData`] and scope paths.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::time::SystemTime;
 
 use tokio_postgres::Transaction;
 use tutela_contracts::level::Level;
@@ -24,6 +25,10 @@ pub struct TenantBundle {
     pub data: TenantData,
     /// The scope paths, read in the same view.
     pub paths: ScopePathSnapshot,
+    /// The earliest expiry among the assignments in `data`. This view is
+    /// good until then: a cache must load again at this time, because the
+    /// revision goes up only when a sweep runs (ADR-0020).
+    pub next_expiry: Option<SystemTime>,
 }
 
 /// The registered scope paths of one tenant at one revision. It answers
@@ -106,9 +111,14 @@ pub async fn rev(tx: &Transaction<'_>, tenant: &TenantKey) -> Result<u64, StoreE
 pub async fn load(tx: &Transaction<'_>, tenant: &TenantKey) -> Result<TenantBundle, StoreError> {
     enter(tx, tenant).await?;
     let rev = read_rev(tx, tenant, true).await?;
-    let data = tenant_data(tx, tenant).await?;
+    let (data, next_expiry) = tenant_view(tx, tenant).await?;
     let paths = scope_paths(tx, tenant).await?;
-    Ok(TenantBundle { rev, data, paths })
+    Ok(TenantBundle {
+        rev,
+        data,
+        paths,
+        next_expiry,
+    })
 }
 
 async fn read_rev(tx: &Transaction<'_>, tenant: &TenantKey, lock: bool) -> Result<u64, StoreError> {
@@ -131,6 +141,14 @@ pub(crate) async fn tenant_data(
     tx: &Transaction<'_>,
     tenant: &TenantKey,
 ) -> Result<TenantData, StoreError> {
+    Ok(tenant_view(tx, tenant).await?.0)
+}
+
+/// The tenant data, and the earliest expiry in it.
+async fn tenant_view(
+    tx: &Transaction<'_>,
+    tenant: &TenantKey,
+) -> Result<(TenantData, Option<SystemTime>), StoreError> {
     let tid = tenant.tid.to_string();
     let mut data = TenantData::default();
 
@@ -191,19 +209,25 @@ pub(crate) async fn tenant_data(
         })
         .collect();
 
-    // Assignments with an expiry are not read: expiry needs a revision bump
-    // when it passes, which comes with Phase B (ADR-0014). Ignoring them
-    // fails closed.
+    // An assignment past its expiry does not count, even before a sweep has
+    // removed it and bumped the revision. Ignoring it fails closed.
+    let mut next_expiry: Option<SystemTime> = None;
     for r in tx
         .query(
-            "SELECT id, principal_kind, principal_id, scope_kind, scope_id, role_id \
-             FROM tutela.role_assignment WHERE tenant_id = $1 AND expires_at IS NULL \
+            "SELECT id, principal_kind, principal_id, scope_kind, scope_id, role_id, expires_at \
+             FROM tutela.role_assignment WHERE tenant_id = $1 \
+             AND (expires_at IS NULL OR expires_at > clock_timestamp()) \
              ORDER BY created_at, id",
             &[&tid],
         )
         .await
         .db()?
     {
+        let expires: Option<SystemTime> = r.try_get(6).db()?;
+        next_expiry = match (next_expiry, expires) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
         let kind: &str = r.try_get(1).db()?;
         let id: &str = r.try_get(2).db()?;
         let subject = if kind == "group" {
@@ -274,7 +298,7 @@ pub(crate) async fn tenant_data(
                 .map_err(|_| StoreError::corrupt("level"))?,
         });
     }
-    Ok(data)
+    Ok((data, next_expiry))
 }
 
 async fn scope_paths(

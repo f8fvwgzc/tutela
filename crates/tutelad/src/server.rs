@@ -17,6 +17,7 @@ use tonic_health::server::HealthReporter;
 use crate::api::{self, AppState};
 use crate::config::Config;
 use crate::db::Db;
+use crate::expiry;
 use crate::telemetry::Metrics;
 
 /// The bound service, not yet serving.
@@ -30,6 +31,7 @@ pub struct Server {
     health: HealthReporter,
     drain: Duration,
     stop_timeout: Duration,
+    sweep_every: Duration,
 }
 
 impl Server {
@@ -58,6 +60,7 @@ impl Server {
             health,
             drain: config.shutdown_drain,
             stop_timeout: config.shutdown_timeout,
+            sweep_every: config.expiry_sweep,
         })
     }
 
@@ -87,6 +90,8 @@ impl Server {
     ///    finish, up to the shutdown timeout;
     /// 3. the ops port stops last.
     ///
+    /// The expiry sweep runs on a timer until step 2.
+    ///
     /// # Errors
     ///
     /// When a listener stops by itself, or requests do not finish in time.
@@ -100,11 +105,19 @@ impl Server {
             health,
             drain,
             stop_timeout,
+            sweep_every,
         } = self;
         let (stop_api, api_stopped) = watch::channel(false);
         let (stop_ops, ops_stopped) = watch::channel(false);
+        let (stop_jobs, jobs_stopped) = watch::channel(false);
         let mut api_task = spawn_listener(api, api_router, api_stopped);
         let mut ops_task = spawn_listener(ops, ops_router, ops_stopped);
+        let sweeper = tokio::spawn(expiry::run(
+            state.db.clone(),
+            Arc::clone(&state.metrics),
+            sweep_every,
+            jobs_stopped,
+        ));
 
         tokio::select! {
             () = shutdown => {}
@@ -120,8 +133,12 @@ impl Server {
         tokio::time::sleep(drain).await;
 
         let _ = stop_api.send(true);
+        let _ = stop_jobs.send(true);
         let finished = tokio::time::timeout(stop_timeout, &mut api_task).await;
         let _ = stop_ops.send(true);
+        if tokio::time::timeout(stop_timeout, sweeper).await.is_err() {
+            tracing::warn!("the expiry sweep did not stop in time");
+        }
         match finished {
             Ok(joined) => {
                 joined.context("the API listener panicked")??;

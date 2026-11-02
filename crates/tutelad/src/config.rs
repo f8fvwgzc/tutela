@@ -47,6 +47,10 @@ pub struct Config {
     pub shutdown_drain: Duration,
     /// `TUTELA_SHUTDOWN_TIMEOUT_SECS`: how long running requests may finish.
     pub shutdown_timeout: Duration,
+    /// `TUTELA_EXPIRY_SWEEP_SECS`: how often expired assignments are removed
+    /// and the revision bumped. This is the worst case for a cache that does
+    /// not honour `next_expiry` (ADR-0020).
+    pub expiry_sweep: Duration,
 }
 
 impl std::fmt::Debug for Config {
@@ -88,6 +92,11 @@ impl Config {
         };
         let audience = get("TUTELA_AUDIENCE").unwrap_or_else(|| DEFAULT_AUDIENCE.to_owned());
         let trust_path = PathBuf::from(need("TUTELA_TRUST_FILE")?);
+        let expiry_sweep = seconds(&get, "TUTELA_EXPIRY_SWEEP_SECS", "30")?;
+        ensure!(
+            !expiry_sweep.is_zero(),
+            "TUTELA_EXPIRY_SWEEP_SECS must be at least 1"
+        );
         Ok(Self {
             database_url: need("TUTELA_DATABASE_URL")?,
             listen: parsed(&get, "TUTELA_LISTEN", "0.0.0.0:8080")?,
@@ -100,6 +109,7 @@ impl Config {
             request_timeout: seconds(&get, "TUTELA_REQUEST_TIMEOUT_SECS", "30")?,
             shutdown_drain: seconds(&get, "TUTELA_SHUTDOWN_DRAIN_SECS", "5")?,
             shutdown_timeout: seconds(&get, "TUTELA_SHUTDOWN_TIMEOUT_SECS", "30")?,
+            expiry_sweep,
         })
     }
 

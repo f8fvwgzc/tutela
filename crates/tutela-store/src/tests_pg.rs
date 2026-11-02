@@ -8,9 +8,11 @@
 //! does. With the variable unset, each test says so and passes, except when
 //! `TUTELA_REQUIRE_DATABASE=1` (CI sets it): then a missing database fails.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
-use crate::{StoreError, StoreErrorKind, TenantBundle};
+use crate::{AssignmentQuery, StoreError, StoreErrorKind, TenantBundle};
 use tokio_postgres::{Client, NoTls};
 use tutela_contracts::decision::Effect;
 use tutela_contracts::keys::ActionKey;
@@ -116,7 +118,7 @@ async fn db() -> Option<Db> {
     let url = with(&base, &name, OWNER, OWNER_PASSWORD);
     let mut client = connect(&url).await;
     let applied = crate::migrate(&mut client).await.unwrap();
-    assert_eq!(applied, [1, 2]);
+    assert_eq!(applied, [1, 2, 3]);
     Some(Db {
         admin,
         name,
@@ -877,6 +879,648 @@ async fn a_database_error_keeps_its_cause_and_its_sqlstate() {
     assert_eq!(e.sqlstate(), Some("25P02"));
     assert_eq!(e.to_string(), "database error");
     assert!(std::error::Error::source(&e).is_some());
+    drop(tx);
+    db.finish().await;
+}
+
+/// Moves an assignment's expiry into the past, as time would. The row's
+/// tenant is entered so forced row-level security lets the update through.
+async fn pass_expiry(c: &mut Client, t: &TenantKey, id: &tutela_contracts::decision::RuleId) {
+    let tx = c.transaction().await.unwrap();
+    crate::enter(&tx, t).await.unwrap();
+    let n = tx
+        .execute(
+            "UPDATE tutela.role_assignment SET expires_at = now() - interval '1 second' \
+             WHERE tenant_id = $1 AND id = $2",
+            &[&t.tid.to_string(), &id.as_str()],
+        )
+        .await
+        .unwrap();
+    assert_eq!(n, 1);
+    tx.commit().await.unwrap();
+}
+
+fn in_an_hour() -> SystemTime {
+    SystemTime::now() + Duration::from_secs(3600)
+}
+
+/// An assignment with an expiry counts until it passes. Then it stops
+/// counting at once, and the sweep removes it and bumps the revision once.
+#[tokio::test]
+async fn an_assignment_counts_until_it_expires_and_the_sweep_bumps_the_revision() {
+    let Some(mut db) = db().await else { return };
+    let (t, o) = tenant(&mut db.client).await;
+    let (other, other_org) = tenant(&mut db.client).await;
+    let until = in_an_hour();
+    let tx = db.client.transaction().await.unwrap();
+    let (rule, rev) = crate::assign_until(
+        &tx,
+        &t,
+        &Subject::Principal(user(1)),
+        &role("reader"),
+        &org(&o),
+        None,
+        until,
+    )
+    .await
+    .unwrap();
+    crate::assign(
+        &tx,
+        &t,
+        &Subject::Principal(user(2)),
+        &role("reader"),
+        &org(&o),
+        None,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let tx = db.client.transaction().await.unwrap();
+    let (other_rule, _) = crate::assign_until(
+        &tx,
+        &other,
+        &Subject::Principal(user(1)),
+        &role("reader"),
+        &org(&other_org),
+        None,
+        until,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    // It counts, and the bundle says how long the view is good.
+    let before = load(&mut db.client, &t).await;
+    assert_eq!(before.rev, rev + 1);
+    assert_eq!(before.data.bindings.len(), 2);
+    let next = before.next_expiry.unwrap();
+    let off = next.duration_since(until).unwrap_or_else(|e| e.duration());
+    assert!(off < Duration::from_millis(2), "{off:?}");
+
+    // Nothing has expired: no bump.
+    let tx = db.client.transaction().await.unwrap();
+    assert_eq!(crate::expire_assignments(&tx, &t).await.unwrap(), None);
+    tx.commit().await.unwrap();
+    assert_eq!(load(&mut db.client, &t).await.rev, before.rev);
+
+    pass_expiry(&mut db.client, &t, &rule).await;
+
+    // It stopped counting before any sweep. Failing closed does not wait,
+    // and the revision has not moved yet.
+    let after = load(&mut db.client, &t).await;
+    assert_eq!(after.rev, before.rev);
+    assert_eq!(after.data.bindings.len(), 1);
+    assert_eq!(after.next_expiry, None);
+    let tx = db.client.transaction().await.unwrap();
+    assert_eq!(
+        kind(crate::assignment(&tx, &t, &rule).await),
+        Some(StoreErrorKind::NotFound)
+    );
+    assert_eq!(crate::assignments_for(&tx, &t, &user(1)).await.unwrap(), []);
+    drop(tx);
+
+    // The sweep removes it and bumps once. A second sweep finds nothing.
+    let tx = db.client.transaction().await.unwrap();
+    let gone = crate::expire_assignments(&tx, &t).await.unwrap().unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(gone.rev, before.rev + 1);
+    assert_eq!(gone.assignments.len(), 1);
+    assert_eq!(gone.assignments[0].id, rule);
+    assert_eq!(gone.assignments[0].subject, Subject::Principal(user(1)));
+    let tx = db.client.transaction().await.unwrap();
+    assert_eq!(crate::expire_assignments(&tx, &t).await.unwrap(), None);
+    tx.commit().await.unwrap();
+    assert_eq!(load(&mut db.client, &t).await.rev, gone.rev);
+
+    // The other tenant's row, with the same expiry, was not touched.
+    let theirs = load(&mut db.client, &other).await;
+    assert_eq!(theirs.data.bindings.len(), 1);
+    assert_eq!(theirs.data.bindings[0].id, other_rule);
+    db.finish().await;
+}
+
+/// Two replicas sweep at once: one expiry is one revision.
+#[tokio::test]
+async fn two_sweeps_at_once_make_one_revision() {
+    let Some(mut db) = db().await else { return };
+    let (t, o) = tenant(&mut db.client).await;
+    let tx = db.client.transaction().await.unwrap();
+    let (rule, _) = crate::assign_until(
+        &tx,
+        &t,
+        &Subject::Principal(user(1)),
+        &role("reader"),
+        &org(&o),
+        None,
+        in_an_hour(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    pass_expiry(&mut db.client, &t, &rule).await;
+    let rev = load(&mut db.client, &t).await.rev;
+
+    let url = with(&base_url().unwrap(), &db.name, OWNER, OWNER_PASSWORD);
+    let mut second = connect(&url).await;
+    let first_tx = db.client.transaction().await.unwrap();
+    let gone = crate::expire_assignments(&first_tx, &t)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(gone.rev, rev + 1);
+    // The second sweep saw the row before the first commits, then waits on
+    // the revision row.
+    let t2 = t.clone();
+    let waiting = tokio::spawn(async move {
+        let tx = second.transaction().await.unwrap();
+        let r = crate::expire_assignments(&tx, &t2).await.unwrap();
+        tx.commit().await.unwrap();
+        r
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    first_tx.commit().await.unwrap();
+    assert_eq!(waiting.await.unwrap(), None);
+    assert_eq!(load(&mut db.client, &t).await.rev, rev + 1);
+    db.finish().await;
+}
+
+#[tokio::test]
+async fn an_expiry_must_be_ahead_and_can_change() {
+    let Some(mut db) = db().await else { return };
+    let (t, o) = tenant(&mut db.client).await;
+    let subject = Subject::Principal(user(1));
+
+    let tx = db.client.transaction().await.unwrap();
+    assert_eq!(
+        kind(
+            crate::assign_until(
+                &tx,
+                &t,
+                &subject,
+                &role("reader"),
+                &org(&o),
+                None,
+                SystemTime::now() - Duration::from_secs(5),
+            )
+            .await
+        ),
+        Some(StoreErrorKind::Invalid)
+    );
+    drop(tx);
+
+    let tx = db.client.transaction().await.unwrap();
+    let (rule, rev) = crate::assign_until(
+        &tx,
+        &t,
+        &subject,
+        &role("reader"),
+        &org(&o),
+        None,
+        in_an_hour(),
+    )
+    .await
+    .unwrap();
+    // Permanent now: each change is a revision.
+    let made_permanent = crate::set_assignment_expiry(&tx, &t, &rule, None)
+        .await
+        .unwrap();
+    assert_eq!(made_permanent, rev + 1);
+    assert_eq!(
+        crate::assignment(&tx, &t, &rule).await.unwrap().expires_at,
+        None
+    );
+    assert_eq!(
+        kind(
+            crate::set_assignment_expiry(
+                &tx,
+                &t,
+                &rule,
+                Some(SystemTime::now() - Duration::from_secs(5)),
+            )
+            .await
+        ),
+        Some(StoreErrorKind::Invalid)
+    );
+    drop(tx);
+
+    // An assignment past its expiry does not hold the place, and cannot be
+    // brought back.
+    let tx = db.client.transaction().await.unwrap();
+    let (rule, _) = crate::assign_until(
+        &tx,
+        &t,
+        &subject,
+        &role("reader"),
+        &org(&o),
+        None,
+        in_an_hour(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    pass_expiry(&mut db.client, &t, &rule).await;
+    let tx = db.client.transaction().await.unwrap();
+    assert_eq!(
+        kind(crate::set_assignment_expiry(&tx, &t, &rule, None).await),
+        Some(StoreErrorKind::NotFound)
+    );
+    drop(tx);
+    let tx = db.client.transaction().await.unwrap();
+    let (again, _) = crate::assign(&tx, &t, &subject, &role("reader"), &org(&o), None)
+        .await
+        .unwrap();
+    assert_ne!(again, rule);
+    tx.commit().await.unwrap();
+    assert_eq!(load(&mut db.client, &t).await.data.bindings.len(), 1);
+    db.finish().await;
+}
+
+#[tokio::test]
+async fn assignments_and_groups_read_back_as_they_were_written() {
+    let Some(mut db) = db().await else { return };
+    let (t, o) = tenant(&mut db.client).await;
+    let tx = db.client.transaction().await.unwrap();
+    crate::create_group(&tx, &t, &o, &gkey("staff"), "Staff")
+        .await
+        .unwrap();
+    crate::add_member(
+        &tx,
+        &t,
+        &gkey("staff"),
+        &Member::Principal(user(1)),
+        Some(&user(9)),
+    )
+    .await
+    .unwrap();
+    let scope = entry("department", "d1");
+    crate::put_scope(&tx, &t, &scope, &[org(&o)], false)
+        .await
+        .unwrap();
+    let group = Subject::Group(gkey("staff"));
+    let (by_group, rev) = crate::assign(&tx, &t, &group, &role("reader"), &scope, Some(&user(9)))
+        .await
+        .unwrap();
+    for n in 2..5 {
+        crate::assign(
+            &tx,
+            &t,
+            &Subject::Principal(user(n)),
+            &role("reader"),
+            &org(&o),
+            None,
+        )
+        .await
+        .unwrap();
+    }
+
+    let one = crate::assignment(&tx, &t, &by_group).await.unwrap();
+    assert_eq!(one.subject, group);
+    assert_eq!(one.role, role("reader"));
+    assert_eq!(one.scope, scope);
+    assert_eq!(one.granted_by, Some(user(9)));
+    assert_eq!(one.expires_at, None);
+    assert_eq!(one.rev, rev);
+
+    let query = |q: AssignmentQuery<'static>| q;
+    let all = crate::assignments(&tx, &t, &query(AssignmentQuery::default()))
+        .await
+        .unwrap();
+    assert_eq!(all.len(), 4);
+    let ids: Vec<_> = all.iter().map(|a| a.id.clone()).collect();
+    let mut sorted = ids.clone();
+    sorted.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    assert_eq!(ids, sorted);
+
+    let first = crate::assignments(
+        &tx,
+        &t,
+        &AssignmentQuery {
+            limit: Some(3),
+            ..AssignmentQuery::default()
+        },
+    )
+    .await
+    .unwrap();
+    let rest = crate::assignments(
+        &tx,
+        &t,
+        &AssignmentQuery {
+            after: Some(&first[2].id),
+            ..AssignmentQuery::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!((first.len(), rest.len()), (3, 1));
+    assert_eq!(rest[0].id, all[3].id);
+
+    let at = crate::assignments(
+        &tx,
+        &t,
+        &AssignmentQuery {
+            scope: Some(&scope),
+            ..AssignmentQuery::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(at.len(), 1);
+    let of = crate::assignments(
+        &tx,
+        &t,
+        &AssignmentQuery {
+            subject: Some(&group),
+            ..AssignmentQuery::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(of[0].id, by_group);
+    assert_eq!(
+        kind(
+            crate::assignments(
+                &tx,
+                &t,
+                &AssignmentQuery {
+                    limit: Some(crate::MAX_PAGE + 1),
+                    ..AssignmentQuery::default()
+                },
+            )
+            .await
+        ),
+        Some(StoreErrorKind::Invalid)
+    );
+
+    let groups = crate::groups(&tx, &t).await.unwrap();
+    assert_eq!(groups.len(), 1);
+    assert_eq!((groups[0].key.clone(), groups[0].org), (gkey("staff"), o));
+    assert_eq!(groups[0].name, "Staff");
+    assert_eq!(
+        crate::group_members(&tx, &t, &gkey("staff")).await.unwrap(),
+        [Member::Principal(user(1))]
+    );
+    drop(tx);
+    db.finish().await;
+}
+
+/// The closures are read at query time, across nesting, and agree with a
+/// plain walk of the same random group graph.
+#[tokio::test]
+async fn the_group_closures_agree_with_a_walk_of_the_edges() {
+    let Some(mut db) = db().await else { return };
+    let (t, o) = tenant(&mut db.client).await;
+    let (other, other_org) = tenant(&mut db.client).await;
+    const GROUPS: usize = 12;
+    const USERS: u32 = 8;
+    let name = |g: usize| gkey(&format!("g{g}"));
+    let mut seed = 0x5eed_u64;
+    let mut next = |n: usize| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        usize::try_from(seed % (n as u64)).unwrap()
+    };
+    let tx = db.client.transaction().await.unwrap();
+    for g in 0..GROUPS {
+        crate::create_group(&tx, &t, &o, &name(g), "")
+            .await
+            .unwrap();
+    }
+    // Edges go from a higher number into a lower one, so there is no cycle.
+    let mut in_group: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+    for g in 1..GROUPS {
+        for _ in 0..2 {
+            let parent = next(g);
+            if in_group.entry(g).or_default().insert(parent) {
+                crate::add_member(&tx, &t, &name(parent), &Member::Group(name(g)), None)
+                    .await
+                    .unwrap();
+            }
+        }
+    }
+    let mut direct: BTreeMap<u32, BTreeSet<usize>> = BTreeMap::new();
+    for u in 0..USERS {
+        for _ in 0..2 {
+            let g = next(GROUPS);
+            if direct.entry(u).or_default().insert(g) {
+                crate::add_member(&tx, &t, &name(g), &Member::Principal(user(u)), None)
+                    .await
+                    .unwrap();
+            }
+        }
+    }
+    tx.commit().await.unwrap();
+
+    // Another tenant with the same keys and the same user.
+    let tx = db.client.transaction().await.unwrap();
+    crate::create_group(&tx, &other, &other_org, &name(GROUPS), "")
+        .await
+        .unwrap();
+    crate::add_member(
+        &tx,
+        &other,
+        &name(GROUPS),
+        &Member::Principal(user(0)),
+        None,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let up = |start: &BTreeSet<usize>| {
+        let mut seen = start.clone();
+        let mut todo: Vec<usize> = start.iter().copied().collect();
+        while let Some(g) = todo.pop() {
+            for &p in in_group.get(&g).into_iter().flatten() {
+                if seen.insert(p) {
+                    todo.push(p);
+                }
+            }
+        }
+        seen
+    };
+    let tx = db.client.transaction().await.unwrap();
+    let mut members: BTreeMap<usize, BTreeSet<Principal>> = BTreeMap::new();
+    for u in 0..USERS {
+        let want = up(&direct[&u]);
+        for &g in &want {
+            members.entry(g).or_default().insert(user(u));
+        }
+        let want: BTreeSet<GroupKey> = want.into_iter().map(name).collect();
+        assert_eq!(crate::groups_of(&tx, &t, &user(u)).await.unwrap(), want);
+    }
+    for g in 0..GROUPS {
+        assert_eq!(
+            crate::members_of(&tx, &t, &name(g)).await.unwrap(),
+            members.remove(&g).unwrap_or_default(),
+            "group {g}"
+        );
+    }
+    assert_eq!(
+        kind(crate::members_of(&tx, &t, &name(GROUPS)).await),
+        Some(StoreErrorKind::NotFound)
+    );
+    drop(tx);
+    db.finish().await;
+}
+
+#[tokio::test]
+async fn the_path_closure_reads_both_ways_and_stops_at_the_tenant() {
+    let Some(mut db) = db().await else { return };
+    let (t, o) = tenant(&mut db.client).await;
+    let (other, other_org) = tenant(&mut db.client).await;
+    let d = entry("department", "d1");
+    let m = entry("matter", "m1");
+    let c = entry("contract", "c1");
+    let tx = db.client.transaction().await.unwrap();
+    crate::put_scope(&tx, &t, &d, &[org(&o)], false)
+        .await
+        .unwrap();
+    crate::put_scope(&tx, &t, &m, &[d.clone(), org(&o)], false)
+        .await
+        .unwrap();
+    crate::put_scope(&tx, &t, &c, &[m.clone(), d.clone(), org(&o)], false)
+        .await
+        .unwrap();
+    assert_eq!(
+        crate::ancestors(&tx, &t, &c).await.unwrap(),
+        Some(vec![m.clone(), d.clone(), org(&o)])
+    );
+    assert_eq!(
+        crate::ancestors(&tx, &t, &entry("matter", "nope"))
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        crate::scopes_below(&tx, &t, &d).await.unwrap(),
+        [c.clone(), m.clone()]
+    );
+    assert_eq!(
+        crate::scopes_below(&tx, &t, &org(&o)).await.unwrap().len(),
+        3
+    );
+    tx.commit().await.unwrap();
+    // Another tenant with the same scope ids sees only its own.
+    let tx = db.client.transaction().await.unwrap();
+    crate::put_scope(&tx, &other, &d, &[org(&other_org)], false)
+        .await
+        .unwrap();
+    assert_eq!(crate::scopes_below(&tx, &other, &d).await.unwrap(), []);
+    drop(tx);
+    db.finish().await;
+}
+
+/// Deleting a principal takes its assignments and memberships in one
+/// revision (PERMISSION-MODEL.md 6.4), and leaves everyone else alone.
+#[tokio::test]
+async fn removing_a_principal_takes_its_bindings_in_one_revision() {
+    let Some(mut db) = db().await else { return };
+    let (t, o) = tenant(&mut db.client).await;
+    let tx = db.client.transaction().await.unwrap();
+    crate::create_group(&tx, &t, &o, &gkey("staff"), "")
+        .await
+        .unwrap();
+    for n in [1, 2] {
+        crate::add_member(&tx, &t, &gkey("staff"), &Member::Principal(user(n)), None)
+            .await
+            .unwrap();
+        crate::assign(
+            &tx,
+            &t,
+            &Subject::Principal(user(n)),
+            &role("reader"),
+            &org(&o),
+            None,
+        )
+        .await
+        .unwrap();
+    }
+    tx.commit().await.unwrap();
+    let rev = load(&mut db.client, &t).await.rev;
+    let tx = db.client.transaction().await.unwrap();
+    assert_eq!(
+        crate::remove_principal(&tx, &t, &user(1)).await.unwrap(),
+        rev + 1
+    );
+    assert_eq!(
+        crate::groups_of(&tx, &t, &user(1)).await.unwrap(),
+        BTreeSet::new()
+    );
+    assert_eq!(crate::assignments_for(&tx, &t, &user(1)).await.unwrap(), []);
+    assert_eq!(crate::groups_of(&tx, &t, &user(2)).await.unwrap().len(), 1);
+    assert_eq!(
+        crate::assignments_for(&tx, &t, &user(2))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    tx.commit().await.unwrap();
+    let tx = db.client.transaction().await.unwrap();
+    assert_eq!(
+        kind(crate::remove_principal(&tx, &t, &user(1)).await),
+        Some(StoreErrorKind::NotFound)
+    );
+    drop(tx);
+    db.finish().await;
+}
+
+/// What applies to a principal: its own, and through nested groups.
+#[tokio::test]
+async fn assignments_for_a_principal_come_through_its_groups() {
+    let Some(mut db) = db().await else { return };
+    let (t, o) = tenant(&mut db.client).await;
+    let tx = db.client.transaction().await.unwrap();
+    crate::create_group(&tx, &t, &o, &gkey("outer"), "")
+        .await
+        .unwrap();
+    crate::create_group(&tx, &t, &o, &gkey("inner"), "")
+        .await
+        .unwrap();
+    crate::add_member(&tx, &t, &gkey("outer"), &Member::Group(gkey("inner")), None)
+        .await
+        .unwrap();
+    crate::add_member(&tx, &t, &gkey("inner"), &Member::Principal(user(1)), None)
+        .await
+        .unwrap();
+    let d = entry("department", "d1");
+    crate::put_scope(&tx, &t, &d, &[org(&o)], false)
+        .await
+        .unwrap();
+    crate::assign(
+        &tx,
+        &t,
+        &Subject::Group(gkey("outer")),
+        &role("reader"),
+        &org(&o),
+        None,
+    )
+    .await
+    .unwrap();
+    crate::assign(
+        &tx,
+        &t,
+        &Subject::Principal(user(1)),
+        &role("reader"),
+        &d,
+        None,
+    )
+    .await
+    .unwrap();
+    crate::assign(
+        &tx,
+        &t,
+        &Subject::Principal(user(2)),
+        &role("reader"),
+        &d,
+        None,
+    )
+    .await
+    .unwrap();
+    let mine = crate::assignments_for(&tx, &t, &user(1)).await.unwrap();
+    let scopes: BTreeSet<_> = mine.iter().map(|a| a.scope.clone()).collect();
+    assert_eq!(scopes, BTreeSet::from([d, org(&o)]));
     drop(tx);
     db.finish().await;
 }

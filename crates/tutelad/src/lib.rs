@@ -10,12 +10,15 @@
 //! - [`tenant`]: how a request gets its tenant, from the verified token only.
 //! - [`db`]: the connection pool, and [`db::Conn::begin`], the one way to
 //!   run a query as a tenant.
+//! - [`expiry`]: the timer that removes expired assignments and bumps the
+//!   revision.
 //! - [`telemetry`]: JSON logs and Prometheus metrics.
 //! - [`server`]: the two listeners and the graceful shutdown.
 
 pub mod api;
 pub mod config;
 pub mod db;
+pub mod expiry;
 pub mod server;
 pub mod telemetry;
 pub mod tenant;
