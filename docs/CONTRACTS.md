@@ -37,7 +37,7 @@ Only the left column exists in `tutela-contracts` after the first commit. Everyt
 | 1 | Ids, principals, tenant key | Parse and print UUIDv7 ids, every principal kind, tenant ids, org ids; the tenant key pair (iss, tid) | Trust-bundle binding of workload principals (B) |
 | 2 | Permission keys | Type, field, feature and action names; field keys; action keys; built-in actions; UI keys | The manifest `tutela.resources.toml` (A) |
 | 3 | Levels | The four levels, their order, `min` | Proto enum (B) |
-| 4 | Tokens | Claim structs for access tokens and delegated tokens, and their claim checks (no size, header, signature or `epoch` check) | Full verification in `tutela-sdk` (A); token exchange in `tutelad` (B); own OIDC provider (C, optional) |
+| 4 | Tokens | Claim structs for access tokens and delegated tokens, and their claim checks (no size, header, signature or `epoch` check) | Full verification in `tutela-sdk` (A, built); token exchange in `tutelad` (B, built: 4.8); own OIDC provider (C, optional) |
 | 5 | API keys | Parse, format check, display prefix | Hashing, storage, verification, rotation (A, B) |
 | 6 | Decision | The Decision object: effect, level, field mask, rule ids, reason, rev, obligations | `Pdp::check`, `Pdp::batch`, `Pdp::list_filter`, `Pdp::write_check` (A; built in `tutela-pdp`, [ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)) |
 | 7 | Remote check API | — | Built in `tutelad` (B): evaluation, search, the permission map, write-check and gRPC. |
@@ -465,6 +465,51 @@ Before Phase B there is no `tutelad`. A product verifies tokens from an external
 - Secrets.
 
 Tokens are never written to logs, URLs or span attributes.
+
+### 4.8 Token exchange (Phase B, built)
+
+`tutelad` exchanges a trusted token for a short-lived Tutela token at `POST /oauth2/token` (RFC 8693, [ADR-0031](DECISIONS.md#adr-0031-token-exchange-the-tenant-from-the-trust-list-a-person-from-iss-sub)). The endpoint is on the API port and needs no bearer token: the subject token is the credential. There is no client authentication until apps exist (part 4).
+
+**Request.** `Content-Type: application/x-www-form-urlencoded`. A parameter sent twice is refused; an unknown one is ignored, and `tid` or `tenant` are never read.
+
+| Parameter | Rule |
+|---|---|
+| `grant_type` | `urn:ietf:params:oauth:grant-type:token-exchange`. Anything else: `unsupported_grant_type`. |
+| `subject_token` | An external issuer's token whose one audience is `tutelad`'s own (`TUTELA_AUDIENCE`), or a token of `tutelad`'s own issuer for any audience it issues. Nothing else. |
+| `subject_token_type` | `urn:ietf:params:oauth:token-type:access_token` or `urn:ietf:params:oauth:token-type:jwt`. Never an ID token. |
+| `audience` | Exactly one registered audience: `TUTELA_AUDIENCE`, or an `[[audience]]` of the trust file. Unknown: `invalid_target`. |
+| `resource` | Refused (`invalid_target`): name the service with `audience`. |
+| `scope` | Optional. Space-separated (RFC 6749 3.3). When the subject token has a scope, every asked scope must be in it (`invalid_scope`). |
+| `requested_token_type` | Absent, the access-token type, or the JWT type. |
+
+**What is issued.** A Tutela access token (4.2) of `tutelad`'s own issuer:
+
+| Claim | Value |
+|---|---|
+| `iss` | `TUTELA_ISSUER`. |
+| `tid` | From an external issuer: the one tenant the trust file maps it to (1.6), which must be in `tutelad`'s directory under `TUTELA_ISSUER`. From an own token: its own. |
+| `sub` | From an external issuer: the person found by the upstream `(iss, sub)`, made the first time (just-in-time provisioning), never by e-mail. From an own token: its own. |
+| `aud` | The audience asked for. |
+| `azp` | The subject token's. Required. |
+| `exp` | The earlier of now + `TUTELA_TOKEN_TTL_SECS` (default 300) and the subject token's `exp`. Never later. |
+| `epoch`, `rev` | The principal's epoch and the tenant's revision now. |
+| `sid` | A new `ses_<uuidv7>` for an external token; kept for an own token. |
+| `amr` | The external token's, or `["ext"]` when it has none. `ext` means the external issuer authenticated the person and did not say how; it never counts as a step-up method. |
+| `acr` | Copied from the subject token. |
+| `scope` | As asked, else the subject token's. |
+| `org` | Not set yet. |
+
+**Rules.**
+- An external subject token is exchanged **once**: its issuer and the SHA-256 of its `jti` are kept until it expires. A token with no `jti` is refused. To get tokens for several audiences, exchange the Tutela token again; an own token can be exchanged again, and the new one never outlives it.
+- A subject token that has expired, or that is inside the clock skew after its `exp`, gives nothing.
+- A disabled person gets nothing. A person whose `epoch` was raised after the subject token was issued gets nothing from it.
+- On `tutelad`'s own API, a token whose `epoch` is below its subject's, or whose subject or an actor is disabled, is refused (401, step 9 of 4.2) within `TUTELA_REVISION_CHECK_MS`.
+
+**Response.** `200`, `Cache-Control: no-store`: `{"access_token", "issued_token_type": "urn:ietf:params:oauth:token-type:access_token", "token_type": "Bearer", "expires_in", "scope"?}`.
+
+**Errors** (RFC 6749 5.2), `400` with `{"error", "error_description"}` and `Cache-Control: no-store`: `invalid_request`, `unsupported_grant_type`, `invalid_target`, `invalid_scope`, and `invalid_grant` for every problem with the subject token, with one description: it never says which check failed, and never holds a token. `503 temporarily_unavailable` when the database or the signing keys fail.
+
+**Metadata.** `GET /.well-known/oauth-authorization-server` (RFC 8414), no token: `issuer`, `token_endpoint`, `jwks_uri`, `grant_types_supported`.
 
 ---
 
@@ -944,7 +989,7 @@ pub enum PdpError {
 - The tenant comes from the caller's verified token (iss, tid). A request never names a tenant.
 - A resource whose path ends at an org of another tenant gets a deny with `tenant_mismatch`, the same answer as an org that does not exist.
 - Tutela keeps no list of principals per tenant, and an answer must not tell whether a principal exists elsewhere. So a subject of another tenant is a subject with no role here: a deny with `no_role`, the same answer as a subject that exists nowhere. The answer is never an error.
-- **Who may ask** ([ADR-0021](DECISIONS.md#adr-0021-the-check-api-one-code-path-a-snapshot-per-tenant-and-a-revision-lease)). A token of a service (`sa` or `key`) asks about any subject of its tenant. A token of a person or an agent asks about itself only, with no actors. A delegated token asks about its own `sub` and its full `act` chain, so the chain cannot be dropped to get the person's own answer. A token of an external issuer (4.6) has no principal until token exchange exists, so it cannot ask. Anything else is 403 `forbidden`. In a batch, one such question fails the whole call.
+- **Who may ask** ([ADR-0021](DECISIONS.md#adr-0021-the-check-api-one-code-path-a-snapshot-per-tenant-and-a-revision-lease)). A token of a service (`sa` or `key`) asks about any subject of its tenant. A token of a person or an agent asks about itself only, with no actors. A delegated token asks about its own `sub` and its full `act` chain, so the chain cannot be dropped to get the person's own answer. A token of an external issuer (4.6) has no principal, so it cannot ask: exchange it first (4.8). Anything else is 403 `forbidden`. In a batch, one such question fails the whole call.
 - `path` and `attrs` come from the calling service, which loaded them server-side by id (6.5). A person who asks about itself sends its own path, so that answer is a UI hint, never enforcement.
 - No decision is older than `context.at_least_revision`, or than the token's `rev` (4.2). If the database is behind that revision: 503 `stale`.
 - `traceparent` (W3C) is read and passed on. Tokens and personal data never go into URLs.
@@ -1410,6 +1455,8 @@ Paths of the API port that need no token ([ADR-0030](DECISIONS.md#adr-0030-tutel
 
 | Route | Answer |
 |---|---|
+| `POST /oauth2/token` | Token exchange (4.8). The subject token in the body is the credential. |
+| `GET /.well-known/oauth-authorization-server` | The authorization server metadata (RFC 8414): `issuer`, `token_endpoint`, `jwks_uri`, `grant_types_supported`. |
 | `GET /.well-known/jwks.json` | The JWKS of `tutelad`'s own issuer (`application/jwk-set+json`): every published key, the next one included, as ES256 public JWKs with `kid` (the RFC 7638 thumbprint), `alg` and `use: sig`. `Cache-Control: public, max-age=<TUTELA_JWKS_CACHE_SECS>`. Its URL is `<TUTELA_ISSUER>/.well-known/jwks.json`. |
 
 gRPC health (`grpc.health.v1.Health`) is on the API port, behind the same token check. It says `NOT_SERVING` as soon as a shutdown starts.

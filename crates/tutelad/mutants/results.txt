@@ -31,3 +31,28 @@ S14: caught by 1 test(s) - one person turns two-person off
       while_it_is_on_a_model_is_published_only_through_two_people
 S15: caught by 1 test(s) - a proposal ignores a new active model
       a_proposal_goes_stale_when_its_report_would_change
+
+T01: caught by 2 test(s) - a private key is stored in plain text
+      tests_pg::tm15_signing_keys_follow_a_master_key_rotation, tests_pg::tm15_a_signing_key_is_never_stored_in_plain_text
+T02: caught by 1 test(s) - a missing master key still starts
+      config::tests::tm22_missing_secrets_stop_the_start_up
+T03: caught by 1 test(s) - a denied key is not denied
+      tm15_a_denied_kid_is_refused_at_once
+T04: caught by 1 test(s) - the next key signs at once, before any cache has it
+      tm15_the_jwks_is_public_and_publishes_the_next_key_first
+T05: caught by 1 test(s) - an issuer may speak for any tenant
+      tm05_an_issuer_cannot_name_a_tenant_it_may_not_speak_for
+T06: caught by 1 test(s) - a token of another issuer is exchanged in its tenant
+      tm05_an_issuer_cannot_name_a_tenant_it_may_not_speak_for
+T07: caught by 1 test(s) - an expired subject token is exchanged
+      a_replayed_or_expired_subject_token_is_refused
+T08: caught by 1 test(s) - a replayed subject token is exchanged
+      a_replayed_or_expired_subject_token_is_refused
+T09: caught by 1 test(s) - a disabled person gets a token
+      a_disabled_user_gets_no_token_and_loses_the_ones_issued
+T10: caught by 3 test(s) - a raised epoch or a disabled principal is still accepted
+      an_epoch_bump_revokes_issued_tokens, a_disabled_user_gets_no_token_and_loses_the_ones_issued, an_exchanged_token_stays_in_its_tenant
+T11: caught by 2 test(s) - a revoked token of this service is exchanged again
+      an_epoch_bump_revokes_issued_tokens, a_disabled_user_gets_no_token_and_loses_the_ones_issued
+T12: caught by 1 test(s) - one upstream subject is one person across issuers
+      tm04_provisioning_keys_on_issuer_and_subject_never_email

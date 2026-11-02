@@ -37,14 +37,7 @@ async fn own() -> Option<Own> {
 impl Own {
     /// What the key job does on its timer.
     async fn refresh(&self) {
-        tutelad::keys::refresh(
-            &self.st.keys,
-            &self.st.verifier,
-            &self.st.db,
-            &self.st.metrics,
-        )
-        .await
-        .unwrap();
+        tutelad::keys::refresh(&self.st).await.unwrap();
     }
 
     async fn jwks(&self) -> (reqwest::header::HeaderMap, Vec<String>) {
@@ -255,10 +248,7 @@ async fn replicas_that_start_together_make_one_key() {
     let fixed = common::tenant(&mut d.owner).await;
     let cfg = config(&d.service_url, trust(&[fixed.tid.to_string()]));
     let (a, b) = (state(&cfg, &Issuer::new()), state(&cfg, &Issuer::new()));
-    let (ra, rb) = tokio::join!(
-        tutelad::keys::refresh(&a.keys, &a.verifier, &a.db, &a.metrics),
-        tutelad::keys::refresh(&b.keys, &b.verifier, &b.db, &b.metrics),
-    );
+    let (ra, rb) = tokio::join!(tutelad::keys::refresh(&a), tutelad::keys::refresh(&b));
     ra.unwrap();
     rb.unwrap();
     assert_eq!(a.keys.published(), b.keys.published());

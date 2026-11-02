@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Planted bugs for the service, run against the tests that must catch them.
 
-Each mutant changes one place in `tutelad` or `tutela-store`, and runs the
+Each mutant changes one place in `tutelad`, `tutela-store` or
+`tutela-contracts`, and runs the
 named test targets on a real Postgres. A mutant that survives is a hole in the
 tests. The script restores each file after its run, and writes the results to
 `results.txt` next to it. It is not part of `make`; the tests it runs are.
@@ -26,6 +27,13 @@ OUT = pathlib.Path(__file__).resolve().parent / "results.txt"
 MODELS = "crates/tutelad/src/models/mod.rs"
 EXPLAIN = "crates/tutelad/src/authz/explain.rs"
 TWO = ["-p", "tutelad", "--test", "two_person"]
+KEYS_STORE = "crates/tutela-store/src/signing_keys.rs"
+CONFIG = "crates/tutelad/src/config.rs"
+SDK_CLAIMS = "crates/tutela-contracts/src/claims.rs"
+EXCHANGE_SRC = "crates/tutelad/src/exchange.rs"
+REVOCATION = "crates/tutelad/src/revocation.rs"
+PRINCIPALS = "crates/tutela-store/src/principals.rs"
+EXCHANGE = ["-p", "tutelad", "--test", "exchange"]
 
 # (id, file, what it breaks, old text, new text, cargo test arguments).
 # `old` must occur once.
@@ -90,6 +98,58 @@ MUTANTS = [
      "let why = if now.active.version != p.base_version || now.active.digest != p.base_digest {",
      "let why = if false {",
      TWO),
+    # Part 3a: the service's own keys, token exchange, admin and delegated
+    # tokens (ADR-0030 to ADR-0033).
+    ("T01", KEYS_STORE, "a private key is stored in plain text",
+     "    let sealed = vault\n        .seal(PURPOSE, kid.as_bytes(), pkcs8.as_ref())\n",
+     "    let sealed = Ok::<_, StoreError>(pkcs8.as_ref().to_vec())\n        .map(|v| v)\n",
+     ["-p", "tutela-store", "--lib", "tm15"]),
+    ("T02", CONFIG, "a missing master key still starts",
+     '        LocalKms::from_values(master, master_previous).map_err(|e| anyhow!("{e}"))?;\n'
+     '        let master = present(master).context("TUTELA_MASTER_KEY is not set")?;\n',
+     '        let master = present(master)\n'
+     '            .unwrap_or("00000000000000000000000000000000000000000000000000000000000000ff");\n',
+     ["-p", "tutelad", "--lib", "tm22"]),
+    ("T03", KEYS_STORE, "a denied key is not denied",
+     '"UPDATE tutela.signing_key SET denied_at = coalesce(denied_at, $2) WHERE kid = $1"',
+     '"UPDATE tutela.signing_key SET denied_at = denied_at WHERE kid = $1 AND $2::timestamptz IS NOT NULL"',
+     ["-p", "tutelad", "--test", "keys"]),
+    ("T04", KEYS_STORE, "the next key signs at once, before any cache has it",
+     "    let signs_from = now + times.lead;\n",
+     "    let signs_from = now;\n",
+     ["-p", "tutelad", "--test", "keys"]),
+    ("T05", SDK_CLAIMS, "an issuer may speak for any tenant",
+     "        if !trusted.allows(self.iss, self.tid) {\n",
+     "        if false && !trusted.allows(self.iss, self.tid) {\n",
+     EXCHANGE),
+    ("T06", EXCHANGE_SRC, "a token of another issuer is exchanged in its tenant",
+     "        Identity::Access(c) if c.iss == *state.keys.iss() => Tenant::of(&id),\n",
+     "        Identity::Access(_) => Tenant::of(&id),\n",
+     EXCHANGE),
+    ("T07", EXCHANGE_SRC, "an expired subject token is exchanged",
+     "    if exp <= now {\n        return Err(Refusal::grant(\"expired\"));\n",
+     "    if false && exp <= now {\n        return Err(Refusal::grant(\"expired\"));\n",
+     EXCHANGE),
+    ("T08", EXCHANGE_SRC, "a replayed subject token is exchanged",
+     "    if !tutela_store::note_exchange(tx, key, &t.tenant.iss, &jti, expires).await? {\n",
+     "    if tutela_store::note_exchange(tx, key, &t.tenant.iss, &jti, expires).await? && false {\n",
+     EXCHANGE),
+    ("T09", EXCHANGE_SRC, "a disabled person gets a token",
+     "    if person.disabled {\n",
+     "    if false && person.disabled {\n",
+     EXCHANGE),
+    ("T10", REVOCATION, "a raised epoch or a disabled principal is still accepted",
+     "        if book.current(sub, epoch) && !actors.iter().any(|a| book.disabled(a)) {\n",
+     "        if true || book.current(sub, epoch) && !actors.iter().any(|a| book.disabled(a)) {\n",
+     EXCHANGE),
+    ("T11", EXCHANGE_SRC, "a revoked token of this service is exchanged again",
+     "    if known.is_some_and(|s| s.disabled || c.epoch < s.epoch) {\n",
+     "    if false && known.is_some_and(|s| s.disabled || c.epoch < s.epoch) {\n",
+     EXCHANGE),
+    ("T12", PRINCIPALS, "one upstream subject is one person across issuers",
+     "         WHERE a.tenant_id = $1 AND a.iss = $2 AND a.sub = $3\"\n",
+     "         WHERE a.tenant_id = $1 AND $2::text IS NOT NULL AND a.sub = $3\"\n",
+     EXCHANGE),
 ]
 
 

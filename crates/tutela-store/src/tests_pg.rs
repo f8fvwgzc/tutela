@@ -97,7 +97,7 @@ fn with(url: &str, db: &str, user: &str, password: &str) -> String {
 async fn db() -> Option<Db> {
     let mut db = empty_db().await?;
     let applied = crate::migrate(&mut db.client).await.unwrap();
-    assert_eq!(applied, [1, 2, 3, 4, 5, 6]);
+    assert_eq!(applied, [1, 2, 3, 4, 5, 6, 7]);
     Some(db)
 }
 
@@ -1976,5 +1976,234 @@ async fn tm15_signing_keys_follow_a_master_key_rotation() {
     let set = key_set(&mut db.client).await;
     let key = set.signing(set.now).unwrap();
     assert!(key.open(&only_new).is_ok());
+    db.finish().await;
+}
+
+// ---------- Principals, upstream accounts and exchanged tokens (ADR-0031) ----------
+
+async fn in_tenant<T>(
+    c: &mut Client,
+    f: impl AsyncFnOnce(&tokio_postgres::Transaction<'_>) -> T,
+) -> T {
+    let tx = c.transaction().await.unwrap();
+    let out = f(&tx).await;
+    tx.commit().await.unwrap();
+    out
+}
+
+/// TM-04: an account is its upstream `(iss, sub)`. The same subject of two
+/// issuers is two people, and nothing reads an e-mail.
+#[tokio::test]
+async fn tm04_a_person_is_found_by_upstream_iss_and_sub_never_merged() {
+    let Some(mut db) = db().await else { return };
+    let (t, _) = tenant(&mut db.client).await;
+    let (other, _) = tenant(&mut db.client).await;
+    let kc: Issuer = "https://kc.example.test/realms/a".parse().unwrap();
+    let kc2: Issuer = "https://kc.example.test/realms/b".parse().unwrap();
+    let first = in_tenant(&mut db.client, async |tx| {
+        crate::provision_user(tx, &t, &kc, "same-sub")
+            .await
+            .unwrap()
+    })
+    .await;
+    assert_eq!(
+        first.principal.kind(),
+        tutela_contracts::principal::PrincipalKind::User
+    );
+    assert_eq!((first.epoch, first.disabled), (0, false));
+    let again = in_tenant(&mut db.client, async |tx| {
+        crate::provision_user(tx, &t, &kc, "same-sub")
+            .await
+            .unwrap()
+    })
+    .await;
+    assert_eq!(again.principal, first.principal);
+    let second_issuer = in_tenant(&mut db.client, async |tx| {
+        crate::provision_user(tx, &t, &kc2, "same-sub")
+            .await
+            .unwrap()
+    })
+    .await;
+    assert_ne!(second_issuer.principal, first.principal);
+    // Another tenant, the same upstream account: another principal, and
+    // neither tenant sees the other's row.
+    let elsewhere = in_tenant(&mut db.client, async |tx| {
+        crate::provision_user(tx, &other, &kc, "same-sub")
+            .await
+            .unwrap()
+    })
+    .await;
+    assert_ne!(elsewhere.principal, first.principal);
+    let seen = in_tenant(&mut db.client, async |tx| {
+        crate::principal_state(tx, &other, &first.principal)
+            .await
+            .unwrap()
+    })
+    .await;
+    assert_eq!(seen, None);
+    assert_eq!(
+        kind(
+            in_tenant(&mut db.client, async |tx| {
+                crate::provision_user(tx, &t, &kc, "").await
+            })
+            .await
+        ),
+        Some(StoreErrorKind::Invalid)
+    );
+    db.finish().await;
+}
+
+/// Revoking sessions and disabling raise the epoch and the revision in one
+/// transaction; enabling again keeps the raised epoch.
+#[tokio::test]
+async fn revoking_and_disabling_raise_the_epoch_and_the_revision() {
+    let Some(mut db) = db().await else { return };
+    let (t, _) = tenant(&mut db.client).await;
+    let kc: Issuer = "https://kc.example.test/realms/a".parse().unwrap();
+    let p = in_tenant(&mut db.client, async |tx| {
+        crate::provision_user(tx, &t, &kc, "u1")
+            .await
+            .unwrap()
+            .principal
+    })
+    .await;
+    let rev0 = load(&mut db.client, &t).await.rev;
+    let e1 = in_tenant(&mut db.client, async |tx| {
+        crate::revoke_sessions(tx, &t, &p).await.unwrap()
+    })
+    .await;
+    assert_eq!(e1, 1);
+    assert_eq!(load(&mut db.client, &t).await.rev, rev0 + 1);
+    let e2 = in_tenant(&mut db.client, async |tx| {
+        crate::set_disabled(tx, &t, &p, true).await.unwrap()
+    })
+    .await;
+    assert_eq!(e2, 2);
+    let r = in_tenant(&mut db.client, async |tx| {
+        crate::revocations(tx, &t).await.unwrap()
+    })
+    .await;
+    assert_eq!(r.entries.len(), 1);
+    assert!(r.entries[0].disabled && r.entries[0].epoch == 2);
+    let e3 = in_tenant(&mut db.client, async |tx| {
+        crate::set_disabled(tx, &t, &p, false).await.unwrap()
+    })
+    .await;
+    assert_eq!(e3, 2, "enabling again never brings an old token back");
+    // A principal with no row: revoked all the same.
+    let agent: Principal = "agent:agt_0193a1b2-c3d4-7b33-9c44-5d6e7f809102"
+        .parse()
+        .unwrap();
+    let e = in_tenant(&mut db.client, async |tx| {
+        crate::set_disabled(tx, &t, &agent, true).await.unwrap()
+    })
+    .await;
+    assert_eq!(e, 1);
+    let sa: Principal = "sa:sa_0193a1b2-c3d4-7c55-ad66-7e8f90a1b2c3"
+        .parse()
+        .unwrap();
+    assert_eq!(
+        kind(
+            in_tenant(&mut db.client, async |tx| crate::revoke_sessions(
+                tx, &t, &sa
+            )
+            .await)
+            .await
+        ),
+        Some(StoreErrorKind::Invalid)
+    );
+    db.finish().await;
+}
+
+/// An external subject token is exchanged once per tenant and issuer; the
+/// record goes when the token has expired.
+#[tokio::test]
+async fn an_exchanged_token_is_noted_once() {
+    let Some(mut db) = db().await else { return };
+    let (t, _) = tenant(&mut db.client).await;
+    let (other, _) = tenant(&mut db.client).await;
+    let kc: Issuer = "https://kc.example.test/realms/a".parse().unwrap();
+    let later = SystemTime::now() + Duration::from_secs(300);
+    let note = |t: TenantKey, jti: &'static str, at: SystemTime| {
+        let kc = kc.clone();
+        async move |tx: &tokio_postgres::Transaction<'_>| {
+            crate::note_exchange(tx, &t, &kc, jti, at).await.unwrap()
+        }
+    };
+    assert!(in_tenant(&mut db.client, note(t.clone(), "j1", later)).await);
+    assert!(!in_tenant(&mut db.client, note(t.clone(), "j1", later)).await);
+    assert!(in_tenant(&mut db.client, note(t.clone(), "j2", later)).await);
+    assert!(in_tenant(&mut db.client, note(other.clone(), "j1", later)).await);
+    // An expired record is removed on the next note, so the table stays
+    // small; the verifier refuses the expired token anyway.
+    let past = SystemTime::now() - Duration::from_secs(1);
+    assert!(in_tenant(&mut db.client, note(t.clone(), "old", past)).await);
+    assert!(in_tenant(&mut db.client, note(t.clone(), "old", past)).await);
+    db.finish().await;
+}
+
+/// A workload agent runs on attache's path, `/ns/<ns>/svc/<service>`; one
+/// workload names one agent.
+#[tokio::test]
+async fn a_workload_agent_uses_attache_path() {
+    let Some(mut db) = db().await else { return };
+    let (t, _) = tenant(&mut db.client).await;
+    let agent: Principal = "agent:agt_0193a1b2-c3d4-7b33-9c44-5d6e7f809102"
+        .parse()
+        .unwrap();
+    let agent2: Principal = "agent:agt_0193a1b2-c3d4-7b33-9c44-5d6e7f809103"
+        .parse()
+        .unwrap();
+    let w = |s: &str| tutela_contracts::principal::WorkloadId::parse(s).unwrap();
+    let good = w("spiffe://prod.attache.example.test/ns/shop/svc/orders");
+    for bad in [
+        "spiffe://prod.attache.example.test/sa/orders",
+        "spiffe://prod.attache.example.test/ns/shop/svc/orders/x",
+        "spiffe://prod.attache.example.test/ns/shop",
+    ] {
+        let bad = w(bad);
+        assert_eq!(
+            kind(
+                in_tenant(&mut db.client, async |tx| {
+                    crate::register_agent(tx, &t, &agent, Some(&bad)).await
+                })
+                .await
+            ),
+            Some(StoreErrorKind::Invalid)
+        );
+    }
+    in_tenant(&mut db.client, async |tx| {
+        crate::register_agent(tx, &t, &agent, Some(&good))
+            .await
+            .unwrap()
+    })
+    .await;
+    assert_eq!(
+        kind(
+            in_tenant(&mut db.client, async |tx| {
+                crate::register_agent(tx, &t, &agent2, Some(&good)).await
+            })
+            .await
+        ),
+        Some(StoreErrorKind::Exists)
+    );
+    let found = in_tenant(&mut db.client, async |tx| {
+        crate::agent_for_workload(tx, &t, &good).await.unwrap()
+    })
+    .await
+    .unwrap();
+    assert_eq!(found.principal, agent);
+    assert_eq!(found.workload, Some(good));
+    let user = user(1);
+    assert_eq!(
+        kind(
+            in_tenant(&mut db.client, async |tx| crate::register_agent(
+                tx, &t, &user, None
+            )
+            .await)
+            .await
+        ),
+        Some(StoreErrorKind::Invalid)
+    );
     db.finish().await;
 }

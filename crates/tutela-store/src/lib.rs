@@ -38,6 +38,7 @@ mod load;
 mod manifest;
 mod migrate;
 mod models;
+mod principals;
 mod proposals;
 pub mod signing_keys;
 mod write;
@@ -66,6 +67,10 @@ pub use migrate::{applied as applied_migration, latest as latest_migration, migr
 pub use models::{
     ActiveModel, MAX_VERSION_PAGE, ModelVersion, TenantPublish, active_model, model_version,
     model_versions, publish_tenant_model,
+};
+pub use principals::{
+    PrincipalState, Revocations, agent_for_workload, is_attache_path, note_exchange,
+    principal_state, provision_user, register_agent, revocations, revoke_sessions, set_disabled,
 };
 pub use proposals::{
     MAX_PROPOSAL_PAGE, NewProposal, Proposal, TwoPerson, close_proposal, proposal, proposals,

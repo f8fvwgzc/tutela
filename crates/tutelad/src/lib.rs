@@ -16,6 +16,8 @@
 //! - [`expiry`]: the timer that removes expired assignments and bumps the
 //!   revision.
 //! - [`keys`]: the service's own issuer: its signing keys and its JWKS.
+//! - [`exchange`]: token exchange (RFC 8693) at `POST /oauth2/token`.
+//! - [`revocation`]: raised epochs and disabled principals, per tenant.
 //! - [`telemetry`]: JSON logs and Prometheus metrics.
 //! - [`server`]: the two listeners and the graceful shutdown.
 
@@ -24,9 +26,11 @@ pub mod authz;
 pub mod cache;
 pub mod config;
 pub mod db;
+pub mod exchange;
 pub mod expiry;
 pub mod keys;
 pub mod models;
+pub mod revocation;
 pub mod server;
 pub mod telemetry;
 pub mod tenant;

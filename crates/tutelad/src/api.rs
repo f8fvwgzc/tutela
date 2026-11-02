@@ -7,22 +7,25 @@ use std::time::Duration;
 
 use axum::extract::{DefaultBodyLimit, Extension, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router, middleware};
 use serde::Serialize;
 use tower::ServiceExt as _;
 use tower_http::timeout::TimeoutLayer;
-use tutela_sdk::Identity;
 use tutela_sdk::Verifier;
 use tutela_sdk::http::{AuthLayer, Protocol};
+use tutela_sdk::{Identity, Step};
 use tutela_store::{StoreError, StoreErrorKind};
 
 use crate::authz;
 use crate::cache::TenantCache;
 use crate::db::{Db, DbError};
+use crate::exchange::{self, Audiences};
 use crate::keys::{self, KeyRing};
 use crate::models;
+use crate::revocation::{Refusal, Revocations};
 use crate::telemetry::{Metrics, observe};
 use crate::tenant::Tenant;
 
@@ -36,6 +39,10 @@ pub struct AppState {
     pub verifier: Arc<Verifier>,
     /// The service's own signing keys (ADR-0030).
     pub keys: Arc<KeyRing>,
+    /// The audiences token exchange issues for (ADR-0031).
+    pub audiences: Arc<Audiences>,
+    /// Raised epochs and disabled principals, per tenant.
+    pub revocations: Arc<Revocations>,
     /// The database.
     pub db: Db,
     /// What decisions are made from.
@@ -297,6 +304,7 @@ pub fn api_router(state: &AppState, grpc: Router, request_timeout: Duration) -> 
         .fallback(not_found)
         .with_state(state.clone())
         .layer(timeout)
+        .layer(middleware::from_fn_with_state(state.clone(), current_http))
         .layer(AuthLayer::new(Arc::clone(&state.verifier), Protocol::Http))
         .layer(middleware::map_response(problem_for_401))
         .layer(middleware::from_fn_with_state(
@@ -304,6 +312,7 @@ pub fn api_router(state: &AppState, grpc: Router, request_timeout: Duration) -> 
             observe,
         ));
     let grpc = grpc
+        .layer(middleware::from_fn_with_state(state.clone(), current_grpc))
         .layer(AuthLayer::new(Arc::clone(&state.verifier), Protocol::Grpc))
         .layer(middleware::from_fn_with_state(
             Arc::clone(&state.metrics),
@@ -323,10 +332,65 @@ pub fn api_router(state: &AppState, grpc: Router, request_timeout: Duration) -> 
     })
 }
 
+/// A verified token whose subject's epoch was raised, or whose subject or
+/// actor is disabled, is refused like any token that fails a step: 401,
+/// with the step `epoch` for the log (CONTRACTS.md 4.2 step 9).
+async fn current_http(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    let Some(id) = req.extensions().get::<Identity>().cloned() else {
+        return next.run(req).await;
+    };
+    match state.revocations.check(&id).await {
+        Ok(()) => next.run(req).await,
+        Err(Refusal::Revoked) => {
+            let mut res = invalid_token().into_response();
+            res.headers_mut().insert(
+                header::WWW_AUTHENTICATE,
+                HeaderValue::from_static("Bearer error=\"invalid_token\""),
+            );
+            res.extensions_mut().insert(Step::Epoch);
+            res
+        }
+        Err(Refusal::Problem(p)) => p.into_response(),
+    }
+}
+
+/// [`current_http`] for gRPC: `unauthenticated`, `permission_denied` or
+/// `unavailable`, in the headers. gRPC health needs a token but no
+/// database, and says nothing about anyone, so it is not held here.
+async fn current_grpc(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    if req.uri().path().starts_with("/grpc.health.v1.Health/") {
+        return next.run(req).await;
+    }
+    let Some(id) = req.extensions().get::<Identity>().cloned() else {
+        return next.run(req).await;
+    };
+    let code = match state.revocations.check(&id).await {
+        Ok(()) => return next.run(req).await,
+        Err(Refusal::Revoked) => "16",
+        Err(Refusal::Problem(p)) if p.status == StatusCode::FORBIDDEN => "7",
+        Err(Refusal::Problem(_)) => "14",
+    };
+    let mut res = Response::new(axum::body::Body::empty());
+    res.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/grpc"),
+    );
+    res.headers_mut()
+        .insert("grpc-status", HeaderValue::from_static(code));
+    if code == "16" {
+        res.extensions_mut().insert(Step::Epoch);
+    }
+    res
+}
+
 /// The paths of the API port that need no token: what a verifier or a client
 /// must reach before it has one (ADR-0030). Exact paths only, so an unknown
 /// path still says nothing without a token.
-pub const PUBLIC_PATHS: [&str; 1] = [keys::JWKS_PATH];
+pub const PUBLIC_PATHS: [&str; 3] = [
+    keys::JWKS_PATH,
+    exchange::TOKEN_PATH,
+    exchange::METADATA_PATH,
+];
 
 fn is_public(req: &Request) -> bool {
     PUBLIC_PATHS.contains(&req.uri().path())
@@ -337,6 +401,11 @@ fn public_router(state: &AppState, request_timeout: Duration) -> Router {
     let timeout = TimeoutLayer::with_status_code(StatusCode::SERVICE_UNAVAILABLE, request_timeout);
     Router::new()
         .route(keys::JWKS_PATH, get(keys::jwks))
+        .route(
+            exchange::TOKEN_PATH,
+            post(exchange::token).layer(DefaultBodyLimit::max(exchange::BODY_LIMIT)),
+        )
+        .route(exchange::METADATA_PATH, get(exchange::metadata))
         .fallback(not_found)
         .with_state(state.clone())
         .layer(timeout)

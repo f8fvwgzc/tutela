@@ -15,8 +15,8 @@
 
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
-use tutela_contracts::tenant::TenantKey;
-use tutela_sdk::Identity;
+use tutela_contracts::tenant::{Issuer, TenantKey};
+use tutela_sdk::{ExternalToken, Identity};
 
 use crate::api::{Problem, invalid_token};
 
@@ -31,6 +31,17 @@ impl Tenant {
     #[must_use]
     pub fn of(identity: &Identity) -> Self {
         let tenant = Self(identity.tenant());
+        tracing::Span::current().record("tid", tracing::field::display(tenant.key().tid));
+        tenant
+    }
+
+    /// The tenant a verified token of an external issuer speaks for, under
+    /// this service's own issuer `own`: the one tenant the trust file maps
+    /// that issuer to (CONTRACTS.md 1.6). Token exchange only (ADR-0031). It
+    /// still comes from the verified token and the trust list, never from
+    /// the request, and the directory checks it when it is entered.
+    pub(crate) fn exchanged(own: &Issuer, token: &ExternalToken) -> Self {
+        let tenant = Self(TenantKey::new(own.clone(), token.tenant.tid));
         tracing::Span::current().record("tid", tracing::field::display(tenant.key().tid));
         tenant
     }

@@ -317,7 +317,12 @@ impl Binary {
 
     /// Sends SIGTERM, expects exit 0, and returns the JSON log lines. No
     /// line may hold `secret`.
-    async fn stop(mut self, secret: &str) -> Vec<Value> {
+    async fn stop(self, secret: &str) -> Vec<Value> {
+        self.stop_with(&[secret]).await
+    }
+
+    /// [`Binary::stop`], with several secrets.
+    async fn stop_with(mut self, secrets: &[&str]) -> Vec<Value> {
         use tokio::io::{AsyncBufReadExt as _, BufReader};
 
         let pid = self.child.id().unwrap().to_string();
@@ -336,7 +341,9 @@ impl Binary {
         let mut lines = BufReader::new(self.child.stdout.take().unwrap()).lines();
         let mut out = Vec::new();
         while let Some(line) = lines.next_line().await.unwrap() {
-            assert!(!line.contains(secret), "a token reached the log: {line}");
+            for secret in secrets {
+                assert!(!line.contains(secret), "a token reached the log: {line}");
+            }
             for key in [common::MASTER_KEY, common::PEPPER] {
                 assert!(!line.contains(key), "a secret reached the log: {line}");
             }
@@ -442,6 +449,83 @@ async fn the_binary_verifies_a_token_against_a_served_jwks() {
         .expect("the request was not logged");
     assert_eq!(served["status"], 200);
     assert_eq!(served["span"]["tid"], tid);
+    d.finish().await;
+}
+
+/// The binary exchanges a realm token for a Tutela token over a real
+/// socket, with the realm's JWKS fetched through `tutela-safenet`, and logs
+/// neither token: only the new token's `jti`.
+#[tokio::test]
+async fn the_binary_exchanges_a_token_and_logs_neither() {
+    let Some(mut d) = migrated().await else {
+        return;
+    };
+    let issuer = Issuer::new();
+    let jwks = issuer.jwks();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let app = axum::Router::new().route(
+        "/jwks",
+        axum::routing::get(move || {
+            let body = jwks.clone();
+            async move { body }
+        }),
+    );
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    let realm = format!("{base}/realms/acme");
+    let t = common::tenant_of(&mut d.owner, common::OWN_ISS).await;
+    let tid = t.tid.to_string();
+    let trust = format!(
+        "[[issuer]]\niss = \"{realm}\"\njwks_uri = \"{base}/jwks\"\nalgs = [\"ES256\"]\n\
+         tenants = [\"{tid}\"]\nexternal = true\nallow_typ_jwt = true\n"
+    );
+    let bin = Binary::start("exchange", &trust, &d.service_url, true).await;
+    let now = now();
+    let subject = issuer.sign_typed(
+        "JWT",
+        &serde_json::json!({
+            "iss": realm, "sub": "kc-user-1", "aud": AUD, "azp": "crm-web",
+            "exp": now + 300, "iat": now, "jti": uuid::Uuid::now_v7().to_string(),
+            "sid": "kc-session-1", "acr": "1",
+        }),
+    );
+    let form = serde_urlencoded::to_string([
+        (
+            "grant_type",
+            "urn:ietf:params:oauth:grant-type:token-exchange",
+        ),
+        ("subject_token", subject.as_str()),
+        (
+            "subject_token_type",
+            "urn:ietf:params:oauth:token-type:access_token",
+        ),
+        ("audience", AUD),
+    ])
+    .unwrap();
+    let r = http()
+        .post(format!("http://{}/oauth2/token", bin.api))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(form)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let body: Value = r.json().await.unwrap();
+    let access = body["access_token"].as_str().unwrap().to_owned();
+    let r = http()
+        .get(bin.whoami())
+        .bearer_auth(&access)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+
+    let logs = bin.stop_with(&[&subject, &access, "kc-user-1"]).await;
+    assert!(
+        logs.iter()
+            .any(|v| v["message"] == "token issued" && v["op"] == "access"),
+        "the exchange was not logged"
+    );
     d.finish().await;
 }
 

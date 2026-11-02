@@ -27,6 +27,7 @@ prometheus-client = "0.25.2"
 prost = "0.14.4"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+serde_urlencoded = "0.7.1"
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-postgres-rustls = { version = "0.14.0", features = ["aws-lc-rs"] }
