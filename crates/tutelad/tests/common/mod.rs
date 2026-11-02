@@ -220,7 +220,12 @@ impl Issuer {
     }
 
     pub fn sign_claims(&self, claims: &Value) -> String {
-        let header = json!({"typ": "at+jwt", "alg": "ES256", "kid": self.kid()});
+        self.sign_typed("at+jwt", claims)
+    }
+
+    /// A token with header `typ`.
+    pub fn sign_typed(&self, typ: &str, claims: &Value) -> String {
+        let header = json!({"typ": typ, "alg": "ES256", "kid": self.kid()});
         let msg = format!(
             "{}.{}",
             B64.encode(header.to_string()),
@@ -302,6 +307,11 @@ pub fn config(database_url: &str, trust: TrustFile) -> Config {
 
 /// The state, with the issuer's keys in memory.
 pub fn state(config: &Config, issuer: &Issuer) -> AppState {
+    state_with(config, issuer, false)
+}
+
+/// [`state`], with delegated (`agent+jwt`) tokens on or off.
+pub fn state_with(config: &Config, issuer: &Issuer, delegation: bool) -> AppState {
     let vc: VerifierConfig = config.trust.verifier_config(config.audience.clone());
     let vc = VerifierConfig {
         issuers: vc
@@ -313,6 +323,8 @@ pub fn state(config: &Config, issuer: &Issuer) -> AppState {
             })
             .collect(),
         cache: CacheRules::default(),
+        delegation,
+        delegation_aware: delegation,
         ..vc
     };
     let db = Db::connect(&config.database_url, config.pool_size).unwrap();
@@ -584,6 +596,36 @@ impl Issuer {
             claims["amr"] = json!(["pwd"]);
         }
         self.sign_claims(&claims)
+    }
+}
+
+impl Issuer {
+    /// A delegated token: `sub` acting through `agent`.
+    pub fn delegated(&self, sub: &str, agent: &str, tid: &str) -> String {
+        let now = now();
+        self.sign_typed(
+            "agent+jwt",
+            &json!({
+                "iss": ISS, "sub": sub, "aud": AUD, "azp": "crm-web",
+                "exp": now + 100, "iat": now, "nbf": now,
+                "jti": uuid::Uuid::now_v7().to_string(),
+                "tid": tid, "epoch": 0, "rev": 0,
+                "act": {"sub": agent}, "cap": {}, "run_id": "run-1",
+            }),
+        )
+    }
+
+    /// A token of `sub` from another session.
+    pub fn second_session(&self, sub: &str, tid: &str) -> String {
+        let now = now();
+        self.sign_claims(&json!({
+            "iss": ISS, "sub": sub, "aud": AUD, "azp": "crm-web",
+            "exp": now + 300, "iat": now, "nbf": now,
+            "jti": uuid::Uuid::now_v7().to_string(),
+            "sid": "ses_0193a1b2-c3d4-7123-8456-000000000002",
+            "amr": ["pwd", "otp"],
+            "tid": tid, "epoch": 0, "rev": 0,
+        }))
     }
 }
 

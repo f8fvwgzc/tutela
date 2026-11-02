@@ -1,5 +1,5 @@
 //! `POST /v1/authz/explain` and `POST /v1/authz/simulate` (CONTRACTS.md
-//! 7.11, ADR-0028).
+//! 7.10, ADR-0028).
 //!
 //! Both show why an answer is what it is, and so the model and other
 //! principals' assignments. So the caller's own principal needs the admin key

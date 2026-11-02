@@ -1,4 +1,4 @@
-//! The JSON of the model API (CONTRACTS.md 7.10).
+//! The JSON of the model API (CONTRACTS.md 7.9).
 
 use std::time::SystemTime;
 
@@ -42,7 +42,7 @@ pub struct LineOut {
     pub examples: Vec<String>,
 }
 
-/// An impact report as it is sent (CONTRACTS.md 7.10).
+/// An impact report as it is sent (CONTRACTS.md 7.9).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ImpactOut {
     /// `false` when the report stopped at its bound.
@@ -208,6 +208,109 @@ impl VersionOut {
             published_at: v.published_at.and_then(time),
             impact: v.impact.and_then(|i| serde_json::from_str(&i).ok()),
             source: v.source,
+        }
+    }
+}
+
+/// The body of `PUT /v1/models/settings`.
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+pub struct SettingsBody {
+    /// On or off.
+    pub two_person: Option<bool>,
+}
+
+/// A tenant's model settings.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct SettingsOut {
+    /// Two-person publish is on.
+    pub two_person: bool,
+    /// Who asked to turn it off; a second person must agree.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub off_requested_by: Option<String>,
+}
+
+impl SettingsOut {
+    /// The answer for a stored setting.
+    #[must_use]
+    pub fn of(t: tutela_store::TwoPerson) -> Self {
+        Self {
+            two_person: t.on,
+            off_requested_by: t.off_requested_by,
+        }
+    }
+}
+
+/// The body of an approval.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct ApproveBody {
+    /// An approval token, for a widening change.
+    pub approval: Option<String>,
+}
+
+/// A proposal.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct ProposalOut {
+    /// `mpr_<uuidv7>`.
+    pub id: String,
+    /// `proposed`, `published`, `rejected` or `stale`.
+    pub state: String,
+    /// The version it was compared against.
+    pub base_version: i64,
+    /// Its digest: an approval token's `from`.
+    pub from: String,
+    /// The new text's digest: an approval token's `to`.
+    pub to: String,
+    /// The version it copies, for a rollback.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub restores: Option<i64>,
+    /// `narrowing`, `neutral` or `widening`.
+    pub class: String,
+    /// The diff.
+    pub diff: String,
+    /// The impact report the proposer saw.
+    pub impact: Option<ImpactOut>,
+    /// The revision it was made at.
+    pub rev: u64,
+    /// Who proposed it.
+    pub proposed_by: String,
+    /// Who decided it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decided_by: Option<String>,
+    /// The version it became.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<i64>,
+    /// When it was made.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    /// When it was decided.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decided_at: Option<String>,
+    /// The text, when one proposal was asked for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+impl ProposalOut {
+    /// The answer for a stored proposal.
+    #[must_use]
+    pub fn of(p: tutela_store::Proposal) -> Self {
+        Self {
+            id: p.id,
+            state: p.state,
+            base_version: p.base_version,
+            from: p.base_digest,
+            to: p.digest,
+            restores: p.restores,
+            class: p.class,
+            diff: p.diff,
+            impact: serde_json::from_str(&p.impact).ok(),
+            rev: p.rev,
+            proposed_by: p.proposed_by,
+            decided_by: p.decided_by,
+            version: p.version,
+            created_at: time(p.created_at),
+            decided_at: p.decided_at.and_then(time),
+            source: p.source,
         }
     }
 }

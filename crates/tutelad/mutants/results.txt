@@ -18,3 +18,16 @@ S08: caught by 1 test(s) - a made-up path is believed
       tm09_a_path_made_up_to_reach_a_scope_one_owns_is_refused
 S09: caught by 1 test(s) - a simulation ignores its what-if assignments
       a_simulation_answers_for_a_candidate_and_writes_nothing
+
+S10: caught by 1 test(s) - the proposer approves its own proposal
+      tm08_the_same_principal_never_proposes_and_approves
+S11: caught by 1 test(s) - a proposal whose report changed is approved
+      a_proposal_goes_stale_when_its_report_would_change
+S12: caught by 1 test(s) - a proposal with a report cut short ignores changes
+      a_proposal_with_a_report_cut_short_goes_stale_on_any_change
+S13: caught by 1 test(s) - a direct publish ignores two-person
+      while_it_is_on_a_model_is_published_only_through_two_people
+S14: caught by 1 test(s) - one person turns two-person off
+      while_it_is_on_a_model_is_published_only_through_two_people
+S15: caught by 1 test(s) - a proposal ignores a new active model
+      a_proposal_goes_stale_when_its_report_would_change

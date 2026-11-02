@@ -1097,3 +1097,36 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 - **Any service may explain.** A product backend would learn every assignment of its tenant through one token.
 - **Trust the path, as a check does.** A check answers about the asked subject only; explain answers about everyone who holds the path.
 
+---
+
+## ADR-0029: Two-person publish
+
+**Status:** Accepted, 2026-11-02. Built in Phase B, part 2b.
+
+**Context.** PERMISSION-MODEL.md 15.1 step 4: two-person publish is optional per tenant, and the approver must be a different person from the author. The brief adds: not through a second session or a delegated token, and a proposal goes stale when the active model or the tenant's data moved in a way that changes its impact report. ADR-0026 made models per tenant, which is what makes "per tenant" mean something.
+
+**Decision.**
+
+1. **A proposal is stored, then approved.** `POST /v1/models/proposals` stores the text, the version it was compared against, the diff, the impact report and that report's digest, and the revision. Approval by another principal publishes it as a version in the same transaction as the proposal's new state. Rejecting closes it; its proposer may withdraw it.
+2. **"The same person" is the token's `sub`.** A second session has the same `sub`. A delegated token never holds the right at all (ADR-0026 item 8), so a person cannot approve through an agent, nor can an agent approve. Checked in `tutelad`, again in `publish_proposal`, and a `CHECK` in the database refuses a published proposal whose approver is its proposer. A person with two principals (a user and a service account of their own) is two principals to Tutela; nothing records who holds a service account. Part 3's audit log shows both names.
+3. **Staleness, decided here.** At approval, a proposal is stale when:
+   - the active model is not the version it was compared against; or
+   - its impact report, made again now on the same text, has another digest. The digest covers every principal of every line, so a new holder of a changed role makes it stale, and a change the report does not see does not; or
+   - its report was cut short at its bound and the tenant's revision moved at all: a partial report cannot tell what it did not reach.
+   A stale proposal is closed as `stale`, and the caller proposes again. Between the check and the write the tenant can move, so the write names the revision it checked, and the approval checks again, at most three times.
+4. **The setting** lives in a tenant table, `tenant_setting`. Turning it on takes one principal who may change the model. **Turning it off takes two**: the first asks, a second agrees. Otherwise one person could turn it off, publish alone and turn it on again.
+5. **While it is on, a direct publish is refused** by the store, in the publish's own transaction, so a setting turned on during a publish is never skipped.
+6. **A widening change still needs its approval token** at approval (ADR-0015, ADR-0026). The approver's principal and the token's key both go into `approvers`; the proposer is the `author`.
+7. **A proposal bumps no revision.** It changes nobody's access, and the evaluator never reads it.
+
+**Consequences.**
+- The same principal cannot do both, but an org admin can still turn the setting off with a second admin's agreement, which part 3's audit log and events must make visible.
+- An open proposal holds its text. They are listed newest first, at most 100; there is no expiry yet.
+- A tenant whose report always reaches the bound will see proposals go stale often. Raising `TUTELA_IMPACT_MAX_WORK` or a cheaper report (ADR-0027) helps.
+
+**Alternatives considered.**
+- **Compare `sid` or `jti`.** A second session would count as another person.
+- **Stale on any revision change.** Every unrelated assignment would undo a review.
+- **Stale only when the model moved.** A new holder of the changed role would get access nobody reviewed.
+- **Off by one person.** It undoes the setting in one call.
+

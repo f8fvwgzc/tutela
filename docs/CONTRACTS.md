@@ -1171,7 +1171,7 @@ The map is a **UI hint only**. Every server route checks again.
 
 ### 7.6 gRPC `tutela.authz.v1`
 
-The same operations over gRPC, all built: `Evaluate`, `Evaluations`, `SearchResource`, `SearchSubject`, `Permissions`, `WriteCheck` (7.8), `Explain` and `Simulate` (7.11). Service `tutela.authz.v1.Authz`, on the API port, behind the same token check. The handlers call the same code as HTTP. Messages carry the same fields with the same names and meanings as the JSON above, with these differences: `properties` is flat (`subject.act`, `resource.path`, `resource.attrs`), with no items `Evaluations` answers with one item, and `SearchResource` carries the filter as JSON text in `filter_json`, because a condition is a tree of open shape. The errors of 7.1 become gRPC codes: 400 `INVALID_ARGUMENT`, 401 `UNAUTHENTICATED`, 403 `PERMISSION_DENIED`, 503 `UNAVAILABLE`. The message starts with the problem code. The `.proto` file is `crates/tutela-contracts/proto/tutela/authz/v1/authz.proto`, and it is published with each release (section 10).
+The same operations over gRPC, all built: `Evaluate`, `Evaluations`, `SearchResource`, `SearchSubject`, `Permissions`, `WriteCheck` (7.8), `Explain` and `Simulate` (7.10). Service `tutela.authz.v1.Authz`, on the API port, behind the same token check. The handlers call the same code as HTTP. Messages carry the same fields with the same names and meanings as the JSON above, with these differences: `properties` is flat (`subject.act`, `resource.path`, `resource.attrs`), with no items `Evaluations` answers with one item, and `SearchResource` carries the filter as JSON text in `filter_json`, because a condition is a tree of open shape. The errors of 7.1 become gRPC codes: 400 `INVALID_ARGUMENT`, 401 `UNAUTHENTICATED`, 403 `PERMISSION_DENIED`, 503 `UNAVAILABLE`. The message starts with the problem code. The `.proto` file is `crates/tutela-contracts/proto/tutela/authz/v1/authz.proto`, and it is published with each release (section 10).
 
 ---
 
@@ -1251,7 +1251,7 @@ A verified token for a tenant that is not in the directory gets 403 `unknown_ten
 - `tutelad_decisions_total` counts it as `operation="write_check"`.
 - gRPC: `WriteCheck`. The answer holds `decision`, `rev` and `decision_json`, which is `context.tutela` as JSON text. A move's shape grows inside v1, so it stays one contract with the JSON.
 
-### 7.10 Model versions
+### 7.9 Model versions
 
 **Status: Phase B, built.** Every published model is a kept, numbered version of its tenant ([ADR-0026](DECISIONS.md#adr-0026-a-tenant-owns-its-model-versions)). A publish here changes one tenant. HTTP only: the gRPC form comes with `tutela.admin.v1` (part 3). `tutela apply` against `tutelad` (part 4) calls these routes.
 
@@ -1320,13 +1320,35 @@ Publish:
 | Status | When |
 |---|---|
 | 400 | `invalid_request`, `invalid_manifest` (the detail lists the compiler's problems), `app_mismatch`. |
-| 403 | `forbidden`, `approval_required`, `unknown_tenant`. |
+| 403 | `forbidden`, `approval_required`, `unknown_tenant`, `same_person`, `two_person_required`. |
 | 404 | `not_found`. |
-| 409 | `version_conflict`, `no_change` (this text is the active model), `no_source` (a version with no kept text). |
+| 409 | `version_conflict`, `no_change` (this text is the active model), `no_source` (a version with no kept text), `stale_proposal`, `not_open`, `busy`. |
+
+**Two-person publish** ([ADR-0029](DECISIONS.md#adr-0029-two-person-publish)), optional per tenant:
+
+| Route | Needs | Does |
+|---|---|---|
+| `GET /v1/models/settings` | look | `{"two_person": true, "off_requested_by": "user:…"}` |
+| `PUT /v1/models/settings` | change | `{"two_person": true}` turns it on. `false` asks to turn it off: the first call records who asks, and it stays on until a call by **another** principal. |
+| `POST /v1/models/proposals` | change | The body of a publish without `approval`. Stores the change, its diff and its impact report; publishes nothing. |
+| `GET /v1/models/proposals`, `GET /v1/models/proposals/{id}` | look | The newest 100, or one with its text. 404 for a proposal of another tenant. |
+| `POST /v1/models/proposals/{id}/approve` | change | `{"approval": "…"}` for a widening change. Another principal approves, and it publishes as a version in the same transaction. Answers as a publish does. |
+| `POST /v1/models/proposals/{id}/reject` | change | Closes an open proposal; its proposer may withdraw it this way. |
+
+```json
+{ "id": "mpr_…", "state": "proposed", "base_version": 3, "from": "9f86…", "to": "60303…",
+  "class": "narrowing", "diff": "…", "impact": { "…": "…" }, "rev": 44, "proposed_by": "user:usr_…" }
+```
+
+- `state` is `proposed`, `published`, `rejected` or `stale`.
+- **The same principal never proposes and approves**: 403 `same_person`. A principal is the token's `sub`, so a second session is the same principal. A delegated token never passes the right at all, so a person cannot approve through an agent either. The database refuses it too.
+- **A proposal goes stale** (409 `stale_proposal`, and it is closed as `stale`) when, at approval: the active model is not the version it was compared against; or its impact report, made again now, differs from the one the proposer saw, principal for principal; or that report was cut short at its bound and the tenant's revision has moved at all. A change the report does not see, for example a new assignment of a role the change leaves alone, keeps it fresh.
+- While two-person is on, `POST /v1/models/publish` is 403 `two_person_required`.
+- An open proposal that was decided is 409 `not_open`. A tenant that changed under every try of an approval is 409 `busy`.
 
 A body may be up to 16 MiB, so a 4 MiB manifest fits after JSON escaping. `tutelad_model_operations_total` counts each call by `operation` and `outcome`: `ok`, `forbidden`, `refused`, `conflict`, `stale`, `invalid` or `error`.
 
-### 7.11 Explain and simulate
+### 7.10 Explain and simulate
 
 **Status: Phase B, built** ([ADR-0028](DECISIONS.md#adr-0028-explain-and-simulate-need-read_audit-on-the-resource)). Both take the body of 7.2. Both show the model and other principals' assignments, so they need more than a check:
 
@@ -1362,13 +1384,13 @@ A body may be up to 16 MiB, so a 4 MiB manifest fits after JSON escaping. `tutel
   } }
 ```
 
-- Every part of `candidate` is optional. `source` is a candidate model, or `restore` a kept version (7.10). `add` takes at most 100 assignments; a subject is a principal string or `group:<key>`. `remove` names stored assignment ids.
+- Every part of `candidate` is optional. `source` is a candidate model, or `restore` a kept version (7.9). `add` takes at most 100 assignments; a subject is a principal string or `group:<key>`. `remove` names stored assignment ids.
 - It answers `{ "decision", "context": { "tutela": <Decision> }, "current": { "decision", "context" }, "changed" }`: the candidate's answer, today's answer from the same read, and whether they differ in any field.
 - **Nothing is written, and no snapshot changes.** Two evaluators are built from one fresh read.
 - A candidate that does not compile, an assignment that is not there, or one that breaks a rule of the tenant data (two for one subject and scope) is 400.
 - gRPC: `Explain` answers `decision` and `explanation_json`; `Simulate` takes `evaluation` and `candidate_json` and answers `decision`, `changed` and `result_json`.
 
-### 7.9 Ports and operations
+### 7.11 Ports and operations
 
 **Status: Phase B, built.** `tutelad` listens on two ports.
 

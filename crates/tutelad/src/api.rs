@@ -260,6 +260,25 @@ pub fn api_router(state: &AppState, grpc: Router, request_timeout: Duration) -> 
         .route("/v1/models", get(models::http::versions))
         .route("/v1/models/{version}", get(models::http::version))
         .route(
+            "/v1/models/settings",
+            get(models::http::settings).put(models::http::set_settings),
+        )
+        .route(
+            "/v1/models/proposals",
+            get(models::http::proposals)
+                .post(models::http::propose)
+                .layer(DefaultBodyLimit::max(models::http::MODEL_BODY_LIMIT)),
+        )
+        .route("/v1/models/proposals/{id}", get(models::http::proposal))
+        .route(
+            "/v1/models/proposals/{id}/approve",
+            post(models::http::approve),
+        )
+        .route(
+            "/v1/models/proposals/{id}/reject",
+            post(models::http::reject),
+        )
+        .route(
             "/v1/models/impact",
             post(models::http::impact).layer(DefaultBodyLimit::max(models::http::MODEL_BODY_LIMIT)),
         )

@@ -257,8 +257,9 @@ The rest of this list is planned.
 - **UI permission map**: `POST /v1/authz/permissions` (ETag / 304). Built.
 - **Admin API** `tutela.admin.v1`: tenants, orgs, members, groups, roles,
   bindings, resource types, apps, keys, agent principals.
-- Model versioning, impact report, explain and simulate, optional two-person
-  publish.
+- Model versioning per tenant, the impact report, explain and simulate,
+  optional two-person publish, and `write_check` with moves and links. Built
+  (ADR-0025 to ADR-0029).
 - Signed bundles per (tenant, rev) for PDP caches. Planned for part 3
   ([ADR-0024](DECISIONS.md#adr-0024-signed-bundles-wait-for-part-3)). Until
   then, a Rust product checks through the API or in library mode.
