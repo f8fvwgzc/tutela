@@ -1,6 +1,6 @@
 # Tutela roadmap
 
-Status: **pre-alpha**. `v0.1.0` is a pre-release of the Rust crates in library mode. Parts 1, 2a, 2b, 3a and 3b of Phase B are merged: the `tutelad` service, tenant isolation, the bindings store, the check API, the permission map, the replica checks, `write_check` with moves and links, model versions per tenant, the impact report, explain and simulate, two-person publish, the service's own issuer with token exchange, admin and delegated tokens, the local audit log, events with webhooks and SSE, and signed bundles. Nothing is usable in production yet. See [Phase B status](#phase-b-status).
+Status: **pre-alpha**. `v0.1.0` is a pre-release of the Rust crates in library mode. Parts 1, 2a, 2b, 3a, 3b and 3c of Phase B are merged: the `tutelad` service, tenant isolation, the bindings store, the check API, the permission map, the replica checks, `write_check` with moves and links, model versions per tenant, the impact report, explain and simulate, two-person publish, the service's own issuer with token exchange, admin and delegated tokens, the local audit log, events with webhooks and SSE, signed bundles, and the admin API `tutela.admin.v1` with agent principals, the lifecycle of tenants, orgs and people, and webhook registration. Nothing is usable in production yet. See [Phase B status](#phase-b-status).
 
 This file lists the four phases (A, B, C, D), what each one builds, how we know it is done, and how long it takes. The reasons behind the big choices are in [DECISIONS.md](DECISIONS.md). The design is in [ARCHITECTURE.md](ARCHITECTURE.md) and [PERMISSION-MODEL.md](PERMISSION-MODEL.md).
 
@@ -92,11 +92,12 @@ A gate is a list of checks. A phase is not done until its gate passes. No produc
 - Model versioning, impact report ("12 users gain read on contract"), explain and simulate, two-person publish (optional per tenant): **done** ([ADR-0026](DECISIONS.md#adr-0026-a-tenant-owns-its-model-versions) to [ADR-0029](DECISIONS.md#adr-0029-two-person-publish)).
 - Moves and links across scopes: `moves_out`, `moves_in`, `on_looser` and `links_from` from `boundary_rule`, checked in `write_check` with the before/after impact calculation (PERMISSION-MODEL §9, §10): **done** ([ADR-0025](DECISIONS.md#adr-0025-moves-and-links-in-write_check)). Assignment expiry with a revision bump when it passes ([ADR-0014](DECISIONS.md#adr-0014-tutela-store-in-phase-a-the-schema-row-level-security-and-checked-writes)): **done** ([ADR-0020](DECISIONS.md#adr-0020-the-bindings-store-closures-at-read-time-and-assignment-expiry)).
 - CLI: `tutela apply` against `tutelad` (adds the impact report and approvals; still refuses a widening diff without an approval token), `tutela apps create`, `tutela keys rotate`.
-- Webhooks (transactional outbox, Standard Webhooks signatures) and SSE `/v1/events`: **done** in part 3b ([ADR-0035](DECISIONS.md#adr-0035-the-outbox-events-numbered-per-tenant-in-commit-order) to [ADR-0037](DECISIONS.md#adr-0037-the-event-stream-services-only-one-feed-per-tenant-bounded)); registering a webhook is part 3c's route.
+- Webhooks (transactional outbox, Standard Webhooks signatures) and SSE `/v1/events`: **done** in part 3b ([ADR-0035](DECISIONS.md#adr-0035-the-outbox-events-numbered-per-tenant-in-commit-order) to [ADR-0037](DECISIONS.md#adr-0037-the-event-stream-services-only-one-feed-per-tenant-bounded)); registering one is a route of the admin API since part 3c.
 - Local hash-chained audit log. Optional forwarding to attache's evidence ledger through its Append API: **done** in part 3b ([ADR-0034](DECISIONS.md#adr-0034-the-local-audit-log-one-chain-per-tenant-written-with-the-change), [ADR-0039](DECISIONS.md#adr-0039-forwarding-to-attaches-evidence-ledger-signed-acknowledged-resumable)).
 - **Token-exchange service**: accepts the Keycloak token and issues a short-lived Tutela access token, with just-in-time user provisioning.
 - **Delegated agent tokens** (RFC 8693, `act` claim, `typ: agent+jwt`, only for `delegation_aware` audiences). Not optional.
-- Org lifecycle events (`tutela.org.created|updated|deleted.v1`, `tutela.user.deleted.v1`, ...).
+- Org lifecycle events (`tutela.org.created|updated|deleted.v1`, `tutela.user.deleted.v1`, ...): **done** in part 3c, with soft delete and a purge of tenants and orgs ([ADR-0041](DECISIONS.md#adr-0041-the-lifecycle-of-tenants-orgs-and-people-the-operator-makes-a-tenant-soft-delete-with-a-grace-a-purge-that-keeps-the-audit-chain)).
+- Admin API `tutela.admin.v1` over gRPC and HTTP: **done** in part 3c for agent principals, people, the model, `PutResourceTypes`, boundary rules, tenants, orgs and webhooks ([ADR-0040](DECISIONS.md#adr-0040-tutelaadminv1-one-code-path-the-admin-token-rule-on-grpc-and-keys-at-every-org)); scopes, role assignments and groups are part 4's ([#107](https://github.com/f8fvwgzc/tutela/issues/107)).
 - Tutela Console, plus embeddable admin components (RoleEditor, MembersTable, permission matrix) using a separate `aud=tutela-admin` token.
 - A Helm bootstrap job that creates client credentials and webhook secrets before other charts start.
 
@@ -110,7 +111,7 @@ A gate is a list of checks. A phase is not done until its gate passes. No produc
 
 ### Phase B status
 
-**State on 2026-11-02: parts 1, 2a, 2b, 3a and 3b are merged. Phase B is not done, and the service gate does not pass yet** (its end-to-end check needs the Console). v0.2.0 is not tagged. attache and texc-symphony stay on `v0.1.0`.
+**State on 2026-11-02: parts 1, 2a, 2b, 3a, 3b and 3c are merged. Phase B is not done, and the service gate does not pass yet** (its end-to-end check needs the Console). v0.2.0 is not tagged. attache and texc-symphony stay on `v0.1.0`.
 
 Done:
 
@@ -165,7 +166,7 @@ The service gate:
 | 2+ replicas | **Passes**: two real `tutelad` processes on one Postgres answer together, share a sweep (one expiry, one revision), and one keeps serving when the other stops (`crates/tutelad/tests/ha.rs`) |
 | Bundle expiry | **Passes.** A replica's snapshot stops at its age limit and at `next_expiry`, also during an outage, and fails closed (`crates/tutelad/tests/ha.rs`). A signed bundle's `exp` is never later than the first assignment in it that expires, and a product's `OfflinePdp` answers from it with `tutelad` stopped until `exp`, then answers nothing; an expired, older, changed, denied-`kid` or newer-format bundle is refused (`crates/tutelad/tests/bundle.rs`, [ADR-0038](DECISIONS.md#adr-0038-signed-bundles-a-service-with-read_audit-everywhere-its-own-typ-and-no-skew-at-exp)). `crates/tutelad/tests/ha.rs` also runs the shipped binary as a separate process, stops it, and the product's `OfflinePdp` answers from the bundle on the wall clock until `exp`, then nothing (ADR-0042) |
 | A revoked role takes effect within the documented delay | **Passes on replicas**: documented at most 1.5 s, measured p50 0.61 s, worst 1.010 s over 60 rounds under steady traffic. The test fails above 1.5 s. A replica cut off from the database stops at the age limit of the action, also tested ([PERMISSION-MODEL.md 16.1](PERMISSION-MODEL.md#161-how-long-until-a-revocation-takes-effect)) |
-| Sign-in, the permission map and runtime role editing, end to end | **Not built.** The service parts exist: a Keycloak-shaped sign-in becomes a Tutela token by token exchange, which the check API and the permission map accept (part 3a, `crates/tutelad/tests/exchange.rs`), and a person with a stepped-up admin token edits the tenant's model (ADR-0026, ADR-0032). The Console (part 4) and a test against a real Keycloak ([#87](https://github.com/f8fvwgzc/tutela/issues/87)) are missing |
+| Sign-in, the permission map and runtime role editing, end to end | **Not built.** The service parts exist: a Keycloak-shaped sign-in becomes a Tutela token by token exchange, which the check API and the permission map accept (part 3a, `crates/tutelad/tests/exchange.rs`), and a person with a stepped-up admin token edits the tenant's model (ADR-0026, ADR-0032). The admin API the Console calls exists (part 3c, `tutela.admin.v1`, CONTRACTS.md 7.13), without scopes, role assignments and groups ([#107](https://github.com/f8fvwgzc/tutela/issues/107)). The Console (part 4) and a test against a real Keycloak ([#87](https://github.com/f8fvwgzc/tutela/issues/87)) are missing |
 
 #### Notes for part 2b
 
@@ -235,7 +236,7 @@ Read these with [ADR-0030](DECISIONS.md#adr-0030-tutelads-own-issuer-signing-key
 
 #### Notes for part 3c
 
-Part 3b is done. Read these with [ADR-0034](DECISIONS.md#adr-0034-the-local-audit-log-one-chain-per-tenant-written-with-the-change) to [ADR-0039](DECISIONS.md#adr-0039-forwarding-to-attaches-evidence-ledger-signed-acknowledged-resumable).
+Part 3c is done; these notes stay for what they say about the code. The notes for part 4 follow. Read these with [ADR-0034](DECISIONS.md#adr-0034-the-local-audit-log-one-chain-per-tenant-written-with-the-change) to [ADR-0039](DECISIONS.md#adr-0039-forwarding-to-attaches-evidence-ledger-signed-acknowledged-resumable).
 
 - **New code in part 3b.** `tutelad`: `audit.rs` (`Record`, `write`, `write_alone`, the reserved actor `audit::SYSTEM`), `events.rs` (the CloudEvent envelope), `webhooks.rs` (the relay, `register`, `sign`), `stream.rs` (`GET /v1/events`, the `Hub`), `bundle.rs` (`GET /v1/authz/bundle`), `ledger.rs` (the forwarder). `tutela-store`: `audit.rs` (the chains, the verifier, forwarding state), `events.rs` (the outbox, `OutboxEvent`, `emit`), `webhooks.rs`; migrations 8 to 11. `tutela-sdk`: `events` (feed a verifier from events) and `bundle` (`verify_bundle`, `OfflinePdp`). `tutela-contracts`: `jcs`, `AuditDraft`, `details`. `tutela-safenet`: `Client::check`. Mutants A01–A12, E01–E07, W01–W08, X01–X08, B01–B08 and L01–L03 are in `crates/tutelad/mutants/mutants.py`, every one caught; the script is not part of `make`, the tests that catch them are.
 - **How to audit a new operation.** Build `audit::Record::new(tenant, actor, "tutela_<thing>:<verb>", ("tutela_<thing>", id))`, end it with `.allowed(rev)`, `.denied(rev, reason)` or `.failed(rev, reason)`, add ids and numbers with `.detail(k, v)` (never a token, a secret, an e-mail or a field value), and call `audit::write(state, &tx, records)` **last** in the change's transaction, just before the commit: it locks the chain's head until then. A refusal or a read with no transaction calls `audit::write_alone` before it answers. Add a label to `audit::audit_label` for a new `tutela_*` type. The actor of the admin routes is `audit::actor_of(&identity)`.
@@ -249,9 +250,52 @@ Part 3b is done. Read these with [ADR-0034](DECISIONS.md#adr-0034-the-local-audi
 
 #### Notes for part 3c and part 4
 
-- **`tutela.admin.v1`** must expose `register_agent` (with the workload SPIFFE id on `/ns/<ns>/svc/<service>`), `set_disabled` and `revoke_sessions`: attache creates, quarantines and enables agents through it. Give its gRPC methods the admin audience rule of ADR-0032, or make them services-only.
-- **The Console** gets a person's admin token by token exchange after step-up (`audience=tutela-admin`; `TUTELA_ADMIN_ACR` set to what Keycloak's step-up gives), and calls the admin routes with it. A pipeline (`tutela apply`) uses a service account's `tutela-authz` token.
-- **`tutela keys rotate`** calls the key store above with the vault from `TUTELA_MASTER_KEY`.
+Done in part 3c: `tutela.admin.v1` exposes `RegisterAgent` (with the workload's SPIFFE id on `/ns/<ns>/svc/<service>`), `SetDisabled` and `RevokeSessions` under the admin token rule of ADR-0032 (ADR-0040). The rest of these notes moved to the notes for part 4.
+
+- **`tutela keys rotate`** calls the key store of the notes for part 3b with the vault from `TUTELA_MASTER_KEY`.
+
+#### Notes for part 4
+
+Part 3c is done. Read these with [ADR-0040](DECISIONS.md#adr-0040-tutelaadminv1-one-code-path-the-admin-token-rule-on-grpc-and-keys-at-every-org) to [ADR-0042](DECISIONS.md#adr-0042-the-audit-logs-leftovers-a-chain-check-on-a-timer-the-callers-trace-in-each-record) and CONTRACTS.md 7.9 and 7.13. Part 4 builds the Console, the CLI's commands against `tutelad`, apps and client authentication, the Helm chart with its bootstrap job, the OCI image, the end-to-end exit check and the v0.2.0 tag.
+
+- **New code in part 3c.** `tutelad`: `admin/` (`mod.rs`: `guard`, `refused`, `store_problem`, `observed`; `principals.rs`, `boundaries.rs`, `types.rs`, `lifecycle.rs`, `webhooks.rs`, `wire.rs`, `http.rs`, `grpc.rs`), `lifecycle.rs` (the operator's `create_tenant`, `restore_tenant`, `connect_owner`, the purge's records), `expiry::purge`, `audit::check_chains`, `telemetry::RequestContext`. `tutela-store`: `lifecycle.rs`, migration 12, `agents`, `webhooks::webhook`, `webhooks::delivery_page`. The proto is `crates/tutela-contracts/proto/tutela/admin/v1/admin.proto`. Mutants D01–D08, G01–G09, H01–H05 and K01–K05 are in `crates/tutelad/mutants/mutants.py`, every one caught; the script is not part of `make`, the tests that catch them are.
+- **Adding an admin operation.** One function in `tutelad::admin` over `admin::wire` types; a route in `api::api_router`'s `admin` router; a method in `admin.proto` and `admin/grpc.rs`. Start it with `admin::guard(state, id, &tenant, KEYS, "tutela_<thing>:<verb>", (type, id))`: it applies the admin token rule, checks the keys at every org on fresh data, and records a refusal. Write the change's record with `audit::write` last in its transaction. Count it with `admin::observed`.
+- **The tokens.** Every admin route and every `tutela.admin.v1` method takes the same two (ADR-0032, ADR-0040):
+  - **the Console** (a person): an admin token, `aud=tutela-admin`, from token exchange after step-up (`audience=tutela-admin`, `TUTELA_ADMIN_ACR` set to what Keycloak's step-up gives), at most 300 s: refresh it by exchanging again;
+  - **a pipeline or a core** (`tutela apply`, attache, onto-intelli's adapter): its service account's `tutela-authz` token.
+  A person's `tutela-authz` token, a service's admin token, an agent, a delegated token and an external token get 403 `forbidden` (gRPC `PERMISSION_DENIED`); no token or a bad one 401 (`UNAUTHENTICATED`). Every other route refuses an admin token with 401.
+- **Every admin route and method**, with what it needs and answers (details and JSON in CONTRACTS.md 7.9 and 7.13). "Every org" means the admin key at each live org of the tenant; "all keys" is the six admin keys of MANIFEST.md 6 (the tenant's owner).
+
+  | Route | gRPC `tutela.admin.v1.Admin/` | Needs | Answers |
+  |---|---|---|---|
+  | `GET /v1/models` | `ListModelVersions` | `read_audit` every org | active model and versions (`result_json`) |
+  | `GET /v1/models/{version}` | `GetModelVersion` | `read_audit` every org | a version with its text |
+  | `POST /v1/models/impact` | `ModelImpact` | `read_audit` every org | diff and impact report |
+  | `POST /v1/models/publish` | `PublishModel` | `manage_access`, `manage_fields` every org | the new version |
+  | `GET`/`PUT /v1/models/settings` | `GetModelSettings`/`PutModelSettings` | look / change | two-person setting |
+  | `POST`/`GET /v1/models/proposals`, `GET …/{id}` | `ProposeModel`, `ListProposals`, `GetProposal` | change / look | proposals |
+  | `POST …/{id}/approve`, `…/reject` | `ApproveProposal`, `RejectProposal` | change | a publish, or the closed proposal |
+  | `POST /v1/admin/resource-types` | `PutResourceTypes` | `manage_access`, `manage_fields` every org | a proposal |
+  | `POST /v1/admin/agents` | `RegisterAgent` | `manage_agents` every org | the agent's state |
+  | `GET /v1/admin/agents` | `ListAgents` | `manage_agents` every org | a page of agents |
+  | `POST /v1/admin/principals/state` | `GetPrincipal` | `manage_agents` (agent) or `manage_access` (person) every org | a principal's state |
+  | `POST /v1/admin/principals/disabled` | `SetDisabled` | as above | the state with the new epoch and `rev` |
+  | `POST /v1/admin/principals/revoke-sessions` | `RevokeSessions` | as above | the state with the new epoch and `rev` |
+  | `POST /v1/admin/users/delete` | `DeleteUser` | `manage_access` every org | the state, disabled for good |
+  | `PUT /v1/admin/boundaries` | `SetBoundary` | `<type>:manage_boundaries` on the scope | `{rev}` |
+  | `GET`/`PATCH`/`DELETE /v1/admin/tenant` | `GetTenant`/`UpdateTenant`/`DeleteTenant` | `read_audit` every org / all keys / all keys | the tenant (`purge_after` after a delete) |
+  | `GET`/`POST /v1/admin/orgs` | `ListOrgs`/`CreateOrg` | `read_audit` every org / all keys | orgs / the new org (the caller owns it) |
+  | `PATCH`/`DELETE /v1/admin/orgs/{org}`, `POST …/restore` | `UpdateOrg`/`DeleteOrg`/`RestoreOrg` | `manage_access` on that org / all keys / all keys | the org |
+  | `GET`/`POST /v1/admin/webhooks` | `ListWebhooks`/`RegisterWebhook` | `read_audit` and `manage_access` every org | webhooks / the webhook and its secret, once |
+  | `POST /v1/admin/webhooks/{id}/rotate`, `…/disable` | `RotateWebhookSecret`, `DisableWebhook` | as above | the new secret, once / the webhook |
+  | `GET /v1/admin/webhooks/{id}/deliveries`, `POST …/{seq}/redeliver` | `ListDeliveries`, `Redeliver` | as above | a page of deliveries / the delivery |
+  | `POST /v1/authz/explain`, `/v1/authz/simulate` | (`tutela.authz.v1` `Explain`, `Simulate`: services only) | `read_audit` on the resource | explanation, simulation |
+
+- **Error codes** of the admin API (problem documents, CONTRACTS.md 7.1; gRPC message `<code>: <text>`): 400 `invalid_request`, `invalid_manifest`, `app_mismatch`, `invalid_url` (`INVALID_ARGUMENT`); 401 `invalid_token` (`UNAUTHENTICATED`); 403 `forbidden`, `unknown_tenant`, `approval_required`, `two_person_required`, `same_person` (`PERMISSION_DENIED`); 404 `not_found` (`NOT_FOUND`); 409 `version_conflict`, `no_change`, `no_source`, `stale_proposal`, `not_open`, `busy`, `exists`, `not_additive`, `last_org` (`ABORTED`); 413/415 for a body too large or not JSON; 503 `unavailable`, `stale`, `no_data`, `expired` (`UNAVAILABLE`). A Console page reacts to 403 `forbidden` by hiding what the person may not do, to 409 by reloading, and to 503 by retrying.
+- **Who makes a tenant: the operator, never the API** (ADR-0041). `tutelad tenant create --name … --admin <user:…|sa:…> --admin-upstream <iss>=<sub>` as the owner role, under `TUTELA_ISSUER`, prints `{tid, iss, org, owners, rev}`; then the trust file maps the external issuer to that `tid`. The Helm bootstrap job calls the same `tutelad::lifecycle::create_tenant`, with the first admin from its values, and writes the tid where the products' charts read it. The Console has no "new tenant" page for a tenant's admin; a deployment console for operators would need an operator identity Tutela does not have (TM-08).
+- **How apps should attach to a tenant (the plan part 3c leaves; part 4 decides it in an ADR):** an app (`tutela apps create`) belongs to **one tenant**, made by that tenant's owner (all admin keys at every org, like making an org) or by the operator for the bootstrap. Its client credentials authenticate at the token endpoint and bind `azp` (ADR-0031). Its service account (`sa:`) is the app's principal: it gets roles through ordinary assignments, never admin keys by default, and its `client_credentials` token has the tenant from the app's record, never from the request. An app's `audience` is registered per tenant (the manifest's `[app] audience`), and part 4 may narrow `GET /v1/authz/bundle` to an app of that audience (ADR-0038 item 2). Record each app operation in the tenant's audit chain with who asked, through `admin::guard`.
+- **What the Console needs that is not built:** service-mode scopes, role assignments and groups (MembersTable, RoleEditor, the permission matrix) and a move behind `write_check` ([#107](https://github.com/f8fvwgzc/tutela/issues/107)); a read of the audit log over the API (records are read only through the store today); a view of a person's sessions (one `ses_` per exchange is not stored). `ListDeliveries` with `dead_only` is the dead-letter view ADR-0036 asked for.
+- **Open, each in its ADR:** client authentication at the token endpoint and `cnf` binding (part 4); erasing personal data inside audit bodies (TM-20, ADR-0041 item 8); `ip` in audit records (ADR-0042 item 3); OTLP export; an incremental chain check for very long chains (ADR-0042); a test against a real Keycloak ([#87](https://github.com/f8fvwgzc/tutela/issues/87)); the relay, the forwarder and the chain check visit every tenant each tick, which wants an index of tenants with work once tenants are many.
 
 ## Phase C: own login server (optional)
 
