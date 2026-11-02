@@ -265,6 +265,49 @@ fn write_body(r: pb::WriteCheckRequest) -> Result<wire::WriteCheckBody, Status> 
 
 #[tonic::async_trait]
 impl Authz for AuthzService {
+    async fn explain(
+        &self,
+        req: Request<pb::EvaluationRequest>,
+    ) -> Result<Response<pb::ExplainResponse>, Status> {
+        let id = identity(&req)?;
+        let body = evaluation(req.into_inner())?;
+        let out = super::explain(&self.state, &id, body).await?;
+        let explanation_json = serde_json::to_string(&out.context.tutela)
+            .map_err(|_| Status::unavailable("unavailable: the answer cannot be written"))?;
+        Ok(Response::new(pb::ExplainResponse {
+            decision: out.decision,
+            explanation_json,
+        }))
+    }
+
+    async fn simulate(
+        &self,
+        req: Request<pb::SimulateRequest>,
+    ) -> Result<Response<pb::SimulateResponse>, Status> {
+        let id = identity(&req)?;
+        let r = req.into_inner();
+        let candidate = if r.candidate_json.is_empty() {
+            None
+        } else {
+            Some(serde_json::from_str(&r.candidate_json).map_err(|_| {
+                Status::invalid_argument("invalid_request: `candidate_json` is not a candidate")
+            })?)
+        };
+        let evaluation = evaluation(r.evaluation.unwrap_or_default())?;
+        let body = super::SimulateBody {
+            evaluation,
+            candidate,
+        };
+        let out = super::simulate(&self.state, &id, body).await?;
+        let result_json = serde_json::to_string(&out)
+            .map_err(|_| Status::unavailable("unavailable: the answer cannot be written"))?;
+        Ok(Response::new(pb::SimulateResponse {
+            decision: out.decision,
+            changed: out.changed,
+            result_json,
+        }))
+    }
+
     async fn write_check(
         &self,
         req: Request<pb::WriteCheckRequest>,

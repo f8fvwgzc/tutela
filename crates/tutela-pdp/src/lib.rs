@@ -24,6 +24,7 @@
 mod api;
 mod data;
 mod eval;
+mod explain;
 mod filter;
 mod impact;
 pub mod model;
@@ -37,6 +38,8 @@ mod testgen;
 mod testref;
 #[cfg(test)]
 mod tests_check;
+#[cfg(test)]
+mod tests_explain;
 #[cfg(test)]
 mod tests_filter;
 #[cfg(test)]
@@ -58,6 +61,7 @@ pub use data::{
     Binding, BoundaryRule, Group, LinksFrom, LoadError, MAX_GROUP_CLOSURE, MAX_GROUP_DEPTH,
     MAX_GROUP_WORK, Member, MoveRule, OnLooser, ScopeFieldRule, Subject, TenantData,
 };
+pub use explain::{Explanation, RuleExplained, SideExplained, StepExplained};
 pub use filter::{
     FilterExpr, FilterSize, FilterValue, ListFilter, MAX_CONTAINER_IN, MAX_FILTER_DEPTH,
     MAX_FILTER_ENTRIES, MAX_FILTER_NODES, MAX_IDS_IN,

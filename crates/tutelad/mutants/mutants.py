@@ -24,6 +24,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 OUT = pathlib.Path(__file__).resolve().parent / "results.txt"
 MODELS = "crates/tutelad/src/models/mod.rs"
+EXPLAIN = "crates/tutelad/src/authz/explain.rs"
 
 # (id, file, what it breaks, old text, new text, cargo test arguments).
 # `old` must occur once.
@@ -52,6 +53,18 @@ MUTANTS = [
      'if head.as_ref().is_none_or(|(_, origin)| origin != "tenant") {',
      "if true {",
      ["-p", "tutela-store", "--lib"]),
+    ("S07", EXPLAIN, "explain and simulate need no admin key",
+     "    if decision.is_allowed() {\n        Ok(())",
+     "    if true || decision.is_allowed() {\n        Ok(())",
+     ["-p", "tutelad", "--test", "explain"]),
+    ("S08", EXPLAIN, "a made-up path is believed",
+     "    verify_path(&snapshot.paths, tenant, resource)?;\n",
+     "",
+     ["-p", "tutelad", "--test", "explain"]),
+    ("S09", EXPLAIN, "a simulation ignores its what-if assignments",
+     "        what_if(&mut data, &c)?;\n",
+     "        let _ = &c;\n",
+     ["-p", "tutelad", "--test", "explain"]),
 ]
 
 

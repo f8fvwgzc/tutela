@@ -718,7 +718,7 @@ A tenant's **model** is its resource types, fields, roles, field rules, boundary
 5. **Publish.** One transaction writes the change, a new `model_revision` row and the new revision number. Events `tutela.model.published.v1` and `tutela.permissions.changed.v1` go out through the outbox.
 6. **Rollback** = publish the content of an earlier revision as a **new** revision. It goes through the same steps (a rollback can widen too). Built: every published model is a kept, numbered version of its tenant ([ADR-0026](DECISIONS.md#adr-0026-a-tenant-owns-its-model-versions), [CONTRACTS.md §7.10](CONTRACTS.md#710-model-versions)).
 
-The Console also has **explain** (why did this check say yes or no: the walk and the rule ids) and **simulate** (what would this draft model decide) (Phase B).
+The Console also has **explain** (why did this check say yes or no: the walk and the rule ids) and **simulate** (what would this draft model decide). Built in `tutelad` for the Console to call ([CONTRACTS.md §7.11](CONTRACTS.md#711-explain-and-simulate)). Both need `read_audit` on the resource, because they show the model and other people's access ([ADR-0028](DECISIONS.md#adr-0028-explain-and-simulate-need-read_audit-on-the-resource)).
 
 ### 15.2 `tutela apply`
 

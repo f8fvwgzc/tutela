@@ -8,6 +8,7 @@
 //! Logs here never hold a subject or a resource. The metric labels hold the
 //! operation and the outcome only.
 
+mod explain;
 pub mod grpc;
 pub mod http;
 mod permissions;
@@ -15,6 +16,10 @@ mod search;
 pub mod wire;
 mod write;
 
+pub use explain::{
+    Answer, AnswerContext, Candidate, ExplainContext, ExplainResult, SimulateBody, SimulateResult,
+    WhatIf, explain, simulate,
+};
 pub use permissions::{PermissionMap, Permissions, UiAnswer, permissions};
 pub use search::{search_resource, search_subject};
 pub use write::write_check;

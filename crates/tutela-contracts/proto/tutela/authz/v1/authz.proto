@@ -18,6 +18,10 @@ service Authz {
   rpc Permissions(PermissionsRequest) returns (PermissionsResponse);
   // POST /v1/authz/write-check.
   rpc WriteCheck(WriteCheckRequest) returns (WriteCheckResponse);
+  // POST /v1/authz/explain.
+  rpc Explain(EvaluationRequest) returns (ExplainResponse);
+  // POST /v1/authz/simulate.
+  rpc Simulate(SimulateRequest) returns (SimulateResponse);
 }
 
 // One link of the `act` chain: subject.properties.act in JSON.
@@ -194,6 +198,25 @@ message WriteCheckResponse {
   uint64 rev = 2;
   // context.tutela of the JSON answer, as JSON text.
   string decision_json = 3;
+}
+
+message ExplainResponse {
+  bool decision = 1;
+  // context.tutela of the JSON answer, as JSON text.
+  string explanation_json = 2;
+}
+
+message SimulateRequest {
+  EvaluationRequest evaluation = 1;
+  // `candidate` of the JSON body, as JSON text. Empty: no candidate.
+  string candidate_json = 2;
+}
+
+message SimulateResponse {
+  bool decision = 1;
+  bool changed = 2;
+  // The whole JSON answer, as JSON text.
+  string result_json = 3;
 }
 
 message PermissionsRequest {

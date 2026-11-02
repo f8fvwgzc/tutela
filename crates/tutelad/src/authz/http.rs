@@ -113,6 +113,24 @@ pub async fn write_check(
     super::write_check(&state, &id, body).await.map(Json)
 }
 
+/// `POST /v1/authz/explain`.
+pub async fn explain(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Body(body): Body<EvaluationBody>,
+) -> Result<Json<super::ExplainResult>, Problem> {
+    super::explain(&state, &id, body).await.map(Json)
+}
+
+/// `POST /v1/authz/simulate`.
+pub async fn simulate(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Body(body): Body<super::SimulateBody>,
+) -> Result<Json<super::SimulateResult>, Problem> {
+    super::simulate(&state, &id, body).await.map(Json)
+}
+
 /// The AuthZEN metadata (section 9).
 #[derive(Debug, Serialize)]
 pub struct Metadata {
