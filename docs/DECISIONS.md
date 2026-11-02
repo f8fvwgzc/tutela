@@ -40,6 +40,7 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0021](#adr-0021-the-check-api-one-code-path-a-snapshot-per-tenant-and-a-revision-lease) | The check API: one code path, a snapshot per tenant, and a revision lease | Accepted |
 | [0022](#adr-0022-the-searches-live-next-to-the-evaluator) | The searches live next to the evaluator | Accepted |
 | [0023](#adr-0023-the-permission-map-and-a-tag-that-covers-the-answer) | The permission map, and a tag that covers the answer | Accepted |
+| [0024](#adr-0024-signed-bundles-wait-for-part-3) | Signed bundles wait for part 3 | Accepted |
 
 ---
 
@@ -937,3 +938,36 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 **Alternatives considered.**
 - **A tag of (revision, subject, request), and force a sweep at each expiry.** A 304 would hang on a timer, and on the sweep having run.
 - **Add the next expiry to the tag.** It covers this case but not the next one; hashing the answer covers them all.
+
+---
+
+## ADR-0024: Signed bundles wait for part 3
+
+**Status:** Accepted, 2026-11-02. It moves a planned item: the ROADMAP status table said signed bundles come with the AuthZEN API.
+
+**Context.** The docs do call for signed bundles at this point: "Signed bundles come with it", and TM-13 lists tests for them. Their job is to let a Rust product check in process, offline, from data `tutelad` signed. Part 2a built the API and the cache that fails closed, and found what a bundle would still need. Each of the following is built in part 3.
+
+**Decision.** Signed bundles are built in part 3, after token exchange and SSE, not in part 2a.
+
+1. **Signing keys.** A bundle needs a signing key that every replica shares. ARCHITECTURE.md section 4 keeps signing keys encrypted with `tutela-vault` in the database, and TM-22 then makes `TUTELA_MASTER_KEY` required at start-up. Token exchange builds that store, with rotation and publication of the public keys. Doing it here would give two key stores, or one built for the smaller job and rebuilt for the bigger one. A key store is not the place to guess.
+2. **Who may pull one.** A bundle is the whole tenant's assignments, groups and scope paths. Today any `sa` token of the tenant could fetch it, because no record says which app that token belongs to or what it may pull. That needs apps (`tutela apps create`) or at least a registered audience, and neither exists. Every other endpoint answers one question; this one hands out the data behind all of them, so it should not ship with the weakest rule in the service.
+3. **Delivery.** The docs have bundles pushed over SSE, with a pull by ETag behind it. SSE is part 3. A pull alone has a revocation delay of the poll interval, which is a number nobody has chosen.
+4. **No consumer needs it now.** `tutelad` replicas share one Postgres and read it directly, with the delay and the failure rules of ADR-0021, so "bundles for replicas" has no job. attache and texc-symphony stay on `v0.1.0`, and Node and Python call the API. An unused format would be fixed by guesswork, and CONTRACTS.md section 10 makes a wire format additive only from then on.
+
+**What this does not give up.** A replica's cache follows the rules a bundle would: no going back, an age limit per action class, and a hard stop at `next_expiry`. The two-process tests in `crates/tutelad/tests/ha.rs` prove them for the cache: a stale limit and an expiry during an outage both fail closed.
+
+**What part 3 must do.**
+- Build bundles on the key store of token exchange, and only with a rule for who may pull one.
+- `expires_at` is no later than `TenantBundle::next_expiry`, converted with `TenantBundle::read_at` as `tutelad::cache::deadline` does, so a clock that disagrees with the database cannot extend it.
+- `tutela_pdp::TenantData` and its parts need `Deserialize`, and a loaded bundle goes through `Pdp::load`'s checks.
+- The PDP side refuses a lower `rev` than it has seen, an expired bundle, a bad signature and a newer format (`PdpError::ExpiredBundle` and `UnsupportedBundle` exist for this, and are never returned today).
+- Add the TM-13 tests for it, and a two-process test of a PDP that outlives `tutelad` until `expires_at`.
+
+**Consequences.**
+- The service gate keeps its "Bundle expiry" check open. The cache half is proved; the signed half is not built. The gate cannot pass before part 3.
+- Until then a Rust product checks through the API, or in library mode. It cannot check offline against `tutelad`'s data.
+- ARCHITECTURE.md's service-mode picture still shows bundles. It describes the end of Phase B, and the status table says what is built.
+
+**Alternatives considered.**
+- **Build them now with one key from an environment variable.** It is the cheapest honest version, and items 2 to 4 still hold. Part 3 would then migrate deployed PDPs off a key scheme nobody meant to keep.
+- **Sign with a key per replica.** PDPs would have to trust every replica, and a replica restart would change the key.

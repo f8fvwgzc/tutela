@@ -1,6 +1,6 @@
 # Tutela roadmap
 
-Status: **pre-alpha**. `v0.1.0` is a pre-release of the Rust crates in library mode. Part 1 of Phase B is merged: the `tutelad` service, tenant isolation and the bindings store. So are the evaluation API, the search API and the permission map of part 2. Nothing is usable in production yet. See [Phase B status](#phase-b-status).
+Status: **pre-alpha**. `v0.1.0` is a pre-release of the Rust crates in library mode. Parts 1 and 2a of Phase B are merged: the `tutelad` service, tenant isolation, the bindings store, the check API, the permission map and the replica checks. Nothing is usable in production yet. See [Phase B status](#phase-b-status).
 
 This file lists the four phases (A, B, C, D), what each one builds, how we know it is done, and how long it takes. The reasons behind the big choices are in [DECISIONS.md](DECISIONS.md). The design is in [ARCHITECTURE.md](ARCHITECTURE.md) and [PERMISSION-MODEL.md](PERMISSION-MODEL.md).
 
@@ -86,8 +86,9 @@ A gate is a list of checks. A phase is not done until its gate passes. No produc
 
 - Tenants with row-level security: `tenant_id` on every row, `FORCE ROW LEVEL SECURITY`, tenant set with `SET LOCAL` per transaction from the verified token. **Done** (see [Phase B status](#phase-b-status)).
 - Bindings and groups store with a per-tenant revision. **Done.**
-- AuthZEN 1.0-shaped API: `/access/v1/evaluation`, `/access/v1/evaluations`, `/access/v1/search/resource`, `/access/v1/search/subject`; gRPC `tutela.authz.v1`.
-- Permission map for UIs: `POST /v1/authz/permissions` with ETag/304.
+- AuthZEN 1.0-shaped API: `/access/v1/evaluation`, `/access/v1/evaluations`, `/access/v1/search/resource`, `/access/v1/search/subject`; gRPC `tutela.authz.v1`. **Done.**
+- Permission map for UIs: `POST /v1/authz/permissions` with ETag/304. **Done.**
+- Signed bundles for PDP caches and offline checks. Moved to part 3 ([ADR-0024](DECISIONS.md#adr-0024-signed-bundles-wait-for-part-3)).
 - Model versioning, impact report ("12 users gain read on contract"), explain and simulate, two-person publish (optional per tenant).
 - Moves and links across scopes: `moves_out`, `moves_in`, `on_looser` and `links_from` from `boundary_rule`, checked in `write_check` with the before/after impact calculation (PERMISSION-MODEL §9, §10). Assignment expiry with a revision bump when it passes ([ADR-0014](DECISIONS.md#adr-0014-tutela-store-in-phase-a-the-schema-row-level-security-and-checked-writes)): **done** ([ADR-0020](DECISIONS.md#adr-0020-the-bindings-store-closures-at-read-time-and-assignment-expiry)).
 - CLI: `tutela apply` against `tutelad` (adds the impact report and approvals; still refuses a widening diff without an approval token), `tutela apps create`, `tutela keys rotate`.
@@ -109,7 +110,7 @@ A gate is a list of checks. A phase is not done until its gate passes. No produc
 
 ### Phase B status
 
-**State on 2026-11-02: part 1 of 4 is merged. Phase B is not done, and the service gate does not pass yet.** v0.2.0 is not tagged. attache and texc-symphony stay on `v0.1.0`.
+**State on 2026-11-02: parts 1 and 2a are merged. Phase B is not done, and the service gate does not pass yet.** v0.2.0 is not tagged. attache and texc-symphony stay on `v0.1.0`.
 
 Done:
 
@@ -123,22 +124,22 @@ Done:
 | Search: `/access/v1/search/resource`, `/access/v1/search/subject` | Done | [ADR-0022](DECISIONS.md#adr-0022-the-searches-live-next-to-the-evaluator) |
 | Permission map, `POST /v1/authz/permissions` with ETag and 304 | Done | [ADR-0023](DECISIONS.md#adr-0023-the-permission-map-and-a-tag-that-covers-the-answer) |
 
-Not started. These are parts 2 to 4:
+Not started:
 
-| Work | Note |
-|---|---|
-| Signed bundles | Their `expires_at` must honour `next_expiry`. |
-| Model versioning, impact report, explain and simulate, two-person publish | |
-| Moves and links in `write_check` | |
-| `tutela apply` against `tutelad`, `tutela apps create`, `tutela keys rotate` | `grant_service` gives no write on `app_manifest` yet. |
-| Webhooks, SSE `/v1/events` | |
-| Local hash-chained audit log | `expire_assignments` returns what it removed, so the sweep can write audit in its transaction. |
-| Token-exchange service | The trust file is static. Tenants made at runtime need the service's own issuer to trust the directory. |
-| Delegated agent tokens | Off in the verifier today (`verifier_config`). |
-| `tutela.admin.v1`, org lifecycle events, soft-delete of tenants | `grant_service` gives no write on `tenant` yet. |
-| Tutela Console and embeddable admin components | |
-| Helm chart and bootstrap job; the OCI image ([#49](https://github.com/f8fvwgzc/tutela/issues/49)) | The chart must set the values in `deploy/tutelad.env`, including `RUST_BACKTRACE=1` and `RUST_LIB_BACKTRACE=0`. |
-| OTLP export of traces | Logs carry the `traceparent` trace id today. |
+| Work | Part | Note |
+|---|---|---|
+| Model versioning, impact report, explain and simulate, two-person publish | 2b | |
+| Moves and links in `write_check` | 2b | |
+| Signed bundles for PDP caches and offline checks | 3 | After token exchange and SSE ([ADR-0024](DECISIONS.md#adr-0024-signed-bundles-wait-for-part-3)). Their `expires_at` must honour `next_expiry`. |
+| `tutela apply` against `tutelad`, `tutela apps create`, `tutela keys rotate` | 4 | `grant_service` gives no write on `app_manifest` yet. |
+| Webhooks, SSE `/v1/events` | 3 | |
+| Local hash-chained audit log | 3 | `expire_assignments` returns what it removed, so the sweep can write audit in its transaction. |
+| Token-exchange service | 3 | The trust file is static. Tenants made at runtime need the service's own issuer to trust the directory. |
+| Delegated agent tokens | 3 | Off in the verifier today (`verifier_config`). |
+| `tutela.admin.v1`, org lifecycle events, soft-delete of tenants | 3 | `grant_service` gives no write on `tenant` yet. |
+| Tutela Console and embeddable admin components | 4 | |
+| Helm chart and bootstrap job; the OCI image ([#49](https://github.com/f8fvwgzc/tutela/issues/49)) | 4 | The chart must set the values in `deploy/tutelad.env`, including `RUST_BACKTRACE=1` and `RUST_LIB_BACKTRACE=0`. |
+| OTLP export of traces | open | Logs carry the `traceparent` trace id today. |
 
 The service gate:
 
@@ -148,20 +149,30 @@ The service gate:
 | A cross-tenant read fails at RLS, even with an injected code bug | **Passes**, with a control that shows the same request leaks when RLS is off |
 | Group and path closure p99 | **Passes** the 5 ms threshold going up: 1.44 ms, 1.46 ms at 32 levels, 0.67 ms for a path. Going down (`scopes_below`) is 11 ms, not gated ([ADR-0020](DECISIONS.md#adr-0020-the-bindings-store-closures-at-read-time-and-assignment-expiry)) |
 | 2+ replicas | **Passes**: two real `tutelad` processes on one Postgres answer together, share a sweep (one expiry, one revision), and one keeps serving when the other stops (`crates/tutelad/tests/ha.rs`) |
-| Bundle expiry | **Not built** |
+| Bundle expiry | **Half.** The cache half passes: a replica's snapshot stops at its age limit and at `next_expiry`, also during an outage, and fails closed (`crates/tutelad/tests/ha.rs`). Signed bundles are **not built** ([ADR-0024](DECISIONS.md#adr-0024-signed-bundles-wait-for-part-3)), so this check stays open |
 | A revoked role takes effect within the documented delay | **Passes on replicas**: documented at most 1.5 s, measured p50 0.61 s, worst 1.010 s over 60 rounds under steady traffic. The test fails above 1.5 s. A replica cut off from the database stops at the age limit of the action, also tested ([PERMISSION-MODEL.md 16.1](PERMISSION-MODEL.md#161-how-long-until-a-revocation-takes-effect)) |
 | Sign-in, the permission map and runtime role editing, end to end | **Not built** |
 
-#### Notes for part 2
+#### Notes for part 2b
 
-- **Crate layout.** `crates/tutelad` is a library and a thin binary. `api` has the routers, `config` the settings, `db` the pool, `tenant` the tenant, `expiry` the sweep, `telemetry` logs and metrics, and `server` the listeners and shutdown. Add an HTTP route in `api::api_router`, and a gRPC service next to the health service in `Server::bind`. Tests run the real `Server` on port 0; `tests/common/mod.rs` has the Postgres harness and a signing issuer.
-- **How a request gets its tenant.** `AuthLayer` verifies the token and puts the `Identity` in the request. A handler takes a `Tenant` argument, which can only come from that `Identity`. It then calls `db.conn().await?`, `conn.begin(&tenant).await?`, passes `&tx` to the store, and calls `tx.commit().await?`. Returning `Result<_, Problem>` maps errors: an unknown tenant is 403, and the rest is a closed 503. Do not add a way to make a `Tenant` from a key. A background job gets a narrow crate-private method on `Conn`, as the sweep does.
-- **How the revision works.** `tenant_rev` goes up in the same transaction as every change, and a write locks that row first. The exception is expiry, which has two halves: a read drops a row past its expiry at once, and the sweep bumps the revision up to `TUTELA_EXPIRY_SWEEP_SECS` later. So two loads at one revision can differ, in the narrowing direction only. **A signed bundle's `expires_at` must be no later than `TenantBundle::next_expiry`.**
+Read these with [ADR-0021](DECISIONS.md#adr-0021-the-check-api-one-code-path-a-snapshot-per-tenant-and-a-revision-lease), [ADR-0022](DECISIONS.md#adr-0022-the-searches-live-next-to-the-evaluator), [ADR-0023](DECISIONS.md#adr-0023-the-permission-map-and-a-tag-that-covers-the-answer) and [ADR-0024](DECISIONS.md#adr-0024-signed-bundles-wait-for-part-3).
+
+- **Crate layout.** `crates/tutelad` is a library and a thin binary. `api` has the routers, `config` the settings, `db` the pool, `tenant` the tenant, `expiry` the sweep, `telemetry` logs and metrics, and `server` the listeners and shutdown. `authz` holds the decision APIs: `mod.rs` (who may ask, the revision floor, evaluation), `search.rs`, `permissions.rs`, `wire.rs` (the JSON types), and `http.rs` and `grpc.rs`, which only adapt. `cache` holds the tenant snapshots. Tests run the real `Server` on port 0; `tests/common/mod.rs` has the Postgres harness, a signing issuer and a seeded `World`. `tests/ha.rs` runs the real binary.
+- **Adding an operation.** Write one function in `authz` over `wire` types, then a route in `api::api_router` and a method in `grpc.rs`. Never put a decision in an adapter.
+- **How tenant data is loaded and cached.** `TenantCache::view(tenant, need)` gives a `View`, and `View::for_class(class)` gives the `Snapshot`. A snapshot is immutable: a `Pdp` for one tenant, its `ScopePathSnapshot`, the model and its digest. `read_tenant` reads the data and then the manifest in one transaction, after the revision's share lock, so the two always match. One request at a time per tenant reads the database, and a build runs on a blocking thread. `at_least_revision` and the token's `rev` force a read past the lease.
+- **How replicas learn of a change.** A lease, `TUTELA_REVISION_CHECK_MS`. There is no push between replicas. A change needs nothing but its revision bump: any write through the store reaches every replica. **So never change tenant data without a bump.** Expiry is the one exception, and the snapshot's `next_expiry` deadline covers it.
+- **Hooking in `write_check`.** Add `authz::write_check` over a new wire type, and call `Pdp::write_check` on `view.for_class(ActionClass::Write)` or stricter. Use `ActionClass::of` with `manage_access` when a `grants_access` field changes. `may_ask` applies as it does to the others. Moves: `Pdp::write_check` refuses `new_path` today. The boundary rules are in `boundary_rule`, and `ScopePaths` is on the snapshot.
+- **Hooking in a model publish.** `tutela_store::publish_manifest` writes the manifest and bumps every tenant in one transaction, so the cache needs no change: the next check sees the revision and loads the new manifest, compiled once by digest. `grant_service` gives no write on `app_manifest` yet. `publish_manifest` takes an advisory lock, then one row lock per tenant, so keep it out of a request's transaction with a tenant in it. For a model per tenant, replace `applied_manifest` in `read_tenant`, keep it after the revision lock, and make `TenantCache::model` hold more than one digest. The ETag uses `Snapshot::model_digest`; keep that the digest of what was compiled.
+- **Explain and simulate.** A `Decision` already carries `rule_ids` and `reason`. Simulate needs a `Pdp` built from a candidate model: `Pdp::new()` and `load` are cheap beside the read, and the snapshot is never to be changed for it.
+- **The ETag covers the answer** because of expiry. A new input to a map must reach `body.canonical()` or the answer, or a 304 will hide it.
+- **Search names only what is certain.** A new filter op must be added to `search::Test`; the compiler makes that match exhaustive on purpose.
+- **How the revision works.** `tenant_rev` goes up in the same transaction as every change, and a write locks that row first. The exception is expiry, which has two halves: a read drops a row past its expiry at once, and the sweep bumps the revision up to `TUTELA_EXPIRY_SWEEP_SECS` later. So two loads at one revision can differ, in the narrowing direction only.
+- **How a request gets its tenant.** A handler takes a `Tenant`, or calls `Tenant::of` on the verified `Identity`. Do not add a way to make a `Tenant` from a key. A background job gets a narrow crate-private method on `Conn`, as the sweep does.
 - **A write reads the whole tenant** (about 48 ms at the benchmark's size, ADR-0014 item 4). Plan bulk work around it.
 - **A SQL `ScopePaths::below` would not use the GIN index** under row-level security. The in-memory `ScopePathSnapshot` is fine.
 - **Secrets.** Nothing reads `TUTELA_MASTER_KEY` or `TUTELA_KEY_PEPPER` yet. The part that adds signing keys or API keys must make them required at start-up (TM-22).
 - **Upgrades.** Old replicas stop answering when a migration lands (ADR-0018 item 5). The deploy order is `tutelad migrate`, then new replicas at once.
-- **`make` is the gate.** Check its exit code before a merge. `tests/*.rs` need `#![cfg(test)]`, or clippy denies `unwrap` in helpers there.
+- **`make` is the gate.** Run it as its own command and read its exit code before a merge; a background job's "exit 0" is the shell's, not `make`'s. `tests/*.rs` need `#![cfg(test)]`, or clippy denies `unwrap` in helpers there.
 
 ## Phase C: own login server (optional)
 

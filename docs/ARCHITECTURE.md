@@ -259,7 +259,9 @@ The rest of this list is planned.
   bindings, resource types, apps, keys, agent principals.
 - Model versioning, impact report, explain and simulate, optional two-person
   publish.
-- Signed bundles per (tenant, rev) for PDP caches.
+- Signed bundles per (tenant, rev) for PDP caches. Planned for part 3
+  ([ADR-0024](DECISIONS.md#adr-0024-signed-bundles-wait-for-part-3)). Until
+  then, a Rust product checks through the API or in library mode.
 - Events: transactional outbox, Standard Webhooks, SSE `/v1/events`.
 - Local hash-chained audit log; optional forwarding to attache's evidence
   ledger.
