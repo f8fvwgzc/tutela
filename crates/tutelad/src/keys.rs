@@ -266,7 +266,7 @@ impl KeyRing {
     /// [`KeyError::Db`] or [`KeyError::Unusable`]. The keys in hand stay.
     pub async fn refresh(&self, db: &Db) -> Result<(), KeyError> {
         let mut conn = db.conn().await?;
-        let set = conn.signing_keys(&self.vault).await?;
+        let set = conn.signing_keys(&self.vault, &self.iss).await?;
         let mut keys = Vec::with_capacity(set.keys.len());
         let mut jwks = Vec::with_capacity(set.keys.len());
         for k in &set.keys {
@@ -301,6 +301,41 @@ impl KeyRing {
             *slot = ring;
         }
         Ok(())
+    }
+}
+
+impl KeyRing {
+    /// Rotates the deployment's signing key with [`rotation_times`] of the
+    /// JWKS cache time, records it in the deployment's audit chain
+    /// (ADR-0034), and loads the keys again. `tutela keys rotate` (part 4)
+    /// calls this.
+    ///
+    /// # Errors
+    ///
+    /// [`KeyError::Db`] or [`KeyError::Unusable`].
+    pub async fn rotate(&self, db: &Db) -> Result<tutela_store::Rotation, KeyError> {
+        let mut conn = db.conn().await?;
+        let r = conn
+            .rotate_signing_key(&self.vault, &self.iss, self.times())
+            .await?;
+        drop(conn);
+        self.refresh(db).await?;
+        Ok(r)
+    }
+
+    /// Denies `kid` at once (TM-15), records it in the deployment's audit
+    /// chain, and loads the keys again. Returns the key that signs instead
+    /// when one was made or moved up.
+    ///
+    /// # Errors
+    ///
+    /// [`KeyError::Db`] (also for an unknown `kid`) or [`KeyError::Unusable`].
+    pub async fn deny(&self, db: &Db, kid: &str) -> Result<Option<String>, KeyError> {
+        let mut conn = db.conn().await?;
+        let r = conn.deny_signing_key(&self.vault, &self.iss, kid).await?;
+        drop(conn);
+        self.refresh(db).await?;
+        Ok(r)
     }
 }
 

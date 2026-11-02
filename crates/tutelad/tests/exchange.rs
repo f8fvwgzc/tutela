@@ -818,3 +818,69 @@ async fn tm22_no_step_up_configured_means_no_admin_token() {
     );
     w.finish().await;
 }
+
+/// Every token issued, every just-in-time provisioning and every refusal
+/// of a known tenant has its audit.v1 record (ADR-0034), with the token's
+/// `jti` and never the token or an e-mail; a request whose tenant is not
+/// known leaves nothing in any tenant's log.
+#[tokio::test]
+async fn tm20_every_token_issued_and_refused_has_its_record() {
+    let Some(mut w) = x().await else { return };
+    let kc = w.kc(KC, "kc-user-1");
+    let t = w.token(&kc, AUD).await;
+    let (_, c) = claims(&t);
+    let me = c["sub"].as_str().unwrap().to_owned();
+    let recs = common::audit_of(&mut w.d.owner, &w.a.key).await;
+    assert_eq!(recs.len(), 2, "{recs:?}");
+    let provision = &recs[0];
+    assert_eq!(provision["action"], "tutela_principal:provision");
+    assert_eq!(provision["actor"]["id"], me.as_str());
+    assert_eq!(provision["details"]["upstream_iss"], KC);
+    assert_eq!(provision["details"]["upstream_sub"], "kc-user-1");
+    let issued = &recs[1];
+    assert_eq!(issued["action"], "tutela_token:issue");
+    assert_eq!(issued["outcome"], "success");
+    assert_eq!(issued["service"], "tutelad");
+    assert_eq!(issued["tenant"]["iss"], OWN_ISS);
+    assert_eq!(issued["resource"]["id"], c["jti"]);
+    assert_eq!(issued["details"]["jti"], c["jti"]);
+    assert_eq!(issued["details"]["kind"], "access");
+    assert_eq!(issued["details"]["principal"], me.as_str());
+    assert_eq!(issued["details"]["aud"], AUD);
+    assert_eq!(issued["details"]["azp"], "crm-web");
+    assert_eq!(issued["details"]["exp"], c["exp"]);
+    assert_eq!(issued["details"]["upstream_iss"], KC);
+
+    // A replay is refused, and recorded with its reason and the upstream
+    // issuer; the person is not known yet, so `tutelad` is the actor.
+    assert_eq!(w.refused(&kc, AUD).await, "invalid_grant");
+    // An own token for another audience: no upstream issuer, no new person.
+    let other = w.token(&t, "crm-api").await;
+    // A garbage token names no tenant: nothing is written anywhere.
+    assert_eq!(w.refused("not.a.token", AUD).await, "invalid_grant");
+    let recs = common::audit_of(&mut w.d.owner, &w.a.key).await;
+    assert_eq!(recs.len(), 4, "{recs:?}");
+    let replay = &recs[2];
+    assert_eq!(replay["outcome"], "denied");
+    assert_eq!(replay["decision"]["effect"], "deny");
+    assert_eq!(replay["reason"], "replayed");
+    assert_eq!(replay["details"]["reason"], "replayed");
+    assert_eq!(replay["details"]["upstream_iss"], KC);
+    assert_eq!(replay["actor"]["id"], tutelad::audit::SYSTEM);
+    let again = &recs[3];
+    assert_eq!(again["details"]["aud"], "crm-api");
+    assert_eq!(again["details"]["jti"], claims(&other).1["jti"]);
+    assert!(again["details"].get("upstream_iss").is_none());
+    let text = serde_json::to_string(&recs).unwrap();
+    for secret in [
+        kc.as_str(),
+        t.as_str(),
+        other.as_str(),
+        "alice@example.test",
+    ] {
+        assert!(!text.contains(secret));
+    }
+    // Tenant B's log has none of it.
+    assert!(common::audit_of(&mut w.d.owner, &w.b.key).await.is_empty());
+    w.finish().await;
+}

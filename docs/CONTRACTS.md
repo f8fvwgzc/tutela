@@ -42,7 +42,7 @@ Only the left column exists in `tutela-contracts` after the first commit. Everyt
 | 6 | Decision | The Decision object: effect, level, field mask, rule ids, reason, rev, obligations | `Pdp::check`, `Pdp::batch`, `Pdp::list_filter`, `Pdp::write_check` (A; built in `tutela-pdp`, [ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)) |
 | 7 | Remote check API | — | Built in `tutelad` (B): evaluation, search, the permission map, write-check and gRPC. |
 | 8 | Events | CloudEvents envelope, event type grammar and names | Outbox, webhooks, SSE (B) |
-| 9 | audit.v1 | The audit.v1 record | Producer signatures, sequence numbers, local hash chain, forwarding to attache's evidence ledger (B) |
+| 9 | audit.v1 | The audit.v1 record | Local hash chain and sequence numbers (B, **built**: 9.4, [ADR-0034](DECISIONS.md#adr-0034-the-local-audit-log-one-chain-per-tenant-written-with-the-change)); producer signatures and forwarding to attache's evidence ledger (B) |
 | 10 | Versioning | The rules apply from the first commit | Deprecation headers on live endpoints (B) |
 
 ---
@@ -1594,7 +1594,7 @@ A Server-Sent Events stream (`text/event-stream`) for browsers and SDK caches.
 
 ## 9. The audit.v1 record
 
-**First commit:** the audit.v1 record struct is in `tutela-contracts`. Producer signatures, sequence numbers, the local hash chain and forwarding are **Phase B**.
+**First commit:** the audit.v1 record struct is in `tutela-contracts`. **Built in Phase B, part 3b:** the canonical body (RFC 8785), `details`, the sequence numbers and the local hash chain ([ADR-0034](DECISIONS.md#adr-0034-the-local-audit-log-one-chain-per-tenant-written-with-the-change)). Producer signatures and forwarding are Phase B.
 
 ### 9.1 Fields
 
@@ -1621,6 +1621,7 @@ A Server-Sent Events stream (`text/event-stream`) for browsers and SDK caches.
 | `ip` | string | no | The client IP: IPv4 dotted decimal or IPv6 in RFC 5952 text. This is personal data (9.5). |
 | `payload_digest` | string | no | `hmac-sha256:v<n>:<64 lowercase hex>`. A **keyed** digest (HMAC-SHA256 with a per-tenant audit key, version `n`) of the request payload or of the before and after values. Keyed, so a short hidden value (a salary) cannot be guessed from the digest. |
 | `labels` | array of strings | yes | The labels of the data touched (`public`, `internal`, `confidential`, `secret`). Sorted, no duplicates. May be empty. |
+| `details` | object | no | Added in Phase B (additive). What else happened, as ids, numbers, booleans and codes: for example a token's `jti`, `aud`, `azp`, `exp` and `act` chain, or a model version and its approvers. At most 8 KiB as canonical JSON, no `null`, no fraction. Never a token, a secret, an e-mail or a field value. |
 | `seq` | integer | yes | The producer's sequence number (9.3). |
 | `signature` | object | yes | `{"key_id", "value"}`, the producer's signature (9.3). |
 
@@ -1663,13 +1664,18 @@ Each producer service signs its own records. So a record cannot be forged by ano
 - **What is signed:** the RFC 8785 (JCS) canonical JSON of the whole record **without** the `signature` field, as UTF-8 bytes.
 - **Signature:** pure Ed25519 (RFC 8032). `signature.value` is base64url without padding (86 characters).
 - Writers **never write `null`** in audit.v1. They leave the field out. So the signed bytes do not change when a record is parsed and written again.
-- **`seq`:** counts per (service, tenant). It starts at 1, goes up by exactly 1 per record, and is never reused. The service's single outbox relay (it holds a lease) assigns it when the record is shipped, so replicas share one counter. A gap means a lost or held record; the receiver raises an alert.
+- **`seq`:** counts per (service, tenant). It starts at 1, goes up by exactly 1 per record, and is never reused. A gap means a lost or held record; the receiver raises an alert. `tutelad` gives it when the record is written: it is the record's position in the tenant's local chain (9.4), so every replica shares one counter and a rolled-back change uses no number ([ADR-0034](DECISIONS.md#adr-0034-the-local-audit-log-one-chain-per-tenant-written-with-the-change); this file said the relay gave it when shipping).
 - **Idempotency:** the receiver's key is (`service`, `id`). The same key with a different payload is refused and raises an alert.
 
 ### 9.4 Storage and delivery (Phase B)
 
-- `tutelad` writes each audit record in the same database transaction as the change.
-- Tutela keeps its **own local hash-chained audit log**, so it works alone. UPDATE and DELETE on it are refused. The chain fields (`prev_hash`, `hash`) are storage columns, not part of the audit.v1 wire record.
+- `tutelad` writes each audit record in the same database transaction as the change. An answer that changes nothing (a refused publish, explain, simulate, an impact report, a write check) writes its record in its own transaction before the answer leaves; if it cannot, the answer is 503. A refused token exchange is recorded once the subject token verified and its tenant is known.
+- Tutela keeps its **own local hash-chained audit log**, so it works alone (**built**, `tutela.audit_record`, migration 8). UPDATE, DELETE and TRUNCATE on it are refused by the database for every role, and readiness fails when the service role could change it. The chain fields (`prev_hash`, `hash`) are storage columns, not part of the audit.v1 wire record:
+  - one chain per tenant; each row holds the record's *body*, the RFC 8785 canonical JSON with `seq` and without `signature`: the bytes the producer signs (9.3);
+  - `hash = SHA-256("tutela-audit-chain-v1" LF prev_hash LF body)` in lowercase hex; the first record's `prev_hash` is 64 zeros;
+  - `tutela_store::verify_audit_chain` reports the first broken link: a gap, a changed record, a broken link, a body that is not its row's, or a head past the last record.
+- The deployment's own records (its signing keys) have a chain under the tenant id `ten_00000000-0000-7000-8000-000000000000`, which is never in the tenant directory. Its records name `(TUTELA_ISSUER, that id)` as their tenant.
+- `tutelad`'s own actions (the expiry sweep, signing keys, a refusal before any principal is known) name the actor `sa:sa_00000000-0000-7000-8000-000000000000`, a principal no token may hold.
 - When configured, Tutela forwards copies to **attache's evidence ledger** through its acknowledged Append API. A record is marked shipped only after the ledger acknowledges it.
 - Audit never travels through the OpenTelemetry Collector (it can drop data). The Collector carries traces and metrics only.
 

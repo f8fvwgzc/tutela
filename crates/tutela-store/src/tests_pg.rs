@@ -97,7 +97,7 @@ fn with(url: &str, db: &str, user: &str, password: &str) -> String {
 async fn db() -> Option<Db> {
     let mut db = empty_db().await?;
     let applied = crate::migrate(&mut db.client).await.unwrap();
-    assert_eq!(applied, [1, 2, 3, 4, 5, 6, 7]);
+    assert_eq!(applied, (1..=crate::latest_migration()).collect::<Vec<_>>());
     Some(db)
 }
 
@@ -2000,25 +2000,27 @@ async fn tm04_a_person_is_found_by_upstream_iss_and_sub_never_merged() {
     let (other, _) = tenant(&mut db.client).await;
     let kc: Issuer = "https://kc.example.test/realms/a".parse().unwrap();
     let kc2: Issuer = "https://kc.example.test/realms/b".parse().unwrap();
-    let first = in_tenant(&mut db.client, async |tx| {
+    let (first, made) = in_tenant(&mut db.client, async |tx| {
         crate::provision_user(tx, &t, &kc, "same-sub")
             .await
             .unwrap()
     })
     .await;
+    assert!(made);
     assert_eq!(
         first.principal.kind(),
         tutela_contracts::principal::PrincipalKind::User
     );
     assert_eq!((first.epoch, first.disabled), (0, false));
-    let again = in_tenant(&mut db.client, async |tx| {
+    let (again, made) = in_tenant(&mut db.client, async |tx| {
         crate::provision_user(tx, &t, &kc, "same-sub")
             .await
             .unwrap()
     })
     .await;
+    assert!(!made);
     assert_eq!(again.principal, first.principal);
-    let second_issuer = in_tenant(&mut db.client, async |tx| {
+    let (second_issuer, _) = in_tenant(&mut db.client, async |tx| {
         crate::provision_user(tx, &t, &kc2, "same-sub")
             .await
             .unwrap()
@@ -2027,7 +2029,7 @@ async fn tm04_a_person_is_found_by_upstream_iss_and_sub_never_merged() {
     assert_ne!(second_issuer.principal, first.principal);
     // Another tenant, the same upstream account: another principal, and
     // neither tenant sees the other's row.
-    let elsewhere = in_tenant(&mut db.client, async |tx| {
+    let (elsewhere, _) = in_tenant(&mut db.client, async |tx| {
         crate::provision_user(tx, &other, &kc, "same-sub")
             .await
             .unwrap()
@@ -2064,6 +2066,7 @@ async fn revoking_and_disabling_raise_the_epoch_and_the_revision() {
         crate::provision_user(tx, &t, &kc, "u1")
             .await
             .unwrap()
+            .0
             .principal
     })
     .await;
@@ -2205,5 +2208,327 @@ async fn a_workload_agent_uses_attache_path() {
         ),
         Some(StoreErrorKind::Invalid)
     );
+    db.finish().await;
+}
+
+// ---------------------------------------------------------------------------
+// The local hash-chained audit log (ADR-0034, THREAT-MODEL.md TM-20).
+
+fn draft(t: &TenantKey, n: u32) -> tutela_contracts::audit::AuditDraft {
+    use tutela_contracts::audit::{Actor, AuditDraft, DecisionSummary, Outcome, ResourceRef};
+    AuditDraft {
+        id: tutela_contracts::id::Uuid7::from_uuid(uuid::Uuid::now_v7()).unwrap(),
+        time: tutela_contracts::timestamp::Timestamp::from_unix_millis(1_792_920_600_000).unwrap(),
+        tenant: t.clone(),
+        org: None,
+        actor: Actor::new(user(n)),
+        action: "tutela_model:publish".parse().unwrap(),
+        resource: ResourceRef {
+            resource_type: "tutela_model".parse().unwrap(),
+            id: format!("v{n}").parse().unwrap(),
+        },
+        decision: DecisionSummary {
+            effect: Effect::Allow,
+            rule_ids: Vec::new(),
+            rev: u64::from(n),
+        },
+        outcome: Outcome::Success,
+        reason: "allowed".parse().unwrap(),
+        trace_id: None,
+        span_id: None,
+        service: "tutelad".parse().unwrap(),
+        request_id: None,
+        ip: None,
+        payload_digest: None,
+        labels: Vec::new(),
+        details: None,
+    }
+}
+
+async fn append(c: &mut Client, t: &TenantKey, n: u32) -> u64 {
+    let tx = c.transaction().await.unwrap();
+    let seqs = crate::append_audit(&tx, t, &[draft(t, n)]).await.unwrap();
+    tx.commit().await.unwrap();
+    seqs[0]
+}
+
+async fn verify(c: &mut Client, t: &TenantKey) -> crate::ChainReport {
+    let tx = c.transaction().await.unwrap();
+    let r = crate::verify_audit_chain(&tx, t).await.unwrap();
+    tx.commit().await.unwrap();
+    r
+}
+
+/// A connection to the test database as the server's superuser, which can
+/// switch the triggers off: what an attacker with full database access does.
+async fn superuser(db: &Db) -> Client {
+    let base = base_url().unwrap();
+    let parts: Vec<&str> = base
+        .split_whitespace()
+        .filter(|p| !p.starts_with("dbname="))
+        .collect();
+    connect(&format!("{} dbname={}", parts.join(" "), db.name)).await
+}
+
+#[tokio::test]
+async fn tm20_the_chain_holds_and_counts_from_one() {
+    let Some(mut db) = db().await else { return };
+    let (t, _) = tenant(&mut db.client).await;
+    let empty = verify(&mut db.client, &t).await;
+    assert_eq!((empty.checked, empty.head, empty.broken), (0, 0, None));
+    for n in 1..=5 {
+        assert_eq!(append(&mut db.client, &t, n).await, u64::from(n));
+    }
+    let r = verify(&mut db.client, &t).await;
+    assert!(r.is_intact(), "{r:?}");
+    assert_eq!((r.checked, r.head), (5, 5));
+    // The body is the record's signing bytes: canonical, with seq, without
+    // a signature.
+    let tx = db.client.transaction().await.unwrap();
+    let rows = crate::audit_records(&tx, &t, 0, 10).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(rows.len(), 5);
+    assert_eq!(rows[0].prev_hash, crate::audit::GENESIS);
+    assert_eq!(rows[1].prev_hash, rows[0].hash);
+    assert_eq!(rows[2].body, draft_body(&rows[2].body));
+    assert!(rows[2].body.contains("\"seq\":3"));
+    assert!(!rows[2].body.contains("signature"));
+    db.finish().await;
+}
+
+/// The canonical form of a body, written again.
+fn draft_body(body: &str) -> String {
+    let v: serde_json::Value = serde_json::from_str(body).unwrap();
+    tutela_contracts::jcs::to_canonical_string(&v).unwrap()
+}
+
+#[tokio::test]
+async fn tm20_the_owner_cannot_change_or_delete_a_record() {
+    let Some(mut db) = db().await else { return };
+    let (t, _) = tenant(&mut db.client).await;
+    append(&mut db.client, &t, 1).await;
+    append(&mut db.client, &t, 2).await;
+    for sql in [
+        "UPDATE tutela.audit_record SET body = body || ' ' WHERE seq = 1",
+        "DELETE FROM tutela.audit_record WHERE seq = 2",
+        "TRUNCATE tutela.audit_record",
+        "UPDATE tutela.audit_head SET seq = 1",
+        "DELETE FROM tutela.audit_head",
+        "TRUNCATE tutela.audit_head",
+    ] {
+        let tx = db.client.transaction().await.unwrap();
+        crate::enter(&tx, &t).await.unwrap();
+        let e = tx.batch_execute(sql).await.unwrap_err();
+        assert_eq!(e.code().map(|c| c.code()), Some("23000"), "{sql}: {e}");
+    }
+    let r = verify(&mut db.client, &t).await;
+    assert!(r.is_intact() && r.checked == 2, "{r:?}");
+    db.finish().await;
+}
+
+#[tokio::test]
+async fn tm20_a_gap_or_an_edited_record_is_found() {
+    let Some(mut db) = db().await else { return };
+    let su = superuser(&db).await;
+    let mut tenants = Vec::new();
+    for _ in 0..5 {
+        let (t, _) = tenant(&mut db.client).await;
+        for n in 1..=4 {
+            append(&mut db.client, &t, n).await;
+        }
+        tenants.push(t);
+    }
+    // With the triggers off, as only a superuser or the owner could.
+    let tamper = |tid: String, sql: &'static str| {
+        let su = &su;
+        async move {
+            su.batch_execute("SET session_replication_role = replica")
+                .await
+                .unwrap();
+            su.execute(sql, &[&tid]).await.unwrap();
+            su.batch_execute("SET session_replication_role = origin")
+                .await
+                .unwrap();
+        }
+    };
+    tamper(
+        tenants[0].tid.to_string(),
+        "UPDATE tutela.audit_record SET body = replace(body, '\"rev\":3', '\"rev\":30') \
+         WHERE tenant_id = $1 AND seq = 3",
+    )
+    .await;
+    tamper(
+        tenants[1].tid.to_string(),
+        "DELETE FROM tutela.audit_record WHERE tenant_id = $1 AND seq = 2",
+    )
+    .await;
+    tamper(
+        tenants[2].tid.to_string(),
+        "DELETE FROM tutela.audit_record WHERE tenant_id = $1 AND seq = 4",
+    )
+    .await;
+    // A record rewritten with a hash that fits its own body still breaks the
+    // link to the next one.
+    tamper(
+        tenants[3].tid.to_string(),
+        "UPDATE tutela.audit_record SET body = 'x', hash = repeat('a', 64) \
+         WHERE tenant_id = $1 AND seq = 2",
+    )
+    .await;
+    // A record rewritten with the right hash for its new body and the true
+    // `prev_hash`: it holds, and the next record's link to it breaks.
+    tamper(
+        tenants[4].tid.to_string(),
+        "UPDATE tutela.audit_record SET body = replace(body, '\"rev\":2', '\"rev\":20'), \
+         hash = encode(sha256(convert_to('tutela-audit-chain-v1' || chr(10) || prev_hash || chr(10) \
+           || replace(body, '\"rev\":2', '\"rev\":20'), 'UTF8')), 'hex') \
+         WHERE tenant_id = $1 AND seq = 2",
+    )
+    .await;
+    let found: Vec<_> = {
+        let mut out = Vec::new();
+        for t in &tenants {
+            out.push(verify(&mut db.client, t).await.broken);
+        }
+        out
+    };
+    use crate::{BrokenLink, ChainProblem};
+    assert_eq!(
+        found,
+        vec![
+            Some(BrokenLink {
+                seq: 3,
+                problem: ChainProblem::Hash
+            }),
+            Some(BrokenLink {
+                seq: 2,
+                problem: ChainProblem::Gap
+            }),
+            Some(BrokenLink {
+                seq: 4,
+                problem: ChainProblem::Head
+            }),
+            Some(BrokenLink {
+                seq: 2,
+                problem: ChainProblem::Hash
+            }),
+            Some(BrokenLink {
+                seq: 3,
+                problem: ChainProblem::PrevHash
+            }),
+        ]
+    );
+    drop(su);
+    db.finish().await;
+}
+
+#[tokio::test]
+async fn tm20_a_rolled_back_change_leaves_no_record() {
+    let Some(mut db) = db().await else { return };
+    let (t, o) = tenant(&mut db.client).await;
+    {
+        let tx = db.client.transaction().await.unwrap();
+        crate::assign(
+            &tx,
+            &t,
+            &Subject::Principal(user(1)),
+            &role("reader"),
+            &org(&o),
+            None,
+        )
+        .await
+        .unwrap();
+        crate::append_audit(&tx, &t, &[draft(&t, 1)]).await.unwrap();
+        tx.rollback().await.unwrap();
+    }
+    let r = verify(&mut db.client, &t).await;
+    assert_eq!((r.checked, r.head, r.broken), (0, 0, None));
+    assert_eq!(load(&mut db.client, &t).await.rev, 1);
+    assert_eq!(append(&mut db.client, &t, 2).await, 1);
+    db.finish().await;
+}
+
+#[tokio::test]
+async fn tm20_two_writers_in_one_tenant_keep_one_chain() {
+    let Some(mut db) = db().await else { return };
+    let (t, _) = tenant(&mut db.client).await;
+    let url = with(&base_url().unwrap(), &db.name, OWNER, OWNER_PASSWORD);
+    let mut writers = Vec::new();
+    for w in 0..4u32 {
+        let url = url.clone();
+        let t = t.clone();
+        writers.push(tokio::spawn(async move {
+            let mut c = connect(&url).await;
+            for n in 0..25 {
+                let tx = c.transaction().await.unwrap();
+                crate::append_audit(&tx, &t, &[draft(&t, w * 100 + n), draft(&t, w * 100 + n)])
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+            }
+        }));
+    }
+    for w in writers {
+        w.await.unwrap();
+    }
+    let r = verify(&mut db.client, &t).await;
+    assert!(r.is_intact(), "{r:?}");
+    assert_eq!((r.checked, r.head), (200, 200));
+    db.finish().await;
+}
+
+#[tokio::test]
+async fn tm20_a_chain_is_its_tenants_alone() {
+    let Some(mut db) = db().await else { return };
+    let (a, _) = tenant(&mut db.client).await;
+    let (b, _) = tenant(&mut db.client).await;
+    append(&mut db.client, &a, 1).await;
+    // A record of tenant B is never written to A's chain.
+    let tx = db.client.transaction().await.unwrap();
+    assert_eq!(
+        kind(crate::append_audit(&tx, &a, &[draft(&b, 1)]).await),
+        Some(StoreErrorKind::Invalid)
+    );
+    drop(tx);
+    let tx = db.client.transaction().await.unwrap();
+    assert!(
+        crate::audit_records(&tx, &b, 0, 10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    tx.commit().await.unwrap();
+    // The deployment's chain is not reachable from a tenant's transaction.
+    let tx = db.client.transaction().await.unwrap();
+    crate::enter(&tx, &a).await.unwrap();
+    assert_eq!(
+        kind(crate::verify_deployment_audit_chain(&tx).await),
+        Some(StoreErrorKind::TenantMismatch)
+    );
+    drop(tx);
+    let deployment = TenantKey::new(iss(), crate::audit::deployment_tenant().unwrap());
+    let tx = db.client.transaction().await.unwrap();
+    crate::append_deployment_audit(&tx, &[draft(&deployment, 1)])
+        .await
+        .unwrap();
+    assert_eq!(
+        kind(crate::append_deployment_audit(&tx, &[draft(&a, 1)]).await),
+        Some(StoreErrorKind::Invalid)
+    );
+    drop(tx);
+    let tx = db.client.transaction().await.unwrap();
+    crate::append_deployment_audit(&tx, &[draft(&deployment, 2)])
+        .await
+        .unwrap();
+    let r = crate::verify_deployment_audit_chain(&tx).await.unwrap();
+    assert_eq!((r.checked, r.broken), (1, None));
+    tx.commit().await.unwrap();
+    // The deployment's tenant id is not in the directory.
+    let tx = db.client.transaction().await.unwrap();
+    assert_eq!(
+        kind(crate::enter(&tx, &deployment).await),
+        Some(StoreErrorKind::UnknownTenant)
+    );
+    drop(tx);
     db.finish().await;
 }

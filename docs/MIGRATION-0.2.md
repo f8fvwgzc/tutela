@@ -141,3 +141,10 @@ These matter to whoever runs `tutelad`, and to a product that verifies its token
 - **For texc-symphony, when it bumps:** turn delegation on in the `tutela-sdk` verifier (`delegation: true`, `delegation_aware: true`), and register `symphony` in `tutelad`'s trust file as `[[audience]] name = "symphony"`, `delegation_aware = true`. For the next hop, exchange the delegated token you received for the next audience (no `actor_token`); never forward it.
 - **`IssuerEntry` in the trust file** has a new key, `workloads` (only with `external = true`). `TUTELA_DELEGATED_TTL_SECS` (60 to 120, default 90) and `TUTELA_TOKEN_TTL_SECS` (60 to 600, default 300) are new and optional.
 
+
+## The audit log (part 3b)
+
+- **Migration 8** adds `tutela.audit_head` and `tutela.audit_record`, the local hash-chained audit log ([ADR-0034](DECISIONS.md#adr-0034-the-local-audit-log-one-chain-per-tenant-written-with-the-change)). Run `tutela migrate` (or `tutelad migrate`) as the owner, then `grant_service` again: the service role gets `SELECT, INSERT` on records and never `UPDATE` or `DELETE`. `check_isolation` now fails when a runtime role may change the log, or when its triggers are switched off.
+- **`tutela-contracts`:** `AuditEventV1` has a new optional field, `details`, so a struct literal needs `details: None`. New: `AuditDraft` (a record before its `seq` and signature), `AuditEventV1::signing_bytes` and `from_body`, `Details`, and `tutela_contracts::jcs` (RFC 8785 for the values Tutela signs). `AuditError` has two new variants (`Details`, `Canonical`); it is `#[non_exhaustive]`.
+- **`tutela-store`:** `provision_user` now returns `(PrincipalState, bool)`, the `bool` being `true` when this call made the person. New: `append_audit`, `audit_records`, `verify_audit_chain`, and the same for the deployment's own chain.
+- **In library mode** (attache, texc-symphony when they bump): nothing is written to the log for you. Record your own admin calls with `tutela_store::append_audit` in the same transaction, last, just before the commit.

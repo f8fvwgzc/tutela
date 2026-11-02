@@ -20,6 +20,13 @@
 //! Every refusal of the subject token is `invalid_grant`, and says nothing
 //! of which check failed; the log names it, never the token. Metrics count
 //! each request by the kind of token asked for and how it ended.
+//!
+//! **Audit** (ADR-0034). Every token issued, and every just-in-time
+//! provisioning, has its audit.v1 record in the exchange's transaction. A
+//! refusal has its record in a transaction of its own once the subject token
+//! has verified and its tenant is known; a request refused before that names
+//! no tenant, so it is only logged and counted: an unauthenticated caller
+//! cannot grow a tenant's audit log.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -46,6 +53,7 @@ use tutela_sdk::{
 use tutela_store::{PrincipalState, StoreErrorKind};
 
 use crate::api::AppState;
+use crate::audit::{self, Record};
 use crate::config::Config;
 use crate::db::{DbError, TenantTx};
 use crate::keys::{KeyError, KeyRing, OwnJwks};
@@ -417,6 +425,17 @@ struct Subject {
     scope: Option<Scope>,
     /// The issued token never outlives this.
     exp: u64,
+    /// For an external subject: its issuer and its own subject, and `true`
+    /// when this exchange made the person.
+    upstream: Option<(Issuer, String, bool)>,
+}
+
+/// What an exchange learned before it ended, for the record of a refusal.
+#[derive(Default)]
+struct Trail {
+    tenant: Option<Tenant>,
+    principal: Option<Principal>,
+    upstream: Option<Issuer>,
 }
 
 /// The claims of an external token that the SDK does not keep: they were
@@ -493,7 +512,12 @@ async fn verify(state: &AppState, token: &str) -> Result<Identity, Refusal> {
 /// logs people in for, under this service's issuer, in `tx`. The token is
 /// noted in `tx`, so it is exchanged once; nothing of this stays unless the
 /// caller commits after the new token is signed.
-async fn external(tx: &TenantTx<'_>, t: &ExternalToken, token: &str) -> Result<Subject, Refusal> {
+async fn external(
+    tx: &TenantTx<'_>,
+    t: &ExternalToken,
+    token: &str,
+    trail: &mut Trail,
+) -> Result<Subject, Refusal> {
     let up: Upstream = payload(token).ok_or(Refusal::grant("claims"))?;
     let jti = up
         .jti
@@ -520,7 +544,8 @@ async fn external(tx: &TenantTx<'_>, t: &ExternalToken, token: &str) -> Result<S
     if !tutela_store::note_exchange(tx, key, &t.tenant.iss, &jti, expires).await? {
         return Err(Refusal::grant("replayed"));
     }
-    let person = tutela_store::provision_user(tx, key, &t.tenant.iss, &t.sub).await?;
+    let (person, made) = tutela_store::provision_user(tx, key, &t.tenant.iss, &t.sub).await?;
+    trail.principal = Some(person.principal.clone());
     if person.disabled {
         return Err(Refusal::grant("disabled"));
     }
@@ -540,6 +565,7 @@ async fn external(tx: &TenantTx<'_>, t: &ExternalToken, token: &str) -> Result<S
         azp,
         scope: None,
         exp: t.exp,
+        upstream: Some((t.tenant.iss.clone(), t.sub.clone(), made)),
     })
 }
 
@@ -561,6 +587,7 @@ async fn own(tx: &TenantTx<'_>, c: &AccessTokenClaims) -> Result<Subject, Refusa
         azp: c.azp.clone(),
         scope: c.scope.clone(),
         exp: c.exp,
+        upstream: None,
     })
 }
 
@@ -585,6 +612,7 @@ async fn own_delegated(tx: &TenantTx<'_>, c: &DelegatedClaims) -> Result<Subject
         azp: c.azp.clone(),
         scope: c.scope.clone(),
         exp: c.exp,
+        upstream: None,
     })
 }
 
@@ -721,7 +749,7 @@ async fn delegated(
     state: &AppState,
     req: &TokenRequest,
     tx: &TenantTx<'_>,
-    mut subject: Subject,
+    subject: &mut Subject,
     acting: Option<Acting>,
     audience: Audience,
     scope: Option<Scope>,
@@ -765,10 +793,12 @@ async fn delegated(
     }
     let key = tx.tenant();
     let rev = tutela_store::rev(tx, key).await?;
-    let azp = acting.and_then(|a| a.azp).unwrap_or(subject.azp);
+    let azp = acting
+        .and_then(|a| a.azp)
+        .unwrap_or_else(|| subject.azp.clone());
     let claims = DelegatedClaims {
         iss: key.iss.clone(),
-        sub: subject.principal,
+        sub: subject.principal.clone(),
         act,
         cap,
         run_id,
@@ -785,8 +815,8 @@ async fn delegated(
         epoch: subject.epoch,
         rev,
         scope,
-        amr: subject.amr,
-        acr: subject.acr,
+        amr: subject.amr.clone(),
+        acr: subject.acr.clone(),
         cnf: None,
     };
     claims
@@ -810,6 +840,50 @@ pub struct Issued {
 ///
 /// A [`Refusal`]: what to answer, with the reason for the log.
 pub async fn exchange(state: &AppState, req: TokenRequest) -> Result<Issued, Refusal> {
+    exchange_traced(state, req, &mut Trail::default()).await
+}
+
+/// The records of a token that was issued, and of the person made for it.
+fn issued_records(
+    tenant: &Tenant,
+    kind: Kind,
+    subject: &Subject,
+    rev: u64,
+    token: Record,
+) -> Result<Vec<Record>, Refusal> {
+    let mut out = Vec::new();
+    if let Some((iss, sub, true)) = &subject.upstream {
+        out.push(
+            Record::new(
+                tenant.key(),
+                tutela_contracts::audit::Actor::new(subject.principal.clone()),
+                "tutela_principal:provision",
+                ("tutela_principal", &subject.principal.to_string()),
+            )
+            .allowed(rev)
+            .detail("principal", subject.principal.to_string())
+            .detail("upstream_iss", iss.as_str())
+            .detail("upstream_sub", sub.as_str()),
+        );
+    }
+    out.push(
+        token.detail("kind", kind.as_str()).detail(
+            "upstream_iss",
+            subject
+                .upstream
+                .as_ref()
+                .map(|(iss, _, _)| iss.as_str().to_owned()),
+        ),
+    );
+    Ok(out)
+}
+
+async fn exchange_traced(
+    state: &AppState,
+    req: TokenRequest,
+    trail: &mut Trail,
+) -> Result<Issued, Refusal> {
+    let kind = Kind::of(&req);
     match req.grant_type.as_deref() {
         Some(GRANT_TYPE) => {}
         Some(_) => {
@@ -860,6 +934,12 @@ pub async fn exchange(state: &AppState, req: TokenRequest) -> Result<Issued, Ref
     };
 
     let id = verify(state, subject_token).await?;
+    match &id {
+        Identity::External(t) => trail.upstream = Some(t.tenant.iss.clone()),
+        Identity::Access(c) => trail.principal = Some(c.sub.clone()),
+        Identity::Delegated(c) => trail.principal = Some(c.sub.clone()),
+        _ => {}
+    }
     // A delegated token is asked for with an actor, or by exchanging one
     // for the next hop (ADR-0033).
     let delegating = actor_token.is_some() || matches!(id, Identity::Delegated(_));
@@ -886,10 +966,11 @@ pub async fn exchange(state: &AppState, req: TokenRequest) -> Result<Issued, Ref
         Identity::Delegated(c) if c.iss == *own_iss => Tenant::of(&id),
         _ => return Err(Refusal::grant("issuer")),
     };
+    trail.tenant = Some(tenant.clone());
     let mut conn = state.db.conn().await?;
     let tx = conn.begin(&tenant).await?;
-    let subject = match &id {
-        Identity::External(t) => external(&tx, t, subject_token).await?,
+    let mut subject = match &id {
+        Identity::External(t) => external(&tx, t, subject_token, trail).await?,
         Identity::Access(c) => own(&tx, c).await?,
         Identity::Delegated(c) => own_delegated(&tx, c).await?,
         _ => return Err(Refusal::grant("issuer")),
@@ -919,8 +1000,45 @@ pub async fn exchange(state: &AppState, req: TokenRequest) -> Result<Issued, Ref
             Some(t) => Some(actor(state, &tx, t).await?),
             None => None,
         };
-        let claims = delegated(state, &req, &tx, subject, acting, audience, scope).await?;
+        let claims = delegated(
+            state,
+            &req,
+            &tx,
+            &mut subject,
+            acting,
+            audience.clone(),
+            scope,
+        )
+        .await?;
         let access_token = state.keys.sign_jwt(DELEGATED_TOKEN_TYP, &claims)?;
+        let chain: Vec<String> = claims
+            .act
+            .chain()
+            .into_iter()
+            .map(ToString::to_string)
+            .collect();
+        let token = Record::new(
+            tenant.key(),
+            tutela_contracts::audit::Actor::delegated(claims.act.sub.clone(), claims.sub.clone()),
+            "tutela_token:issue",
+            ("tutela_token", &claims.jti.to_string()),
+        )
+        .allowed(claims.rev)
+        .detail("jti", claims.jti.to_string())
+        .detail("principal", claims.sub.to_string())
+        .detail("aud", audience.as_str())
+        .detail("azp", claims.azp.as_str())
+        .detail("exp", claims.exp)
+        .detail("act", chain)
+        .detail("run_id", claims.run_id.as_str())
+        .detail(
+            "node_id",
+            claims.node_id.as_ref().map(|n| n.as_str().to_owned()),
+        );
+        let records = issued_records(&tenant, kind, &subject, claims.rev, token)?;
+        audit::write(state, &tx, records)
+            .await
+            .map_err(|_| Refusal::unavailable("audit"))?;
         tx.commit().await?;
         return Ok(Issued {
             jti: claims.jti,
@@ -949,9 +1067,9 @@ pub async fn exchange(state: &AppState, req: TokenRequest) -> Result<Issued, Ref
     let rev = tutela_store::rev(&tx, key).await?;
     let claims = AccessTokenClaims {
         iss: key.iss.clone(),
-        sub: subject.principal,
+        sub: subject.principal.clone(),
         aud: AudienceClaim::one(audience.clone()),
-        azp: subject.azp,
+        azp: subject.azp.clone(),
         exp,
         iat: now,
         nbf: now,
@@ -962,8 +1080,8 @@ pub async fn exchange(state: &AppState, req: TokenRequest) -> Result<Issued, Ref
         epoch: subject.epoch,
         rev,
         scope: scope.clone(),
-        amr: if user { subject.amr } else { None },
-        acr: subject.acr,
+        amr: if user { subject.amr.clone() } else { None },
+        acr: subject.acr.clone(),
         act: None,
     };
     // What is issued passes the checks every verifier runs.
@@ -974,6 +1092,22 @@ pub async fn exchange(state: &AppState, req: TokenRequest) -> Result<Issued, Ref
             Refusal::unavailable("claims")
         })?;
     let access_token = state.keys.sign_jwt("at+jwt", &claims)?;
+    let token = Record::new(
+        tenant.key(),
+        tutela_contracts::audit::Actor::new(claims.sub.clone()),
+        "tutela_token:issue",
+        ("tutela_token", &claims.jti.to_string()),
+    )
+    .allowed(rev)
+    .detail("jti", claims.jti.to_string())
+    .detail("principal", claims.sub.to_string())
+    .detail("aud", audience.as_str())
+    .detail("azp", claims.azp.as_str())
+    .detail("exp", exp);
+    let records = issued_records(&tenant, kind, &subject, rev, token)?;
+    audit::write(state, &tx, records)
+        .await
+        .map_err(|_| Refusal::unavailable("audit"))?;
     // Only now is the subject token used up and the person made.
     tx.commit().await?;
     Ok(Issued {
@@ -1009,13 +1143,17 @@ pub async fn token(State(state): State<AppState>, headers: HeaderMap, body: Byte
             "the body is application/x-www-form-urlencoded",
         ))
     };
+    let mut trail = Trail::default();
     let result = match parsed {
         Ok(req) => {
             kind = Kind::of(&req);
-            exchange(&state, req).await
+            exchange_traced(&state, req, &mut trail).await
         }
         Err(e) => Err(e),
     };
+    if let (Err(refusal), Some(tenant)) = (&result, &trail.tenant) {
+        audit_refusal(&state, tenant, &trail, kind, refusal).await;
+    }
     match result {
         Ok(issued) => {
             state.metrics.count_token(kind.as_str(), "issued");
@@ -1032,6 +1170,50 @@ pub async fn token(State(state): State<AppState>, headers: HeaderMap, body: Byte
             );
             refusal.into_response()
         }
+    }
+}
+
+/// The record of a refused exchange whose tenant is known, in a transaction
+/// of its own. The refusal stands whatever happens here; a failure is logged
+/// and counted.
+async fn audit_refusal(
+    state: &AppState,
+    tenant: &Tenant,
+    trail: &Trail,
+    kind: Kind,
+    refusal: &Refusal,
+) {
+    let actor = match trail.principal.clone().map_or_else(audit::system, Ok) {
+        Ok(p) => tutela_contracts::audit::Actor::new(p),
+        Err(e) => {
+            tracing::error!(error = %e, "a refused exchange has no actor for its record");
+            return;
+        }
+    };
+    let record = Record::new(
+        tenant.key(),
+        actor,
+        "tutela_token:issue",
+        ("tutela_token", kind.as_str()),
+    )
+    .denied(0, refusal.reason)
+    .detail("kind", kind.as_str())
+    .detail("error", refusal.error)
+    .detail("reason", refusal.reason)
+    .detail(
+        "principal",
+        trail.principal.as_ref().map(ToString::to_string),
+    )
+    .detail(
+        "upstream_iss",
+        trail.upstream.as_ref().map(|i| i.as_str().to_owned()),
+    );
+    if let Err(p) = audit::write_alone(state, tenant, vec![record]).await {
+        state.metrics.count_audit("token", "error");
+        tracing::error!(
+            code = p.code,
+            "the record of a refused exchange was not written"
+        );
     }
 }
 

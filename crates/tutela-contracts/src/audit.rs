@@ -1,19 +1,21 @@
 //! The audit.v1 record (CONTRACTS.md section 9).
 //!
-//! This module has the record and its format rules. Producer signing, the
-//! sequence counter, the local hash chain and forwarding to attache's
-//! evidence ledger are Phase B. The `signature` and `seq` fields exist now so
-//! that the wire shape is fixed.
+//! This module has the record and its format rules, the [`AuditDraft`] a
+//! producer fills before the record has its `seq`, and the canonical bytes
+//! (RFC 8785) that the producer signs and Tutela's local chain hashes
+//! (CONTRACTS.md 9.3, 9.4). The chain itself is in `tutela-store`.
 
 use core::fmt;
 use core::str::FromStr;
 use std::net::IpAddr;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de, ser};
+use serde_json::Value;
 
 use crate::decision::{Decision, Effect, Reason, RuleId};
 use crate::encoding::{SignatureValue, Thumbprint, json_int};
 use crate::id::Uuid7;
+use crate::jcs::to_canonical_string;
 use crate::keys::{Label, PermissionKey, ResourceId, ResourceType};
 use crate::principal::{Principal, PrincipalKind};
 use crate::tenant::{OrgId, TenantKey};
@@ -71,6 +73,13 @@ pub enum AuditError {
     /// `outcome` is not `success`, `failure` or `denied`.
     #[error("an outcome must be `success`, `failure` or `denied`")]
     Outcome,
+    /// `details` is not a JSON object of at most 8 KiB of strings, whole
+    /// numbers, booleans, arrays and objects.
+    #[error("`details` must be a JSON object of at most 8 KiB, with no null and no fraction")]
+    Details,
+    /// The record has no canonical JSON form, or it does not parse.
+    #[error("the record has no canonical JSON form")]
+    Canonical,
 }
 
 /// The result of the action. A closed set.
@@ -473,6 +482,9 @@ pub struct AuditEventV1 {
     pub payload_digest: Option<PayloadDigest>,
     /// The labels of the data touched. Sorted, no duplicates, may be empty.
     pub labels: Vec<Label>,
+    /// What else happened, as ids, numbers and codes (Phase B, additive).
+    /// Never a token, a secret, an e-mail or a field value.
+    pub details: Option<Details>,
     /// The producer's sequence number per (service, tenant), from 1.
     pub seq: u64,
     /// The producer's signature.
@@ -508,6 +520,8 @@ struct AuditEventV1Def {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     payload_digest: Option<PayloadDigest>,
     labels: Vec<Label>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    details: Option<Details>,
     #[serde(with = "json_int")]
     seq: u64,
     signature: Signature,
@@ -521,26 +535,219 @@ impl AuditEventV1 {
     ///
     /// Returns the [`AuditError`] of the first broken rule.
     pub fn check(&self) -> Result<(), AuditError> {
-        self.actor.check()?;
-        let outcome_ok = match self.decision.effect {
-            Effect::Deny => self.outcome == Outcome::Denied,
-            Effect::Allow => self.outcome != Outcome::Denied,
+        check_parts(&self.actor, &self.decision, self.outcome, &self.labels)?;
+        check_seq(self.seq)
+    }
+
+    /// The bytes the producer signs and the local chain hashes: the RFC 8785
+    /// canonical JSON of the whole record without `signature`
+    /// (CONTRACTS.md 9.3).
+    ///
+    /// # Errors
+    ///
+    /// The [`AuditError`] of a broken rule.
+    pub fn signing_bytes(&self) -> Result<String, AuditError> {
+        let mut v = serde_json::to_value(self).map_err(|_| AuditError::Canonical)?;
+        if let Value::Object(map) = &mut v {
+            map.remove("signature");
+        }
+        to_canonical_string(&v).map_err(|_| AuditError::Canonical)
+    }
+
+    /// The record of `body` (the canonical JSON without `signature`, as
+    /// [`AuditDraft::body`] wrote it) with its producer `signature`.
+    ///
+    /// # Errors
+    ///
+    /// [`AuditError::Canonical`] when `body` is not a JSON object, or the
+    /// [`AuditError`] of a broken rule.
+    pub fn from_body(body: &str, signature: &Signature) -> Result<Self, AuditError> {
+        let mut v: Value = serde_json::from_str(body).map_err(|_| AuditError::Canonical)?;
+        let Value::Object(map) = &mut v else {
+            return Err(AuditError::Canonical);
         };
-        if !outcome_ok {
-            return Err(AuditError::OutcomeMismatch);
+        map.insert(
+            "signature".to_owned(),
+            serde_json::to_value(signature).map_err(|_| AuditError::Canonical)?,
+        );
+        serde_json::from_value(v).map_err(|_| AuditError::Canonical)
+    }
+}
+
+/// The rules that join fields, shared by [`AuditEventV1`] and
+/// [`AuditDraft`].
+fn check_parts(
+    actor: &Actor,
+    decision: &DecisionSummary,
+    outcome: Outcome,
+    labels: &[Label],
+) -> Result<(), AuditError> {
+    actor.check()?;
+    let outcome_ok = match decision.effect {
+        Effect::Deny => outcome == Outcome::Denied,
+        Effect::Allow => outcome != Outcome::Denied,
+    };
+    if !outcome_ok {
+        return Err(AuditError::OutcomeMismatch);
+    }
+    if !labels.windows(2).all(|w| matches!(w, [a, b] if a < b)) {
+        return Err(AuditError::LabelsNotSorted);
+    }
+    if decision.rev > crate::encoding::MAX_JSON_INT {
+        return Err(AuditError::IntTooLarge);
+    }
+    Ok(())
+}
+
+fn check_seq(seq: u64) -> Result<(), AuditError> {
+    if seq == 0 {
+        return Err(AuditError::SeqZero);
+    }
+    if seq > crate::encoding::MAX_JSON_INT {
+        return Err(AuditError::IntTooLarge);
+    }
+    Ok(())
+}
+
+/// The most `details` may hold, as canonical JSON.
+pub const MAX_DETAILS_BYTES: usize = 8 * 1024;
+
+/// The `details` of an audit record: a JSON object of ids, numbers and codes
+/// that say what else happened, for example a token's `jti` and audience, or
+/// a published version. It has no `null` and no fraction, so it has one
+/// canonical form, and it is at most [`MAX_DETAILS_BYTES`].
+///
+/// Never put a token, a secret, an e-mail or a field value in it
+/// (CONTRACTS.md 9.5).
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct Details(serde_json::Map<String, Value>);
+
+impl Details {
+    /// Checks `map`.
+    ///
+    /// # Errors
+    ///
+    /// [`AuditError::Details`] for a `null`, a fraction, a number out of the
+    /// JSON range, or more than [`MAX_DETAILS_BYTES`].
+    pub fn new(map: serde_json::Map<String, Value>) -> Result<Self, AuditError> {
+        let text =
+            to_canonical_string(&Value::Object(map.clone())).map_err(|_| AuditError::Details)?;
+        if text.len() > MAX_DETAILS_BYTES {
+            return Err(AuditError::Details);
         }
-        if !self.labels.windows(2).all(|w| matches!(w, [a, b] if a < b)) {
-            return Err(AuditError::LabelsNotSorted);
-        }
-        if self.seq == 0 {
-            return Err(AuditError::SeqZero);
-        }
-        if self.seq > crate::encoding::MAX_JSON_INT
-            || self.decision.rev > crate::encoding::MAX_JSON_INT
-        {
-            return Err(AuditError::IntTooLarge);
-        }
-        Ok(())
+        Ok(Self(map))
+    }
+
+    /// The object.
+    #[must_use]
+    pub const fn as_map(&self) -> &serde_json::Map<String, Value> {
+        &self.0
+    }
+
+    /// One member.
+    #[must_use]
+    pub fn get(&self, key: &str) -> Option<&Value> {
+        self.0.get(key)
+    }
+}
+
+impl Serialize for Details {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Details {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let map = serde_json::Map::<String, Value>::deserialize(deserializer)?;
+        Self::new(map).map_err(de::Error::custom)
+    }
+}
+
+/// An audit record before the producer gives it its `seq` and signs it:
+/// every field of [`AuditEventV1`] but `schema`, `seq` and `signature`.
+///
+/// Tutela's local log stores [`AuditDraft::body`] with the chain's `seq`,
+/// and signs it when it forwards the record (CONTRACTS.md 9.3, 9.4).
+#[derive(Clone, PartialEq, Eq, Debug, Serialize)]
+pub struct AuditDraft {
+    /// The record id, a UUIDv7.
+    pub id: Uuid7,
+    /// When it happened.
+    pub time: Timestamp,
+    /// The tenant key `(iss, tid)`.
+    pub tenant: TenantKey,
+    /// The org, when the action happened inside one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub org: Option<OrgId>,
+    /// Who acted.
+    pub actor: Actor,
+    /// A permission key. Tutela's own admin actions use `tutela_*` types.
+    pub action: PermissionKey,
+    /// What was touched.
+    pub resource: ResourceRef,
+    /// The decision summary.
+    pub decision: DecisionSummary,
+    /// `denied` exactly when `decision.effect` is `deny`.
+    pub outcome: Outcome,
+    /// Same format as `Decision.reason`.
+    pub reason: Reason,
+    /// The W3C trace id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<TraceId>,
+    /// The W3C span id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub span_id: Option<SpanId>,
+    /// The producer service.
+    pub service: ServiceName,
+    /// The request id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<RequestId>,
+    /// The client IP. Personal data.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ip: Option<ClientIp>,
+    /// A keyed digest of the payload or of the before and after values.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload_digest: Option<PayloadDigest>,
+    /// The labels of the data touched. Sorted, no duplicates, may be empty.
+    pub labels: Vec<Label>,
+    /// What else happened.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Details>,
+}
+
+impl AuditDraft {
+    /// Checks the rules that join fields, as [`AuditEventV1::check`] does.
+    ///
+    /// # Errors
+    ///
+    /// The [`AuditError`] of the first broken rule.
+    pub fn check(&self) -> Result<(), AuditError> {
+        check_parts(&self.actor, &self.decision, self.outcome, &self.labels)
+    }
+
+    /// The canonical JSON of the record with `seq` and without `signature`:
+    /// the bytes the local chain hashes and the producer signs.
+    ///
+    /// # Errors
+    ///
+    /// The [`AuditError`] of a broken rule.
+    pub fn body(&self, seq: u64) -> Result<String, AuditError> {
+        self.check()?;
+        check_seq(seq)?;
+        let mut v = serde_json::to_value(self).map_err(|_| AuditError::Canonical)?;
+        let Value::Object(map) = &mut v else {
+            return Err(AuditError::Canonical);
+        };
+        map.insert("schema".to_owned(), Value::from(AuditSchema::VALUE));
+        map.insert("seq".to_owned(), Value::from(seq));
+        to_canonical_string(&v).map_err(|_| AuditError::Canonical)
     }
 }
 
@@ -874,5 +1081,69 @@ mod tests {
             json!({ "effect": "allow", "rule_ids": ["ra_1"], "rev": 9 })
         );
         assert_eq!(AuditSchema.to_string(), "audit.v1");
+    }
+
+    fn draft_of(r: &AuditEventV1) -> AuditDraft {
+        AuditDraft {
+            id: r.id,
+            time: r.time,
+            tenant: r.tenant.clone(),
+            org: r.org,
+            actor: r.actor.clone(),
+            action: r.action.clone(),
+            resource: r.resource.clone(),
+            decision: r.decision.clone(),
+            outcome: r.outcome,
+            reason: r.reason.clone(),
+            trace_id: r.trace_id.clone(),
+            span_id: r.span_id.clone(),
+            service: r.service.clone(),
+            request_id: r.request_id.clone(),
+            ip: r.ip,
+            payload_digest: r.payload_digest.clone(),
+            labels: r.labels.clone(),
+            details: r.details.clone(),
+        }
+    }
+
+    #[test]
+    fn a_draft_body_is_the_signing_bytes_of_its_record() {
+        let mut v = doc_record();
+        v["details"] = json!({"jti": "0193a1b2-c3d5-7000-8000-0000000000e1", "act": [{"sub": "agent:agt_0193a1b2-c3d4-7b33-9c44-5d6e7f809102"}], "exp": 1_792_920_750, "ok": true});
+        let r: AuditEventV1 = serde_json::from_value(v.clone()).unwrap();
+        let body = draft_of(&r).body(r.seq).unwrap();
+        assert_eq!(body, r.signing_bytes().unwrap());
+        assert!(!body.contains("signature"));
+        assert!(body.starts_with("{\"action\":"), "{body}");
+        let back = AuditEventV1::from_body(&body, &r.signature).unwrap();
+        assert_eq!(back, r);
+        assert_eq!(serde_json::to_value(&back).unwrap(), v);
+        // The draft checks the same rules as the record.
+        let mut bad = draft_of(&r);
+        bad.outcome = Outcome::Success;
+        assert_eq!(bad.body(1), Err(AuditError::OutcomeMismatch));
+        assert_eq!(draft_of(&r).body(0), Err(AuditError::SeqZero));
+    }
+
+    #[test]
+    fn details_have_one_canonical_form() {
+        let ok = json!({"a": 1, "b": ["x"], "c": {"d": false}});
+        assert!(Details::new(ok.as_object().unwrap().clone()).is_ok());
+        for bad in [
+            json!({"a": null}),
+            json!({"a": 1.5}),
+            json!({"a": "x".repeat(MAX_DETAILS_BYTES)}),
+        ] {
+            assert_eq!(
+                Details::new(bad.as_object().unwrap().clone()),
+                Err(AuditError::Details)
+            );
+        }
+        let mut v = doc_record();
+        v["details"] = json!({"a": null});
+        assert!(serde_json::from_value::<AuditEventV1>(v).is_err());
+        let mut v = doc_record();
+        v["details"] = json!("not an object");
+        assert!(serde_json::from_value::<AuditEventV1>(v).is_err());
     }
 }

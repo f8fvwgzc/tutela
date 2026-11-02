@@ -50,6 +50,7 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0031](#adr-0031-token-exchange-the-tenant-from-the-trust-list-a-person-from-iss-sub) | Token exchange: the tenant from the trust list, a person from (iss, sub) | Accepted |
 | [0032](#adr-0032-admin-tokens-a-person-steps-up-a-pipeline-keeps-its-service-token) | Admin tokens: a person steps up, a pipeline keeps its service token | Accepted |
 | [0033](#adr-0033-delegated-agent-tokens-from-token-exchange) | Delegated agent tokens from token exchange | Accepted |
+| [0034](#adr-0034-the-local-audit-log-one-chain-per-tenant-written-with-the-change) | The local audit log: one chain per tenant, written with the change | Accepted |
 
 ---
 
@@ -1296,4 +1297,38 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 - **Map a workload by its SPIFFE id alone, without registration.** A workload of another tenant on the same trust domain could act; registration ties one workload to one agent of one tenant.
 - **Copy `cap` only from the actor token.** Tutela never reads `cap`; the request is where attache puts its snapshot, as CONTRACTS.md 4.5 says.
 - **Let a delegated token outlive the person's token.** Revoking the person's session would not end the agent's work within the token's life.
+
+---
+
+## ADR-0034: The local audit log: one chain per tenant, written with the change
+
+**Status:** Accepted, 2026-11-02. Built in Phase B, part 3b. It builds the local log of CONTRACTS.md 9.4 and TM-20, and **changes CONTRACTS.md 9.3** on when `seq` is given (below).
+
+**Context.** CONTRACTS.md 9.4 wants each audit record in the transaction of its change, a local hash chain, and UPDATE and DELETE refused. 9.3 wants a producer signature and a `seq` per (service, tenant) with no gap, and says the outbox relay gives `seq` when it ships a record. The ROADMAP notes for part 3 and 3b list what each operation must record: many of those values (a token's `jti`, its audience and `exp`, an `act` chain, a model version, the approvers) have no field in audit.v1. Some operations change nothing (a refused publish, an explain, a refused exchange), so they have no transaction to join. Signing keys belong to the deployment, not to a tenant, and audit.v1 always names a tenant.
+
+**Decision.**
+
+1. **One chain per tenant**, in `tutela.audit_record` (migration 8), under the tenant's row-level security. A record is stored as its *body*: the RFC 8785 canonical JSON of the audit.v1 record with `seq` and without `signature` (`AuditDraft::body`, the bytes the producer signs in 9.3). `hash = SHA-256("tutela-audit-chain-v1" LF prev_hash LF body)`, hex; the first `prev_hash` is 64 zeros. `prev_hash` and `hash` are storage columns, as 9.4 says.
+2. **`seq` is the chain position**, given when the record is written, not when it is shipped. It counts per (`tutelad`, tenant) from 1 with no gap and is never reused, which is what 9.3 asks of it; the chain gives it for free, so a relay never has to. **This changes 9.3**, which had the relay give it.
+3. **One writer at a time per tenant.** `audit_head` holds the chain's last link; a writer locks its row, appends, and moves it, in the caller's transaction. So two writers in one tenant make one chain, in commit order, and a rolled-back change leaves no record and no gap. A writer appends **last**, just before the commit, so it never waits for another lock while it holds this one.
+4. **Append-only, by the database.** A trigger refuses UPDATE, DELETE and TRUNCATE of a record for every role, the owner too; the head only moves forward. `grant_service` gives the service role `SELECT, INSERT` on records and no DELETE on the head, and `check_isolation` (readiness) fails when the role could change the log or a trigger is switched off.
+5. **The verifier** (`tutela_store::verify_audit_chain`) walks the chain from the first record and reports the first broken link: a missing record (`gap`), a record whose hash does not fit its body (`hash`), a link that does not fit the record before (`prev_hash`), a body that is not its row's (`body`), or a head past the last record (`head`).
+6. **`details`, a new optional field of audit.v1** (CONTRACTS.md 10.2 allows it): a JSON object of ids, numbers and codes, at most 8 KiB, with no `null` and no fraction, so it has one canonical form. It holds what the notes ask for that has no field: a token's `jti`, `aud`, `azp`, `exp` and `act` chain, a version and its approvers, a move verdict. Never a token, a secret, an e-mail or a field value.
+7. **What has no transaction gets its own.** A refused publish, an impact report, explain, simulate and a write check write their record in a transaction of their own, and the answer leaves only after it commits: if the record cannot be written, the answer is 503. A refused token exchange is refused whatever happens; its record is best effort, logged and counted (`tutelad_audit_records{operation="token",outcome="error"}`).
+8. **A refused exchange is recorded only once its tenant is known**, that is after the subject token verified. A request refused before that names no tenant, so it is logged and counted only: an unauthenticated caller cannot grow any tenant's log.
+9. **`tutelad` itself is a reserved principal**, `sa:sa_00000000-0000-7000-8000-000000000000` (`tutelad::audit::SYSTEM`): the actor of the expiry sweep, of signing-key operations, and of a refused exchange before any principal is known. No token is issued for it, and the API refuses one that names it.
+10. **The deployment has its own chain**, for its signing keys, under the tenant id `ten_00000000-0000-7000-8000-000000000000`, which is never in the directory, so no token can enter it. A record's tenant key is `(TUTELA_ISSUER, that id)`. `KeyRing::rotate` and `KeyRing::deny` (for part 4's `tutela keys rotate`) write the record in the key's own transaction; start-up records a first key and a re-wrap.
+11. **Who calls the store writes the record.** The store calls that change tenant data take no actor, so `tutelad` records the operations it runs. `revoke_sessions`, `set_disabled`, `register_agent`, `set_boundary` and `move_scope` have no route in `tutelad` yet; part 3c's admin routes record them with who asked. A product in library mode records its own calls with `tutela_store::append_audit` in its transaction.
+
+**Consequences.**
+- Every audited operation in one tenant waits for the one before it to commit. Token exchange and the model routes take a few milliseconds each, so this holds hundreds of operations per second per tenant; a tenant that needs more would need a chain per (tenant, shard).
+- A database owner who switches off the triggers can rewrite a chain from the edit to the end. The copy in attache's evidence ledger, in another trust zone, is what shows that (TM-20); readiness shows a switched-off trigger.
+- Records are not signed until they are forwarded (9.3). The local chain protects them until then.
+- Erasure of personal data in records (TM-20, an open item) is still open: `upstream_sub` and actor ids are in bodies that the chain covers.
+
+**Alternatives considered.**
+- **A chainer that links records after commit.** No lock on the write path, but a record is unchained for a while, and a crash leaves records the verifier must treat as pending.
+- **Postgres advisory locks instead of a head row.** One lock space for the whole server, and nothing to read back for the verifier's head check.
+- **Sign every record at write time.** Every replica would need the producer key on the write path, and the store could not record a call by itself.
+- **Fold the extra values into `reason`.** `reason` is short text for people; ids and numbers belong in a field a ledger can read.
 

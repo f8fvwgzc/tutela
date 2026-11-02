@@ -93,6 +93,9 @@ pub enum DbError {
     /// A store call failed.
     #[error(transparent)]
     Store(#[from] StoreError),
+    /// An audit record could not be built. A bug; nothing commits.
+    #[error("an audit record could not be built")]
+    Audit(#[from] crate::audit::BuildError),
 }
 
 impl From<tokio_postgres::Error> for DbError {
@@ -118,7 +121,7 @@ impl DbError {
         match self {
             Self::Driver(e) => e.code().map(tokio_postgres::error::SqlState::code),
             Self::Store(e) => e.sqlstate(),
-            Self::NotReady(_) => None,
+            Self::NotReady(_) | Self::Audit(_) => None,
         }
     }
 }
@@ -155,15 +158,20 @@ impl Conn {
         Ok(tenants)
     }
 
-    /// One tenant's expiry sweep, in its own transaction. A job has no token
-    /// to take a [`Tenant`] from, so this does the one thing it needs, and
-    /// a handler cannot reach it.
+    /// One tenant's expiry sweep, in its own transaction, with an audit
+    /// record for each assignment it removed. A job has no token to take a
+    /// [`Tenant`] from, so this does the one thing it needs, and a handler
+    /// cannot reach it.
     pub(crate) async fn expire(
         &mut self,
         tenant: &TenantKey,
     ) -> Result<Option<tutela_store::Expired>, DbError> {
         let tx = self.0.transaction().await?;
         let gone = tutela_store::expire_assignments(&tx, tenant).await?;
+        if let Some(g) = &gone {
+            let drafts = crate::expiry::records(tenant, g)?;
+            tutela_store::append_audit(&tx, tenant, &drafts).await?;
+        }
         tx.commit().await?;
         Ok(gone)
     }
@@ -173,14 +181,20 @@ impl Conn {
     /// The signing keys, in a transaction of their own: they are the
     /// deployment's, not a tenant's (ADR-0030). With no key that may sign,
     /// one is made; a key sealed under a previous master key is re-wrapped.
+    /// Both are recorded in the deployment's audit chain (ADR-0034), whose
+    /// tenant key names the service's own issuer `iss`.
     pub(crate) async fn signing_keys(
         &mut self,
         vault: &tutela_vault::Vault,
+        iss: &tutela_contracts::tenant::Issuer,
     ) -> Result<tutela_store::KeySet, DbError> {
         let tx = self.0.transaction().await?;
         let mut set = tutela_store::signing_keys(&tx).await?;
+        let mut records = Vec::new();
         if set.signing(set.now).is_none() {
-            tutela_store::ensure_signing_key(&tx, vault).await?;
+            if let Some(kid) = tutela_store::ensure_signing_key(&tx, vault).await? {
+                records.push(key_record(iss, "create", &kid)?.detail("kid", kid));
+            }
             set = tutela_store::signing_keys(&tx).await?;
         }
         let current = vault.current_key();
@@ -189,12 +203,90 @@ impl Conn {
             .iter()
             .any(|k| vault.key_of(&k.sealed).is_ok_and(|id| id != current))
         {
-            tutela_store::rewrap_signing_keys(&tx, vault).await?;
+            let n = tutela_store::rewrap_signing_keys(&tx, vault).await?;
+            records.push(key_record(iss, "rewrap", "all")?.detail("rewrapped", n));
             set = tutela_store::signing_keys(&tx).await?;
         }
+        deployment_audit(&tx, records).await?;
         tx.commit().await?;
         Ok(set)
     }
+
+    /// Rotates the signing key (`tutela_store::rotate_signing_key`), with its
+    /// record in the deployment's audit chain, in one transaction.
+    pub(crate) async fn rotate_signing_key(
+        &mut self,
+        vault: &tutela_vault::Vault,
+        iss: &tutela_contracts::tenant::Issuer,
+        times: tutela_store::KeyTimes,
+    ) -> Result<tutela_store::Rotation, DbError> {
+        let tx = self.0.transaction().await?;
+        let r = tutela_store::rotate_signing_key(&tx, vault, times).await?;
+        if r.made {
+            let millis = |t: std::time::SystemTime| {
+                t.duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+            };
+            let record = key_record(iss, "rotate", &r.next)?
+                .detail("next", r.next.clone())
+                .detail("signs_from_ms", millis(r.signs_from))
+                .detail("previous", r.previous.as_ref().map(|(k, _)| k.clone()))
+                .detail("retire_at_ms", r.previous.as_ref().map(|(_, t)| millis(*t)));
+            deployment_audit(&tx, vec![record]).await?;
+        }
+        tx.commit().await?;
+        Ok(r)
+    }
+
+    /// Denies a signing key (`tutela_store::deny_signing_key`), with its
+    /// record in the deployment's audit chain, in one transaction.
+    pub(crate) async fn deny_signing_key(
+        &mut self,
+        vault: &tutela_vault::Vault,
+        iss: &tutela_contracts::tenant::Issuer,
+        kid: &str,
+    ) -> Result<Option<String>, DbError> {
+        let tx = self.0.transaction().await?;
+        let replacement = tutela_store::deny_signing_key(&tx, vault, kid).await?;
+        let record = key_record(iss, "deny", kid)?
+            .detail("kid", kid)
+            .detail("replacement", replacement.clone());
+        deployment_audit(&tx, vec![record]).await?;
+        tx.commit().await?;
+        Ok(replacement)
+    }
+}
+
+/// A record about the deployment's signing keys, by `tutelad` itself.
+fn key_record(
+    iss: &tutela_contracts::tenant::Issuer,
+    verb: &str,
+    kid: &str,
+) -> Result<crate::audit::Record, crate::audit::BuildError> {
+    let tid = tutela_store::audit::deployment_tenant()
+        .map_err(|_| crate::audit::BuildError::new("deployment tenant"))?;
+    Ok(crate::audit::Record::new(
+        &TenantKey::new(iss.clone(), tid),
+        tutela_contracts::audit::Actor::new(crate::audit::system()?),
+        &format!("tutela_signing_key:{verb}"),
+        ("tutela_signing_key", kid),
+    )
+    .allowed(0))
+}
+
+async fn deployment_audit(
+    tx: &tokio_postgres::Transaction<'_>,
+    records: Vec<crate::audit::Record>,
+) -> Result<(), DbError> {
+    if records.is_empty() {
+        return Ok(());
+    }
+    let drafts = records
+        .into_iter()
+        .map(crate::audit::Record::build)
+        .collect::<Result<Vec<_>, _>>()?;
+    tutela_store::append_deployment_audit(tx, &drafts).await?;
+    Ok(())
 }
 
 /// A transaction inside one tenant. It reads as a

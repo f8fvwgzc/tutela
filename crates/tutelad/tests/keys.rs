@@ -255,3 +255,58 @@ async fn replicas_that_start_together_make_one_key() {
     assert_eq!(a.keys.published().len(), 1);
     d.finish().await;
 }
+
+/// The deployment's own audit chain (ADR-0034): the first key, a rotation
+/// and a denial through `KeyRing::rotate` and `KeyRing::deny`, each with its
+/// record, by `tutelad` itself, under the deployment's tenant id, which no
+/// token can enter.
+#[tokio::test]
+async fn tm20_signing_key_operations_are_recorded_in_the_deployment_chain() {
+    let Some(mut w) = own().await else { return };
+    w.refresh().await;
+    let first = w.st.keys.published();
+    assert_eq!(first.len(), 1);
+    let r = w.st.keys.rotate(&w.st.db).await.unwrap();
+    assert!(r.made);
+    let replacement = w.st.keys.deny(&w.st.db, &first[0]).await.unwrap();
+    assert!(w.st.keys.denied().contains(&first[0]));
+    let tx = w.d.owner.transaction().await.unwrap();
+    let report = tutela_store::verify_deployment_audit_chain(&tx)
+        .await
+        .unwrap();
+    let rows = tutela_store::deployment_audit_records(&tx, 0, 100)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert!(report.is_intact(), "{report:?}");
+    let recs: Vec<Value> = rows
+        .iter()
+        .map(|r| serde_json::from_str(&r.body).unwrap())
+        .collect();
+    let actions: Vec<&str> = recs.iter().map(|r| r["action"].as_str().unwrap()).collect();
+    assert_eq!(
+        actions,
+        [
+            "tutela_signing_key:create",
+            "tutela_signing_key:rotate",
+            "tutela_signing_key:deny"
+        ]
+    );
+    for r in &recs {
+        assert_eq!(r["actor"]["id"], tutelad::audit::SYSTEM);
+        assert_eq!(r["tenant"]["iss"], OWN_ISS);
+        assert_eq!(r["tenant"]["tid"], tutela_store::audit::DEPLOYMENT_TENANT);
+    }
+    assert_eq!(recs[0]["details"]["kid"], first[0].as_str());
+    assert_eq!(recs[1]["details"]["next"], r.next.as_str());
+    assert_eq!(recs[1]["details"]["previous"], first[0].as_str());
+    assert_eq!(recs[2]["details"]["kid"], first[0].as_str());
+    assert_eq!(
+        recs[2]["details"]["replacement"],
+        replacement.map_or(Value::Null, Value::from)
+    );
+    // No private key in any record.
+    let text = serde_json::to_string(&recs).unwrap();
+    assert!(!text.contains("\"d\""));
+    w.finish().await;
+}

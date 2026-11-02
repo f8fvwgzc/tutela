@@ -639,3 +639,60 @@ async fn a_delegated_token_is_exchanged_per_hop_and_never_longer() {
     assert_eq!(w.refused(&t, None, "crm-api").await, "invalid_target");
     w.finish().await;
 }
+
+/// Every delegated token issued has its audit.v1 record (ADR-0034): the
+/// person, the whole `act` chain, the audience, `run_id`, `node_id` and the
+/// `jti`; a refusal records its reason and the person.
+#[tokio::test]
+async fn tm20_a_delegated_token_is_recorded_with_its_whole_chain() {
+    let Some(mut w) = d().await else { return };
+    let person = w.person("kc-alice").await;
+    let one = w
+        .delegate(&person, &w.agent_token(&agent(1), &w.a.tid), AUD)
+        .await;
+    let (status, body) = w
+        .delegate_with(
+            &one,
+            Some(&w.agent_token(&agent(2), &w.a.tid)),
+            "symphony",
+            &[("node_id", "step-2")],
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let two = body["access_token"].as_str().unwrap().to_owned();
+    // An agent of no tenant here: refused, with its reason.
+    assert_eq!(
+        w.refused(&person, Some(&w.agent_token(&agent(9), &w.a.tid)), AUD)
+            .await,
+        "invalid_grant"
+    );
+    let key = w.a.key.clone();
+    let recs = common::audited(&mut w.d.owner, &key, "tutela_token:issue").await;
+    let delegated: Vec<&Value> = recs
+        .iter()
+        .filter(|r| r["details"]["kind"] == "delegated")
+        .collect();
+    assert_eq!(delegated.len(), 3, "{recs:?}");
+    let (c2, me) = (claims(&two).1, sub(&person));
+    let last = delegated[1];
+    assert_eq!(last["outcome"], "success");
+    assert_eq!(last["actor"]["kind"], "agent");
+    assert_eq!(last["actor"]["id"], agent(2).to_string());
+    assert_eq!(last["actor"]["on_behalf_of"], me.as_str());
+    assert_eq!(last["details"]["principal"], me.as_str());
+    assert_eq!(
+        last["details"]["act"],
+        json!([agent(2).to_string(), agent(1).to_string()])
+    );
+    assert_eq!(last["details"]["aud"], "symphony");
+    assert_eq!(last["details"]["run_id"], "run-1");
+    assert_eq!(last["details"]["node_id"], "step-2");
+    assert_eq!(last["details"]["jti"], c2["jti"]);
+    let refused = delegated[2];
+    assert_eq!(refused["outcome"], "denied");
+    assert_eq!(refused["reason"], "actor_unknown");
+    assert_eq!(refused["details"]["principal"], me.as_str());
+    let text = serde_json::to_string(&recs).unwrap();
+    assert!(!text.contains(&one) && !text.contains(&two) && !text.contains("opaque"));
+    w.finish().await;
+}

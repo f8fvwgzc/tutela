@@ -18,10 +18,12 @@
 //! - [`keys`]: the service's own issuer: its signing keys and its JWKS.
 //! - [`exchange`]: token exchange (RFC 8693) at `POST /oauth2/token`.
 //! - [`revocation`]: raised epochs and disabled principals, per tenant.
+//! - [`audit`]: the records `tutelad` writes to the local audit log.
 //! - [`telemetry`]: JSON logs and Prometheus metrics.
 //! - [`server`]: the two listeners and the graceful shutdown.
 
 pub mod api;
+pub mod audit;
 pub mod authz;
 pub mod cache;
 pub mod config;

@@ -78,3 +78,28 @@ T21: caught by 1 test(s) - a chain past four actors is issued
       tm02_a_chain_past_four_actors_fails
 T22: caught by 1 test(s) - a disabled actor's delegated token is still accepted
       tm02_a_disabled_agent_or_person_revokes_the_delegated_token
+
+A01: caught by 1 test(s) - the publish record is written outside the change's transaction, before it
+      tm20_model_operations_leave_their_records
+A02: caught by 1 test(s) - a close that did not happen is recorded as done
+      tm20_model_operations_leave_their_records
+A03: caught by 1 test(s) - the verifier does not check the link to the record before
+      tests_pg::tm20_a_gap_or_an_edited_record_is_found
+A04: caught by 1 test(s) - the verifier does not see a missing record
+      tests_pg::tm20_a_gap_or_an_edited_record_is_found
+A05: caught by 1 test(s) - the verifier does not see the last records gone
+      tests_pg::tm20_a_gap_or_an_edited_record_is_found
+A06: caught by 1 test(s) - a record of another tenant goes into this tenant's chain
+      tests_pg::tm20_a_chain_is_its_tenants_alone
+A07: caught by 1 test(s) - the database lets a record be changed or removed
+      tests_pg::tm20_the_owner_cannot_change_or_delete_a_record
+A08: caught by 5 test(s) - the service role may change the audit log
+      tm20_a_write_check_deny_is_recorded_with_its_fields, tm20_the_service_role_cannot_change_or_delete_a_record, tm20_explain_and_simulate_record_who_asked_about_whom, tm20_model_operations_leave_their_records and 1 more
+A09: caught by 1 test(s) - a refused exchange of a known tenant leaves no record
+      tm20_every_token_issued_and_refused_has_its_record
+A10: caught by 1 test(s) - an explain answers with no record of who asked
+      tm20_explain_and_simulate_record_who_asked_about_whom
+A11: caught by 2 test(s) - a write-check deny leaves no record
+      tm20_the_service_role_cannot_change_or_delete_a_record, tm20_a_write_check_deny_is_recorded_with_its_fields
+A12: caught by 1 test(s) - a token may speak as tutelad itself
+      no_token_may_speak_as_the_service_itself

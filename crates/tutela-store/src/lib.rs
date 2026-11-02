@@ -31,6 +31,7 @@
 
 pub mod approval;
 mod approvers;
+pub mod audit;
 mod bindings;
 mod connect;
 mod isolation;
@@ -55,6 +56,10 @@ use tutela_pdp::model::Model;
 use tutela_pdp::{LoadError, PathEntry, Pdp, TenantData};
 
 pub use approvers::{Approver, add_approver, approver, approver_id, approvers, revoke_approver};
+pub use audit::{
+    AuditEntry, BrokenLink, ChainProblem, ChainReport, append_audit, append_deployment_audit,
+    audit_records, deployment_audit_records, verify_audit_chain, verify_deployment_audit_chain,
+};
 pub use bindings::{
     Assignment, AssignmentQuery, GroupInfo, MAX_PAGE, ancestors, assignment, assignments,
     assignments_for, group_members, groups, groups_of, members_of, scopes_below, tenants,

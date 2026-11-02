@@ -12,8 +12,47 @@ use std::time::Duration;
 
 use tokio::sync::watch;
 
+use tutela_contracts::audit::{Actor, AuditDraft};
+use tutela_contracts::tenant::TenantKey;
+use tutela_pdp::Subject;
+
+use crate::audit::{BuildError, Record, system};
 use crate::db::{Db, DbError};
 use crate::telemetry::Metrics;
+
+/// The audit records of one sweep of `tenant` (ADR-0034): one per removed
+/// assignment, by `tutelad` itself, at the new revision.
+///
+/// # Errors
+///
+/// A record that cannot be built: a bug.
+pub(crate) fn records(
+    tenant: &TenantKey,
+    gone: &tutela_store::Expired,
+) -> Result<Vec<AuditDraft>, BuildError> {
+    let actor = Actor::new(system()?);
+    gone.assignments
+        .iter()
+        .map(|a| {
+            let subject = match &a.subject {
+                Subject::Principal(p) => p.to_string(),
+                Subject::Group(g) => format!("group:{g}"),
+            };
+            Record::new(
+                tenant,
+                actor.clone(),
+                "tutela_assignment:expire",
+                ("tutela_assignment", a.id.as_str()),
+            )
+            .allowed(gone.rev)
+            .rules(std::slice::from_ref(&a.id))
+            .detail("subject", subject)
+            .detail("role", a.role.as_str())
+            .detail("scope", format!("{}:{}", a.scope.type_name, a.scope.id))
+            .build()
+        })
+        .collect()
+}
 
 /// What one sweep did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

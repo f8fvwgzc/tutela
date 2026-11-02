@@ -96,6 +96,36 @@ fn may_explain(
     }
 }
 
+/// The record of an explain or a simulate: who asked about whom, on what.
+/// It is written before the answer leaves (ADR-0034): these read other
+/// people's access.
+async fn record_asked(
+    state: &AppState,
+    tenant: &crate::tenant::Tenant,
+    id: &Identity,
+    op: &'static str,
+    ask: &Ask,
+    rev: u64,
+    allowed: bool,
+) -> Result<(), Problem> {
+    let actor = crate::audit::actor_of(id).ok_or_else(Problem::forbidden)?;
+    let record = crate::audit::Record::new(
+        tenant.key(),
+        actor,
+        &format!("tutela_access:{op}"),
+        ("tutela_principal", &ask.subject.to_string()),
+    )
+    .allowed(rev)
+    .detail("subject", ask.subject.to_string())
+    .detail("action", ask.action.to_string())
+    .detail(
+        "resource",
+        format!("{}:{}", ask.resource.type_name, ask.resource.id),
+    )
+    .detail("answer", if allowed { "allow" } else { "deny" });
+    crate::audit::write_alone(state, tenant, vec![record]).await
+}
+
 fn counted<T>(state: &AppState, op: &'static str, r: Result<T, Problem>) -> Result<T, Problem> {
     if r.is_err() {
         state.metrics.count_decision(op, Outcome::Error);
@@ -147,8 +177,10 @@ pub async fn explain(
         may_explain(state, snapshot, tenant.key(), id, &ask.resource, need)?;
         let e = snapshot
             .pdp
-            .explain(&ask.request(tenant.key().clone(), need))
+            .explain(&ask.clone().request(tenant.key().clone(), need))
             .map_err(|e| pdp_problem(&e))?;
+        let rev = e.decision.rev;
+        record_asked(state, &tenant, id, OP, &ask, rev, e.decision.is_allowed()).await?;
         Ok(ExplainResult {
             decision: e.decision.is_allowed(),
             context: ExplainContext { tutela: e },
@@ -312,7 +344,7 @@ pub async fn simulate(
         let key = tenant.key().clone();
         let (rev, current, active) = (now.bundle.rev, now.bundle.data.clone(), now.model);
         let candidate = model.unwrap_or_else(|| Arc::clone(&active));
-        let req = ask.request(key.clone(), None);
+        let req = ask.clone().request(key.clone(), None);
         let answers = tokio::task::spawn_blocking(move || {
             let mut before = Pdp::new();
             before
@@ -329,6 +361,7 @@ pub async fn simulate(
         .await
         .map_err(|_| Problem::stale("unavailable"))??;
         let (d0, d1) = answers;
+        record_asked(state, &tenant, id, OP, &ask, rev, d1.is_allowed()).await?;
         Ok(SimulateResult {
             decision: d1.is_allowed(),
             changed: d0 != d1,
