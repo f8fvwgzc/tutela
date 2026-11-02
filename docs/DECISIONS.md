@@ -64,6 +64,7 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0045](#adr-0045-the-audit-producer-key-sealed-in-the-database-rotated-with-its-old-keys-kept) | The audit producer key sealed in the database, rotated with its old keys kept | Accepted |
 | [0046](#adr-0046-the-cli-against-tutelad-apply-with-the-impact-report-apps-and-keys-through-the-key-store) | The CLI against `tutelad`: `apply` with the impact report, `apps`, and `keys` through the key store | Accepted |
 | [0047](#adr-0047-the-javascript-sdks-a-pnpm-workspace-under-sdk-checked-by-make) | The JavaScript SDKs: a pnpm workspace under `sdk/`, checked by `make` | Accepted |
+| [0048](#adr-0048-tutela-js-the-browser-token-flow-in-memory-typed-errors-and-a-retry-that-never-makes-twice) | `tutela-js`: the browser token flow in memory, typed errors, and a retry that never makes twice | Accepted |
 
 ---
 
@@ -1740,3 +1741,36 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 - **npm workspaces.** No `minimumReleaseAge`, and install scripts run by default.
 - **A bundler (tsup, Vite library mode).** Another tool in the supply chain; `tsc` already emits what bundlers and node take.
 - **`packages/` at the root.** AGENTS.md section 2 already planned `sdk/js` and `sdk/react`.
+
+---
+
+## ADR-0048: `tutela-js`: the browser token flow in memory, typed errors, and a retry that never makes twice
+
+**Status:** Accepted, 2026-11-02. Phase B, part 4b1. It builds `@f8fvwgzc/tutela-js` on the toolchain of [ADR-0047](#adr-0047-the-javascript-sdks-a-pnpm-workspace-under-sdk-checked-by-make), for the token flow and the routes of the ROADMAP notes for part 4b, and the Console of part 4b2.
+
+**Context.** The Console is a public client in a browser (ADR-0044 item 7). A person signs in at Keycloak; `tutelad` exchanges an external token once (CONTRACTS.md 4.8) and issues an admin token only after step-up (ADR-0032); the admin token is refused outside the admin API and the person's `tutela-authz` token on it. TM-06 keeps tokens out of browser storage. Pipelines and cores written in TypeScript call the same routes with a service token. Problem documents, pages with `next_after`, the `rev` of a write, the ETag of the permission map and `Retry-After` are in CONTRACTS.md 7.1, 7.5 and 7.13.
+
+**Decision.**
+
+1. **One client, two ways to authenticate.** `new TutelaClient({ baseUrl, auth })`: `auth.kind = "browser"` with a `getUpstreamToken(reason)` callback, or `"service"` with `getToken(audience)`. Each route knows its audience: the admin API (`/v1/admin`, `/v1/models`, explain, simulate) takes the admin token, the check API (`/v1/whoami`, `/v1/authz/permissions`) the `tutela-authz` token; a service returns its own token for both.
+2. **The browser flow.** The session exchanges the upstream token at `POST /oauth2/token` (token exchange, no client authentication) for a `tutela-authz` token, then exchanges **that** token for the admin token (`audience=tutela-admin`). One upstream token gives both, so each upstream token is exchanged once. `tutelad` copies `acr` into its own token, so the step-up check holds on the second exchange. The client never keeps a token past its `exp`, the `exp` of the token it came from or `expires_in`; it renews 30 s before, from a fresh upstream token. It refuses to send an upstream token it sent before (by `jti`) with `UpstreamTokenReusedError`, before the request: a lost answer may still have used the token. Exchanges are single-flight. A 401 drops the session's tokens and starts again from upstream once.
+3. **Step-up is a state, not only an error.** The `invalid_grant` "step-up authentication is required" answer is `StepUpRequiredError`; the session keeps its `tutela-authz` token (the check API still works), says `step-up-required`, and `stepUp()` starts again after the person did MFA.
+4. **Tokens live in memory only.** No storage API is used anywhere in the package; Biome refuses one in `sdk/*/src`, and a test runs the whole flow in jsdom with every storage API watched. `fetch` runs with `credentials: "omit"` (no cookie of the page's origin goes to `tutelad`) and `redirect: "error"`; a `baseUrl` with credentials is refused.
+5. **Typed errors.** A problem document becomes a `ProblemError` subclass by status and code, with `status`, `code`, `title`, `detail`, `retryAfter` and `requestId`: `NotHeldError` splits the counts-only detail into `gains`; `MoveRefusedError` parses the scopes that wait for an owner into `waitingFor`. A body that is not a problem gets the code of its status. Token-endpoint refusals are `TokenExchangeError`.
+6. **A retry that never makes twice.** A 503 is retried after `Retry-After`, at most `maxRetries` (2) times and only when `Retry-After` is at most `maxRetryAfterSecs` (5); a longer wait is thrown for the page to show. Only calls that are safe to send again are retried: reads, and writes the server refuses a second time (an assignment is `exists`, a removal `not_found`, a publish `version_conflict`). A call that makes something (an org, an agent, an app or its secret, a webhook or its secret, a proposal) is never retried by the client.
+7. **The revision.** The client keeps the highest `rev` its writes answered and sends it as `at_least_revision` on the permission map and as `context.at_least_revision` on explain and simulate. Reads never move it.
+8. **The permission map.** `permissions({resource, actions})` asks for the caller itself (from `GET /v1/whoami`, asked once), with `ui_keys: []` unless asked, sends `If-None-Match` with the tag it holds and keeps the map on 304. `can(action, resource)` answers from loaded maps and is `false` for anything not loaded.
+9. **Principals stay out of URLs.** Lists by subject, principal state and group members send principals in JSON bodies (CONTRACTS.md 9.5); ids in a path are encoded.
+10. **The model as text.** `permissionMatrix(roles)` builds the matrix of the ROADMAP notes (a field never above its item level; a feature may be). `setRoleGrants(source, draft)` rewrites one role's `grants` in the active manifest (from `GET /v1/models/active`, added in this part) and leaves every other byte; it refuses `owner`, a `[roles]` table and dotted grants with `ModelEditError`. It is a text edit: `tutelad` compiles, reports the impact and refuses a widening change without an approval token.
+11. **Tested on both sides.** Unit tests against a mocked fetch for every error path; an integration test (`crates/tutelad/tests/js_client.rs` runs `sdk/js/test-integration` with vitest) against a real `tutelad` on a real Postgres, in `make js-it`.
+
+**Consequences.**
+- The Console (part 4b2) and a product embedding the admin components need the page's origin to reach `tutelad`: either `tutelad` serves the page (the Console), or the product proxies `/oauth2/token`, `/v1/admin`, `/v1/models`, `/v1/authz` and `/v1/whoami` on its own origin. `tutelad` sends no CORS headers yet ([#135](https://github.com/f8fvwgzc/tutela/issues/135)).
+- A product that keeps backend-for-frontend (TM-06's default) uses service mode on its server, or a `custom` token source that asks its backend.
+- A 503 longer than 5 s, or on a call that makes something, reaches the page as `UnavailableError` with `retryAfter`.
+
+**Alternatives considered.**
+- **Exchange the upstream token twice, once per audience.** `tutelad` refuses the second: each external token is exchanged once.
+- **Exchange the upstream token for the admin token first.** An admin token cannot be the subject of another exchange, and without step-up the person would get nothing, not even the check API's token.
+- **Keep tokens in `sessionStorage` to survive a reload.** TM-06 refuses it; a reload signs in again through Keycloak's own session.
+- **Retry every 503.** A lost answer to a create would make two apps or two webhook secrets.
