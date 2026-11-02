@@ -135,3 +135,20 @@ W07: caught by 1 test(s) - a failing delivery is retried for ever
       failures_are_retried_in_order_per_subject_then_dead_lettered
 W08: caught by 1 test(s) - the old secret stops signing at once on a rotation
       tm19_a_rotated_secret_overlaps_then_ends
+
+X01: caught by 1 test(s) - a stream joins another tenant's feed
+      denied_principals_get_no_stream_and_a_stream_shows_one_tenant
+X02: caught by 1 test(s) - a person may listen to the tenant's events
+      denied_principals_get_no_stream_and_a_stream_shows_one_tenant
+X03: caught by 1 test(s) - a resumed stream skips what it missed
+      a_service_follows_its_tenants_events_and_resumes_after_its_last_id
+X04: caught by 1 test(s) - an unknown Last-Event-ID resumes with no reset
+      an_unknown_last_event_id_gets_reset
+X05: caught by 1 test(s) - a slow client is never reset
+      a_slow_client_is_reset_and_streams_are_bounded
+X06: caught by 1 test(s) - a replica opens streams without bound
+      a_slow_client_is_reset_and_streams_are_bounded
+X07: caught by 1 test(s) - a denied kid is never pushed after the first message
+      tm15_a_denied_kid_and_a_revocation_reach_a_products_verifier
+X08: caught by 1 test(s) - a stream outlives its age limit
+      a_slow_client_is_reset_and_streams_are_bounded

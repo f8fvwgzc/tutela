@@ -56,6 +56,8 @@ pub struct AppState {
     pub dev_mode: bool,
     /// `TUTELA_IMPACT_MAX_WORK`.
     pub impact_work: usize,
+    /// The event streams of this replica (`GET /v1/events`).
+    pub events: Arc<crate::stream::Hub>,
 }
 
 /// An error answer: `application/problem+json` (RFC 9457, CONTRACTS.md 7.1).
@@ -303,6 +305,7 @@ pub fn api_router(state: &AppState, grpc: Router, request_timeout: Duration) -> 
         )
         .route("/v1/authz/permissions", post(authz::http::permissions))
         .route("/v1/authz/write-check", post(authz::http::write_check))
+        .route("/v1/events", get(crate::stream::events))
         .route(
             "/.well-known/authzen-configuration",
             get(authz::http::metadata),
@@ -531,6 +534,7 @@ async fn readyz(State(state): State<AppState>) -> Response {
 async fn metrics(State(state): State<AppState>) -> Response {
     let (size, available) = state.db.sizes();
     state.metrics.set_pool(size, available);
+    state.metrics.set_open_streams(state.events.open_streams());
     match state.metrics.render() {
         Ok(text) => (
             [(

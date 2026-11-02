@@ -22,6 +22,7 @@
 //! - [`audit`]: the records `tutelad` writes to the local audit log.
 //! - [`telemetry`]: JSON logs and Prometheus metrics.
 //! - [`webhooks`]: delivery of the outbox's events to webhooks.
+//! - [`stream`]: `GET /v1/events`, a tenant's events as Server-Sent Events.
 //! - [`server`]: the two listeners and the graceful shutdown.
 
 pub mod api;
@@ -37,6 +38,7 @@ pub mod keys;
 pub mod models;
 pub mod revocation;
 pub mod server;
+pub mod stream;
 pub mod telemetry;
 pub mod tenant;
 pub mod webhooks;

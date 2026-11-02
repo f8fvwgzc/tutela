@@ -22,6 +22,7 @@
 //! never hold the token.
 
 pub mod cache;
+pub mod events;
 pub mod http;
 mod jwks;
 pub mod sql;

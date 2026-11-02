@@ -317,6 +317,10 @@ pub fn config(database_url: &str, trust: TrustFile) -> Config {
         // Tests that deliver webhooks run the relay themselves.
         webhook_poll: Duration::ZERO,
         event_retention: Duration::from_secs(7 * 24 * 3600),
+        streams: tutelad::stream::StreamSettings {
+            poll: Duration::from_millis(100),
+            ..tutelad::stream::StreamSettings::default()
+        },
     }
 }
 
@@ -359,6 +363,7 @@ pub fn state_with(config: &Config, issuer: &Issuer, delegation: bool) -> AppStat
     let db = Db::connect(&config.database_url, config.pool_size).unwrap();
     let metrics = Arc::new(Metrics::new());
     let keys = Arc::new(config.key_ring().unwrap());
+    let events_keys = Arc::clone(&keys);
     let other: Arc<dyn JwksSource> = Arc::new(Keys(issuer.jwks()));
     let clock: Arc<dyn Clock> = Arc::new(Now);
     AppState {
@@ -382,6 +387,11 @@ pub fn state_with(config: &Config, issuer: &Issuer, delegation: bool) -> AppStat
             db.clone(),
             config.limits,
             Arc::clone(&metrics),
+        )),
+        events: Arc::new(tutelad::stream::Hub::new(
+            db.clone(),
+            Arc::clone(&events_keys),
+            config.streams,
         )),
         db,
         metrics,
@@ -783,4 +793,24 @@ pub async fn events_of(
     let e = tutela_store::events_after(&tx, key, 0, 1000).await.unwrap();
     tx.commit().await.unwrap();
     e
+}
+
+/// A product's verifier: it trusts the test issuer for tenants A and B with
+/// the service's audience, as a product that feeds it from `tutelad`'s
+/// events would.
+pub fn product_verifier(w: &World) -> Verifier {
+    let vc = config(&w.d.service_url, trust(&[w.a.tid.clone(), w.b.tid.clone()])).verifier_config();
+    let vc = VerifierConfig {
+        issuers: vc
+            .issuers
+            .into_iter()
+            .map(|i| IssuerConfig {
+                algs: vec![Alg::Es256],
+                ..i
+            })
+            .collect(),
+        cache: CacheRules::default(),
+        ..vc
+    };
+    Verifier::with(vc, Arc::new(Keys(w.issuer.jwks())), Arc::new(Now))
 }

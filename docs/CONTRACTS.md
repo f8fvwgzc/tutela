@@ -41,7 +41,7 @@ Only the left column exists in `tutela-contracts` after the first commit. Everyt
 | 5 | API keys | Parse, format check, display prefix | Hashing, storage, verification, rotation (A, B) |
 | 6 | Decision | The Decision object: effect, level, field mask, rule ids, reason, rev, obligations | `Pdp::check`, `Pdp::batch`, `Pdp::list_filter`, `Pdp::write_check` (A; built in `tutela-pdp`, [ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)) |
 | 7 | Remote check API | — | Built in `tutelad` (B): evaluation, search, the permission map, write-check and gRPC. |
-| 8 | Events | CloudEvents envelope, event type grammar and names | Outbox and webhook delivery (B, **built**: 8.4, 8.5, [ADR-0035](DECISIONS.md#adr-0035-the-outbox-events-numbered-per-tenant-in-commit-order), [ADR-0036](DECISIONS.md#adr-0036-webhooks-delivered-from-the-outbox-registered-by-part-3c)), SSE (B) |
+| 8 | Events | CloudEvents envelope, event type grammar and names | Outbox, webhook delivery and SSE (B, **built**: 8.4 to 8.6, [ADR-0035](DECISIONS.md#adr-0035-the-outbox-events-numbered-per-tenant-in-commit-order) to [ADR-0037](DECISIONS.md#adr-0037-the-event-stream-services-only-one-feed-per-tenant-bounded)) |
 | 9 | audit.v1 | The audit.v1 record | Local hash chain and sequence numbers (B, **built**: 9.4, [ADR-0034](DECISIONS.md#adr-0034-the-local-audit-log-one-chain-per-tenant-written-with-the-change)); producer signatures and forwarding to attache's evidence ledger (B) |
 | 10 | Versioning | The rules apply from the first commit | Deprecation headers on live endpoints (B) |
 
@@ -1593,6 +1593,11 @@ A Server-Sent Events stream (`text/event-stream`) for browsers and SDK caches.
 - Auth: a bearer token for SDKs; the session cookie for browsers (through the product backend). Tokens never go into the URL.
 - A stream carries only events of the caller's tenant.
 - Optional filter: `?types=` with a comma-separated list of event types.
+- **Built** ([ADR-0037](DECISIONS.md#adr-0037-the-event-stream-services-only-one-feed-per-tenant-bounded)):
+  - **Who:** a service (`sa`, `key`) of the tenant with a token of `tutelad`'s own audience. A person, an agent, a delegated or an external token: 403. No token or an admin token: 401. A bad `types`: 400.
+  - **Control messages**, with no `id:`: `event: denied_kids` with `data: {"iss", "jwks_uri", "kids"}` (the whole `kid` deny-list of `tutelad`'s issuer, first and on every change: deny each `kid` and refetch the JWKS); `event: rev` with `data: {"rev"}` (the tenant's revision, first and on every change); `event: reset` with `data: {}` (reload; also sent before a stream ends because it fell behind).
+  - **Bounds:** at most `TUTELA_SSE_MAX_STREAMS` per replica (then 503 `too_many_streams`), each for at most `TUTELA_SSE_MAX_SECS` and never past its token's `exp`; a stream more than `TUTELA_SSE_BUFFER` messages behind gets `reset` and ends. A stream ends when its principal is revoked or disabled, and when the replica shuts down. Reconnect with `Last-Event-ID`.
+  - Keep-alive comments every 15 s. `Cache-Control: no-store`.
 
 ---
 
@@ -1778,7 +1783,7 @@ When a credential format or key changes:
 
 | # | Question | Proposal | When |
 |---|---|---|---|
-| 1 | The event that pushes the signing-key `kid` deny-list to SDKs ([THREAT-MODEL.md](THREAT-MODEL.md), TM-15). It is not in the v1 event list yet. | Add `tutela.signing_key.revoked.v1` (additive), sent over SSE and webhooks. | Phase B |
+| 1 | The event that pushes the signing-key `kid` deny-list to SDKs ([THREAT-MODEL.md](THREAT-MODEL.md), TM-15). | **Answered** by [ADR-0037](DECISIONS.md#adr-0037-the-event-stream-services-only-one-feed-per-tenant-bounded): an SSE control message, `denied_kids`, with the whole list (8.6); not an event type, because signing keys belong to the deployment, not to a tenant. | Phase B |
 | 2 | The final audience name of the remote check API. | `tutela-authz`. | Phase B |
 | 3 | The final names of the obligation kinds (6.3). The admin action names (2.3) are **fixed** ([MANIFEST.md §6](MANIFEST.md#6-admin-keys), [ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)). | As written in this file. | Phase A |
 | 4 | The env name for the previous key pepper. | `TUTELA_KEY_PEPPER_PREVIOUS`. | Phase A |
