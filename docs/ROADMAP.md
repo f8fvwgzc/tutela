@@ -110,7 +110,7 @@ A gate is a list of checks. A phase is not done until its gate passes. No produc
 
 ### Phase B status
 
-**State on 2026-11-02: parts 1, 2a and 2b are merged. Phase B is not done, and the service gate does not pass yet.** v0.2.0 is not tagged. attache and texc-symphony stay on `v0.1.0`.
+**State on 2026-11-02: parts 1, 2a, 2b and 3a are merged. Phase B is not done, and the service gate does not pass yet.** v0.2.0 is not tagged. attache and texc-symphony stay on `v0.1.0`.
 
 Done:
 
@@ -131,17 +131,19 @@ Done:
 | `tutelad`'s own issuer: signing keys sealed by `tutela-vault`, the JWKS without a token, rotation with pre-publication, a `kid` deny-list, tenants made at runtime trusted through the directory; `TUTELA_MASTER_KEY`, `TUTELA_KEY_PEPPER` and `TUTELA_ISSUER` required at start-up | Done (part 3a) | [ADR-0030](DECISIONS.md#adr-0030-tutelads-own-issuer-signing-keys-the-jwks-and-paths-without-a-token) |
 | Token exchange (RFC 8693) at `POST /oauth2/token`: an external issuer's token for a Tutela access token, the tenant from the trust list, just-in-time provisioning by `(iss, sub)`, each external token once; own tokens for another audience; a raised `epoch` or a disabled principal refused on the API | Done (part 3a) | [ADR-0031](DECISIONS.md#adr-0031-token-exchange-the-tenant-from-the-trust-list-a-person-from-iss-sub) |
 | Admin tokens: `aud=tutela-admin` from token exchange, for a person after step-up (`TUTELA_ADMIN_ACR`), at most 300 s; the model routes, explain and simulate take them from a person and a `tutela-authz` token from a service (a pipeline); every other route refuses them | Done (part 3a) | [ADR-0032](DECISIONS.md#adr-0032-admin-tokens-a-person-steps-up-a-pipeline-keeps-its-service-token) |
+| Delegated agent tokens (RFC 8693, `act`, `typ: agent+jwt`) from token exchange, only for `delegation_aware` audiences, at most 4 actors, an agent registered and enabled in the tenant (an access token of an agent, or attache's JWT-SVID on `/ns/<ns>/svc/<service>`), 60 to 120 s; on in `verifier_config`; a disabled agent or person stops them | Done (part 3a) | [ADR-0033](DECISIONS.md#adr-0033-delegated-agent-tokens-from-token-exchange) |
 
 Not started:
 
 | Work | Part | Note |
 |---|---|---|
-| Signed bundles for PDP caches and offline checks | 3 | After token exchange and SSE ([ADR-0024](DECISIONS.md#adr-0024-signed-bundles-wait-for-part-3)). Their `expires_at` must honour `next_expiry`. |
+| Signed bundles for PDP caches and offline checks | 3b | After SSE ([ADR-0024](DECISIONS.md#adr-0024-signed-bundles-wait-for-part-3)). Their `expires_at` must honour `next_expiry`. |
 | `tutela apply` against `tutelad`, `tutela apps create`, `tutela keys rotate` | 4 | `tutela apply` calls `POST /v1/models/publish`, per tenant. |
-| Webhooks, SSE `/v1/events` | 3 | |
-| Local hash-chained audit log | 3 | `expire_assignments` returns what it removed, so the sweep can write audit in its transaction. |
-| Delegated agent tokens | 3 | Off in the verifier today (`verifier_config`). |
-| `tutela.admin.v1`, org lifecycle events, soft-delete of tenants | 3 | `grant_service` gives no write on `tenant` yet. |
+| Webhooks, SSE `/v1/events` | 3b | |
+| Local hash-chained audit log | 3b | `expire_assignments` returns what it removed, so the sweep can write audit in its transaction. |
+| `tutela.admin.v1`, agent principal management, org lifecycle events, soft-delete of tenants | 3c | `grant_service` gives no write on `tenant` yet. The store calls for agents and revocation exist (part 3a). |
+| A test of token exchange against a real Keycloak ([#87](https://github.com/f8fvwgzc/tutela/issues/87)) | open | No image could be pulled; tested against a local signer of Keycloak-shaped tokens. |
+| Client authentication at the token endpoint | 4 | With apps (`tutela apps create`): bind `azp` to the client (ADR-0031). |
 | Tutela Console and embeddable admin components | 4 | |
 | Helm chart and bootstrap job; the OCI image ([#49](https://github.com/f8fvwgzc/tutela/issues/49)) | 4 | The chart must set the values in `deploy/tutelad.env`, including `RUST_BACKTRACE=1` and `RUST_LIB_BACKTRACE=0`. |
 | OTLP export of traces | open | Logs carry the `traceparent` trace id today. |
@@ -156,7 +158,7 @@ The service gate:
 | 2+ replicas | **Passes**: two real `tutelad` processes on one Postgres answer together, share a sweep (one expiry, one revision), and one keeps serving when the other stops (`crates/tutelad/tests/ha.rs`) |
 | Bundle expiry | **Half.** The cache half passes: a replica's snapshot stops at its age limit and at `next_expiry`, also during an outage, and fails closed (`crates/tutelad/tests/ha.rs`). Signed bundles are **not built** ([ADR-0024](DECISIONS.md#adr-0024-signed-bundles-wait-for-part-3)), so this check stays open |
 | A revoked role takes effect within the documented delay | **Passes on replicas**: documented at most 1.5 s, measured p50 0.61 s, worst 1.010 s over 60 rounds under steady traffic. The test fails above 1.5 s. A replica cut off from the database stops at the age limit of the action, also tested ([PERMISSION-MODEL.md 16.1](PERMISSION-MODEL.md#161-how-long-until-a-revocation-takes-effect)) |
-| Sign-in, the permission map and runtime role editing, end to end | **Not built.** Runtime role editing exists in the service: a tenant publishes its own model through `tutelad` (ADR-0026). Sign-in waits for token exchange (part 3) and the Console (part 4) |
+| Sign-in, the permission map and runtime role editing, end to end | **Not built.** The service parts exist: a Keycloak-shaped sign-in becomes a Tutela token by token exchange, which the check API and the permission map accept (part 3a, `crates/tutelad/tests/exchange.rs`), and a person with a stepped-up admin token edits the tenant's model (ADR-0026, ADR-0032). The Console (part 4) and a test against a real Keycloak ([#87](https://github.com/f8fvwgzc/tutela/issues/87)) are missing |
 
 #### Notes for part 2b
 
@@ -183,6 +185,8 @@ Read these with [ADR-0021](DECISIONS.md#adr-0021-the-check-api-one-code-path-a-s
 
 #### Notes for part 3
 
+Part 3a is done; these notes stay for what they say about the code. The notes for part 3b follow.
+
 Read these with [ADR-0025](DECISIONS.md#adr-0025-moves-and-links-in-write_check) to [ADR-0029](DECISIONS.md#adr-0029-two-person-publish).
 
 - **New code.** `authz/write.rs` (`write_check`), `authz/explain.rs` (explain, simulate), and `models/` (`mod.rs` the operations, `wire.rs`, `http.rs`). `tutela-pdp` has `moves.rs`, `impact.rs` (the before/after comparison, shared by moves and the report) and `explain.rs`. `tutela-store` has `models.rs`, `proposals.rs` and `approval.rs` (the token, moved from the CLI). `crates/tutelad/mutants/mutants.py` plants bugs in the service; it is not part of `make`.
@@ -199,6 +203,32 @@ Read these with [ADR-0025](DECISIONS.md#adr-0025-moves-and-links-in-write_check)
 - **`tutela.admin.v1`.** The model routes are HTTP only; give them gRPC methods there. `set_boundary` needs an admin route that checks `manage_boundaries` on the scope.
 - **The publish API for `tutela apply` (part 4):** `POST /v1/models/impact {source}` gives `version`, `from`, `to`, `class`, `diff` and the report; then `POST /v1/models/publish {source, expected_version, approval}`. With two-person on, `POST /v1/models/proposals` and a second person's `POST …/approve`. A token for `tutelad` needs `tutela approve --tenant <tid>`. The error codes are in CONTRACTS.md 7.9.
 - **Open limits**, each in its ADR: a type that stopped being a container can hold rows the model does not show (moves, ADR-0025); `restricted_links` and `ai_reach` are not read; a tenant cannot go back to following the app's manifest (ADR-0026); a large tenant with a changed role held by a group of everyone reaches the report's bound (ADR-0027); proposals have no expiry (ADR-0029).
+
+#### Notes for part 3b
+
+Read these with [ADR-0030](DECISIONS.md#adr-0030-tutelads-own-issuer-signing-keys-the-jwks-and-paths-without-a-token) to [ADR-0033](DECISIONS.md#adr-0033-delegated-agent-tokens-from-token-exchange) and CONTRACTS.md 4.8.
+
+- **New code in part 3a.** `tutelad`: `keys.rs` (the `KeyRing`, the `Signer` trait, `OwnJwks`, the refresh job), `exchange.rs` (`Audiences`, the token endpoint, admin and delegated tokens), `revocation.rs` (the per-tenant book of raised epochs and disabled principals, and the middleware in `api.rs` that refuses such tokens with step `epoch`), `Tenant::exchanged`. `api.rs` has three routers: the public paths (`PUBLIC_PATHS`, no token), the admin routes (their own token check, `admin_auth`), and the rest (`AuthLayer`). `tutela-store`: `signing_keys.rs` and `principals.rs`, migrations 6 and 7. Mutants T01 to T23 are in `crates/tutelad/mutants/mutants.py`.
+- **The key store** (`tutela_store::signing_keys`, for `tutela keys rotate` in part 4): `rotate_signing_key(tx, vault, tutelad::keys::rotation_times(TUTELA_JWKS_CACHE_SECS))`, `deny_signing_key(tx, vault, kid)`, `ensure_signing_key`, `rewrap_signing_keys`, `signing_keys`. A replica reads the table every `TUTELA_KEY_REFRESH_SECS`. Rotation is started by an operator; there is no timer.
+- **Signing bundles.** Sign with `KeyRing::signer()` (the `Signer` trait), not a new key store. A bundle verifier reads the same JWKS. Keep the bundle's `kid` on the deny-list rules, and decide whether bundles need their own `typ`.
+- **The `kid` deny-list over SSE** (TM-15): `KeyRing::denied()` is the list to push; `Verifier::forget_jwks` is the forced refetch a receiver runs.
+- **Events to emit** (CONTRACTS.md 8), in the transaction of the change: `tutela.session.revoked.v1` from `revoke_sessions` and `tutela.principal.disabled.v1` from `set_disabled`, each with the new `epoch`, so an SDK's `EpochBook` refuses old tokens (CONTRACTS.md 4.2 step 9). Until they exist, a product waits for the token to expire. Provisioning bumps no revision and needs no event.
+- **What the audit log must record for tokens** (one `audit.v1` record each; never a token, never an e-mail):
+  - every token issued: the kind (`access`, `admin`, `delegated`), its `jti`, the principal, the tenant, the audience, `azp`, `exp`; for an external subject, the upstream issuer; for a delegated token, the whole `act` chain, `run_id` and `node_id`;
+  - every refused exchange: the kind and the refusal's `reason` (`Refusal::reason`: `replayed`, `expired`, `disabled`, `epoch`, `step_up`, `actor_unknown`, `actor_disabled`, `actor_tenant`, `workload`, `chain`, a verifier step, ...), the upstream issuer, and the principal when it is known;
+  - just-in-time provisioning: the new principal and its upstream `(iss, sub)`;
+  - `revoke_sessions`, `set_disabled` (on and off) and `register_agent`, with the new epoch and, once the admin API exists, who asked;
+  - a token refused on the API for an old epoch or a disabled principal or actor (step `epoch`): a security event;
+  - signing keys: a first key, a rotation (the next `kid`, `signs_from`, the previous `kid` and `retire_at`), a denial (the `kid` and its replacement), a re-wrap (how many).
+  The token endpoint has no transaction at a refusal; write those records in their own.
+- **The revocation book** reads each active tenant every `TUTELA_REVISION_CHECK_MS`, beside the snapshot's own read. When SSE or a push exists, it can drop the lease. Neither it nor the tenant cache evicts a tenant: the directory bounds them now, not the trust file.
+- **Open from part 3a:** client authentication at the token endpoint (apps, part 4); `cnf` binding of delegated tokens; the `org` claim (membership is not modeled); one `ses_` per exchange; a timer for key rotation; a real Keycloak test ([#87](https://github.com/f8fvwgzc/tutela/issues/87)).
+
+#### Notes for part 3c and part 4
+
+- **`tutela.admin.v1`** must expose `register_agent` (with the workload SPIFFE id on `/ns/<ns>/svc/<service>`), `set_disabled` and `revoke_sessions`: attache creates, quarantines and enables agents through it. Give its gRPC methods the admin audience rule of ADR-0032, or make them services-only.
+- **The Console** gets a person's admin token by token exchange after step-up (`audience=tutela-admin`; `TUTELA_ADMIN_ACR` set to what Keycloak's step-up gives), and calls the admin routes with it. A pipeline (`tutela apply`) uses a service account's `tutela-authz` token.
+- **`tutela keys rotate`** calls the key store above with the vault from `TUTELA_MASTER_KEY`.
 
 ## Phase C: own login server (optional)
 

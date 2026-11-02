@@ -32,3 +32,20 @@ allow_typ_jwt = true
 name = "crm-api"
 delegation_aware = false
 
+# attache's embassy: JWT-SVIDs that name a workload on
+# spiffe://<trust domain>/ns/<namespace>/svc/<service>. Its tokens only ever
+# stand for a registered agent acting in a delegated token (ADR-0033).
+[[issuer]]
+iss = "https://embassy.prod-eu1.attache.example.test"
+jwks_uri = "https://embassy.prod-eu1.attache.example.test/keys"
+algs = ["ES256"]
+tenants = ["ten_0193a1b2-c3d4-7e5f-8a6b-7c8d9e0f1a2c"]
+external = true
+allow_typ_jwt = true
+workloads = true
+
+# A service that accepts delegated agent tokens.
+[[audience]]
+name = "symphony"
+delegation_aware = true
+

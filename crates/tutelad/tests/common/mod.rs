@@ -313,6 +313,7 @@ pub fn config(database_url: &str, trust: TrustFile) -> Config {
         key_refresh: Duration::from_secs(10),
         token_ttl: Duration::from_secs(300),
         admin_acr: vec![STEP_UP.to_owned()],
+        delegated_ttl: Duration::from_secs(90),
     }
 }
 
@@ -329,9 +330,10 @@ pub fn vault() -> tutela_vault::Vault {
     secrets().vault().unwrap()
 }
 
-/// The state, with the issuer's keys in memory.
+/// The state, with the issuer's keys in memory. Delegated tokens are on, as
+/// in production (ADR-0033).
 pub fn state(config: &Config, issuer: &Issuer) -> AppState {
-    state_with(config, issuer, false)
+    state_with(config, issuer, true)
 }
 
 /// [`state`], with delegated (`agent+jwt`) tokens on or off.

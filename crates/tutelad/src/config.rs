@@ -13,7 +13,9 @@ use crate::cache::Limits;
 use crate::keys::{KeyRing, OwnJwks};
 use anyhow::{Context as _, anyhow, bail, ensure};
 use serde::Deserialize;
-use tutela_contracts::claims::{Audience, MAX_ACCESS_TOKEN_LIFETIME_SECS};
+use tutela_contracts::claims::{
+    Audience, MAX_ACCESS_TOKEN_LIFETIME_SECS, MAX_DELEGATED_TOKEN_LIFETIME_SECS,
+};
 use tutela_contracts::tenant::{Issuer, TenantId, TrustList};
 use tutela_sdk::{
     Alg, CacheRules, Clock, IssuerConfig, JwksSource, SafenetSource, SystemClock, Verifier,
@@ -83,6 +85,10 @@ pub struct Config {
     /// admin token (CONTRACTS.md 4.4, ADR-0032), comma-separated. Empty:
     /// no admin token is issued or accepted for a person.
     pub admin_acr: Vec<String>,
+    /// `TUTELA_DELEGATED_TTL_SECS`: the life of a delegated token, 60 to
+    /// 120 s (CONTRACTS.md 4.5). It never outlives the person's token or the
+    /// agent's.
+    pub delegated_ttl: Duration,
 }
 
 /// The secrets `tutelad` needs at start-up. `Debug` shows none of them.
@@ -303,6 +309,11 @@ impl Config {
                 .all(|v| v.len() <= 64 && v.bytes().all(|b| b.is_ascii_graphic())),
             "TUTELA_ADMIN_ACR is a comma-separated list of acr values"
         );
+        let delegated_ttl = seconds(&get, "TUTELA_DELEGATED_TTL_SECS", "90")?;
+        ensure!(
+            (60..=MAX_DELEGATED_TOKEN_LIFETIME_SECS).contains(&delegated_ttl.as_secs()),
+            "TUTELA_DELEGATED_TTL_SECS must be from 60 to 120"
+        );
         let key_refresh = seconds(&get, "TUTELA_KEY_REFRESH_SECS", "10")?;
         ensure!(
             !key_refresh.is_zero() && key_refresh <= jwks_cache,
@@ -329,6 +340,7 @@ impl Config {
             key_refresh,
             token_ttl,
             admin_acr,
+            delegated_ttl,
         })
     }
 
@@ -466,6 +478,12 @@ pub struct IssuerEntry {
     /// For an external issuer: accept `typ: JWT` as well as `at+jwt`.
     #[serde(default)]
     pub allow_typ_jwt: bool,
+    /// For an external issuer: it names workloads, not people. attache's
+    /// embassy, whose JWT-SVIDs name a SPIFFE id on the path
+    /// `/ns/<namespace>/svc/<service>`. Its tokens only ever stand for a
+    /// registered agent as the actor of a delegated token (ADR-0033).
+    #[serde(default)]
+    pub workloads: bool,
 }
 
 /// An audience `tutelad` issues tokens for: a service that verifies them.
@@ -555,6 +573,10 @@ impl TrustFile {
                 entry.external || !entry.allow_typ_jwt,
                 "allow_typ_jwt is only for an external issuer ({iss})"
             );
+            ensure!(
+                entry.external || !entry.workloads,
+                "workloads is only for an external issuer ({iss})"
+            );
             for tenant in &entry.tenants {
                 file.trust
                     .insert(entry.iss.clone(), *tenant)
@@ -576,16 +598,17 @@ impl TrustFile {
         Ok(file)
     }
 
-    /// The verifier settings for `audience`. Delegated tokens stay off until
-    /// a later part of Phase B turns them on.
+    /// The verifier settings for `audience`, the service's own. Delegated
+    /// tokens are on, and the audience is `delegation_aware`: the check API
+    /// evaluates the whole `act` chain (ADR-0033).
     #[must_use]
     pub fn verifier_config(&self, audience: Audience) -> VerifierConfig {
         VerifierConfig {
             audience,
             trust: self.trust.clone(),
             issuers: self.issuers.clone(),
-            delegation: false,
-            delegation_aware: false,
+            delegation: true,
+            delegation_aware: true,
             denied_kids: HashSet::new(),
             cache: CacheRules::default(),
         }
@@ -651,7 +674,10 @@ mod tests {
         let c = t.verifier_config("tutela-authz".parse().unwrap());
         assert_eq!(c.issuers.len(), 1);
         assert_eq!(c.issuers[0].algs, [Alg::Es256]);
-        assert!(!c.delegation, "delegated tokens stay off in part 1");
+        assert!(
+            c.delegation && c.delegation_aware,
+            "delegated tokens are on"
+        );
     }
 
     #[test]
@@ -667,6 +693,10 @@ mod tests {
             (
                 file("https://a.example.test", "allow_typ_jwt = true\n"),
                 "only for an external issuer",
+            ),
+            (
+                file("https://a.example.test", "workloads = true\n"),
+                "workloads is only for an external issuer",
             ),
             (
                 file("https://a.example.test", "").replace("ES256", "HS256"),
@@ -833,6 +863,13 @@ mod tests {
         let mut bad_acr = good.to_vec();
         bad_acr.push(("TUTELA_ADMIN_ACR", "m f a".to_owned()));
         assert!(Config::from_vars(vars(&bad_acr)).is_err());
+        // A delegated token lives 60 to 120 s (CONTRACTS.md 4.5).
+        assert_eq!(c.delegated_ttl.as_secs(), 90);
+        for (ttl, ok) in [("59", false), ("60", true), ("120", true), ("121", false)] {
+            let mut v = good.to_vec();
+            v.push(("TUTELA_DELEGATED_TTL_SECS", ttl.to_owned()));
+            assert_eq!(Config::from_vars(vars(&v)).is_ok(), ok, "{ttl}");
+        }
 
         let e = Config::from_vars(vars(&good[1..])).unwrap_err();
         assert_eq!(e.to_string(), "TUTELA_DATABASE_URL is not set");

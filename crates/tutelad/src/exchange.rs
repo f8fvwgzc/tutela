@@ -21,7 +21,7 @@
 //! of which check failed; the log names it, never the token. Metrics count
 //! each request by the kind of token asked for and how it ended.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -33,16 +33,17 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use serde::{Deserialize, Serialize};
 use tutela_contracts::claims::{
-    AccessTokenClaims, Audience, AudienceClaim, ClientId, MAX_ACCESS_TOKEN_LIFETIME_SECS,
-    MAX_ADMIN_TOKEN_LIFETIME_SECS, Scope,
+    AccessTokenClaims, Actor, Audience, AudienceClaim, ClientId, DELEGATED_TOKEN_TYP,
+    DelegatedClaims, MAX_ACCESS_TOKEN_LIFETIME_SECS, MAX_ADMIN_TOKEN_LIFETIME_SECS, MAX_CAP_BYTES,
+    MAX_DELEGATED_TOKEN_LIFETIME_SECS, NodeId, RunId, Scope,
 };
 use tutela_contracts::id::{SessionId, Uuid7};
-use tutela_contracts::principal::Principal;
-use tutela_contracts::tenant::TrustList;
+use tutela_contracts::principal::{Principal, PrincipalKind, WorkloadId};
+use tutela_contracts::tenant::{Issuer, TrustList};
 use tutela_sdk::{
     CacheRules, Clock, ExternalToken, Identity, JwksSource, Verifier, VerifierConfig,
 };
-use tutela_store::StoreErrorKind;
+use tutela_store::{PrincipalState, StoreErrorKind};
 
 use crate::api::AppState;
 use crate::config::Config;
@@ -90,6 +91,10 @@ pub struct Audiences {
     token_ttl: Duration,
     /// `TUTELA_ADMIN_ACR`.
     admin_acr: Vec<String>,
+    /// `TUTELA_DELEGATED_TTL_SECS`.
+    delegated_ttl: Duration,
+    /// The external issuers that name workloads (attache's embassy).
+    workloads: HashSet<Issuer>,
     /// The verifier of `aud=tutela-admin` tokens, for the admin routes only
     /// (ADR-0032): the trust file's Tutela-format issuers and the own issuer,
     /// never an external issuer, never a delegated token.
@@ -121,10 +126,12 @@ impl Audiences {
             .into_iter()
             .find(|i| i.iss == config.issuer);
         let mut entries = HashMap::new();
+        // The service's own audience takes delegated tokens: the check API
+        // evaluates the chain (ADR-0033).
         entries.insert(
             config.audience.clone(),
             Registered {
-                delegation_aware: false,
+                delegation_aware: true,
                 verifier: None,
             },
         );
@@ -187,6 +194,14 @@ impl Audiences {
             trust,
             token_ttl: config.token_ttl,
             admin_acr: config.admin_acr.clone(),
+            delegated_ttl: config.delegated_ttl,
+            workloads: config
+                .trust
+                .issuer
+                .iter()
+                .filter(|e| e.external && e.workloads)
+                .map(|e| e.iss.clone())
+                .collect(),
             admin,
         }
     }
@@ -236,6 +251,13 @@ pub struct TokenRequest {
     subject_token_type: Option<String>,
     actor_token: Option<String>,
     actor_token_type: Option<String>,
+    /// attache's capability snapshot for a delegated token: a JSON object,
+    /// copied and never read (CONTRACTS.md 4.5).
+    cap: Option<String>,
+    /// The run a delegated token belongs to.
+    run_id: Option<String>,
+    /// The step inside the run.
+    node_id: Option<String>,
 }
 
 /// A token response (RFC 8693 2.2.1).
@@ -348,6 +370,8 @@ pub enum Kind {
     Access,
     /// An admin token, `aud=tutela-admin` (CONTRACTS.md 4.4).
     Admin,
+    /// A delegated token, `typ: agent+jwt` (CONTRACTS.md 4.5).
+    Delegated,
 }
 
 impl Kind {
@@ -355,13 +379,21 @@ impl Kind {
         match self {
             Self::Access => "access",
             Self::Admin => "admin",
+            Self::Delegated => "delegated",
         }
     }
 
     /// The kind a request asks for, from its audience.
     fn of(req: &TokenRequest) -> Self {
+        let delegated_subject = req
+            .subject_token
+            .as_deref()
+            .and_then(peek_typ)
+            .is_some_and(|t| t.eq_ignore_ascii_case(DELEGATED_TOKEN_TYP));
         if req.audience.as_deref() == Some(Audience::TUTELA_ADMIN.as_str()) {
             Self::Admin
+        } else if req.actor_token.is_some() || delegated_subject {
+            Self::Delegated
         } else {
             Self::Access
         }
@@ -371,6 +403,11 @@ impl Kind {
 /// The person or service a subject token stands for, in this service's
 /// tenant.
 struct Subject {
+    /// The chain a delegated subject token carries.
+    act: Option<Actor>,
+    cap: Option<serde_json::Map<String, serde_json::Value>>,
+    run_id: Option<RunId>,
+    node_id: Option<NodeId>,
     principal: Principal,
     epoch: u64,
     sid: Option<SessionId>,
@@ -491,6 +528,10 @@ async fn external(tx: &TenantTx<'_>, t: &ExternalToken, token: &str) -> Result<S
         .parse()
         .map_err(|_| Refusal::unavailable("id"))?;
     Ok(Subject {
+        act: None,
+        cap: None,
+        run_id: None,
+        node_id: None,
         principal: person.principal,
         epoch: person.epoch,
         sid: Some(sid),
@@ -506,11 +547,12 @@ async fn external(tx: &TenantTx<'_>, t: &ExternalToken, token: &str) -> Result<S
 /// epoch is read again in `tx`: a token issued before a revocation is
 /// never exchanged.
 async fn own(tx: &TenantTx<'_>, c: &AccessTokenClaims) -> Result<Subject, Refusal> {
-    let known = tutela_store::principal_state(tx, tx.tenant(), &c.sub).await?;
-    if known.is_some_and(|s| s.disabled || c.epoch < s.epoch) {
-        return Err(Refusal::grant("epoch"));
-    }
+    current(tx, &c.sub, c.epoch).await?;
     Ok(Subject {
+        act: None,
+        cap: None,
+        run_id: None,
+        node_id: None,
         principal: c.sub.clone(),
         epoch: c.epoch,
         sid: c.sid,
@@ -520,6 +562,135 @@ async fn own(tx: &TenantTx<'_>, c: &AccessTokenClaims) -> Result<Subject, Refusa
         scope: c.scope.clone(),
         exp: c.exp,
     })
+}
+
+/// A delegated token this service issued, for the next hop or for one more
+/// actor. The person's epoch and every actor are read again in `tx`: a token
+/// of a revoked person or a disabled agent is never exchanged.
+async fn own_delegated(tx: &TenantTx<'_>, c: &DelegatedClaims) -> Result<Subject, Refusal> {
+    current(tx, &c.sub, c.epoch).await?;
+    for a in c.act.chain() {
+        agent(tx, a).await?;
+    }
+    Ok(Subject {
+        act: Some(c.act.clone()),
+        cap: Some(c.cap.clone()),
+        run_id: Some(c.run_id.clone()),
+        node_id: c.node_id.clone(),
+        principal: c.sub.clone(),
+        epoch: c.epoch,
+        sid: c.sid,
+        amr: c.amr.clone(),
+        acr: c.acr.clone(),
+        azp: c.azp.clone(),
+        scope: c.scope.clone(),
+        exp: c.exp,
+    })
+}
+
+/// `p`'s token of `epoch` is current: `p` is not disabled and its epoch was
+/// not raised since.
+async fn current(tx: &TenantTx<'_>, p: &Principal, epoch: u64) -> Result<(), Refusal> {
+    let known = tutela_store::principal_state(tx, tx.tenant(), p).await?;
+    if known.is_some_and(|s| s.disabled || epoch < s.epoch) {
+        return Err(Refusal::grant("epoch"));
+    }
+    Ok(())
+}
+
+/// An agent registered in this tenant, and enabled (TM-02: "it exists, it
+/// is enabled, and it is in the same tenant").
+async fn agent(tx: &TenantTx<'_>, a: &Principal) -> Result<PrincipalState, Refusal> {
+    match tutela_store::principal_state(tx, tx.tenant(), a).await? {
+        Some(s) if s.principal.kind() == PrincipalKind::Agent && !s.disabled => Ok(s),
+        Some(_) => Err(Refusal::grant("actor_disabled")),
+        None => Err(Refusal::grant("actor_unknown")),
+    }
+}
+
+/// The agent an actor token stands for, in the subject's tenant.
+struct Acting {
+    agent: Principal,
+    exp: u64,
+    azp: Option<ClientId>,
+}
+
+/// Resolves the actor token (RFC 8693 `actor_token`), addressed to this
+/// service's own audience:
+///
+/// - an access token of an issuer of the trust list whose `sub` is an
+///   agent, for the subject's tenant id; or
+/// - a token of a `workloads` issuer (attache's embassy, a JWT-SVID) naming
+///   a SPIFFE id on attache's path `/ns/<namespace>/svc/<service>`, for the
+///   subject's tenant: the agent registered for that workload.
+///
+/// Either way the agent must be registered in the tenant and enabled.
+async fn actor(state: &AppState, tx: &TenantTx<'_>, token: &str) -> Result<Acting, Refusal> {
+    let id = state.verifier.verify(token).await.map_err(|e| {
+        tracing::info!(step = e.step().as_str(), "an actor token failed a step");
+        Refusal::grant("actor")
+    })?;
+    let tid = tx.tenant().tid;
+    match &id {
+        Identity::Access(c) if c.sub.kind() == PrincipalKind::Agent => {
+            if c.tid != tid {
+                return Err(Refusal::grant("actor_tenant"));
+            }
+            let known = agent(tx, &c.sub).await?;
+            if c.epoch < known.epoch {
+                return Err(Refusal::grant("actor_epoch"));
+            }
+            Ok(Acting {
+                agent: c.sub.clone(),
+                exp: c.exp,
+                azp: Some(c.azp.clone()),
+            })
+        }
+        Identity::External(x) if state.audiences.workloads.contains(&x.tenant.iss) => {
+            if x.tenant.tid != tid {
+                return Err(Refusal::grant("actor_tenant"));
+            }
+            let w = WorkloadId::parse(&x.sub)
+                .ok()
+                .filter(tutela_store::is_attache_path)
+                .ok_or(Refusal::grant("workload"))?;
+            let known = tutela_store::agent_for_workload(tx, tx.tenant(), &w)
+                .await?
+                .ok_or(Refusal::grant("workload"))?;
+            if known.disabled {
+                return Err(Refusal::grant("actor_disabled"));
+            }
+            Ok(Acting {
+                agent: known.principal,
+                exp: x.exp,
+                azp: x.azp.as_deref().and_then(|a| ClientId::parse(a).ok()),
+            })
+        }
+        _ => Err(Refusal::grant("actor")),
+    }
+}
+
+/// `cap`: a JSON object of at most 4096 bytes, copied as it is.
+fn cap(text: &str) -> Result<serde_json::Map<String, serde_json::Value>, Refusal> {
+    let cap: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(text).map_err(|_| Refusal::request("cap is a JSON object"))?;
+    let size = serde_json::to_vec(&cap).map_or(usize::MAX, |b| b.len());
+    if size > MAX_CAP_BYTES {
+        return Err(Refusal::request("cap is at most 4096 bytes of JSON"));
+    }
+    Ok(cap)
+}
+
+/// The `typ` of a JWT's header, unverified.
+fn peek_typ(token: &str) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Header {
+        typ: Option<String>,
+    }
+    let h = token.split('.').next()?;
+    serde_json::from_slice::<Header>(&B64.decode(h).ok()?)
+        .ok()?
+        .typ
 }
 
 fn new_id() -> Result<Uuid7, Refusal> {
@@ -540,6 +711,91 @@ fn scope(asked: Option<&str>, held: Option<&Scope>) -> Result<Option<Scope>, Ref
         return Err(invalid);
     }
     Ok(Some(asked))
+}
+
+/// The claims of a delegated token: the person, the chain with the new
+/// actor first, `cap`, the run, and a life of at most
+/// `TUTELA_DELEGATED_TTL_SECS` that never outlives the person's token or the
+/// agent's. They pass the checks every verifier runs.
+async fn delegated(
+    state: &AppState,
+    req: &TokenRequest,
+    tx: &TenantTx<'_>,
+    mut subject: Subject,
+    acting: Option<Acting>,
+    audience: Audience,
+    scope: Option<Scope>,
+) -> Result<DelegatedClaims, Refusal> {
+    let act = match (&acting, subject.act.take()) {
+        (Some(a), inner) => Actor {
+            sub: a.agent.clone(),
+            act: inner.map(Box::new),
+        },
+        (None, Some(chain)) => chain,
+        (None, None) => return Err(Refusal::grant("actor")),
+    };
+    act.check_chain().map_err(|_| Refusal::grant("chain"))?;
+    let cap = match req.cap.as_deref() {
+        Some(text) => cap(text)?,
+        None => subject.cap.take().unwrap_or_default(),
+    };
+    let run_id = match req.run_id.as_deref() {
+        Some(r) => RunId::parse(r).map_err(|_| Refusal::request("run_id is not valid"))?,
+        None => subject
+            .run_id
+            .take()
+            .ok_or(Refusal::request("run_id is required for a delegated token"))?,
+    };
+    let node_id = match req.node_id.as_deref() {
+        Some(n) => Some(NodeId::parse(n).map_err(|_| Refusal::request("node_id is not valid"))?),
+        None => subject.node_id.take(),
+    };
+    let now = now_secs();
+    let ttl = state
+        .audiences
+        .delegated_ttl
+        .as_secs()
+        .min(MAX_DELEGATED_TOKEN_LIFETIME_SECS);
+    let mut exp = subject.exp.min(now + ttl);
+    if let Some(a) = &acting {
+        exp = exp.min(a.exp);
+    }
+    if exp <= now {
+        return Err(Refusal::grant("expired"));
+    }
+    let key = tx.tenant();
+    let rev = tutela_store::rev(tx, key).await?;
+    let azp = acting.and_then(|a| a.azp).unwrap_or(subject.azp);
+    let claims = DelegatedClaims {
+        iss: key.iss.clone(),
+        sub: subject.principal,
+        act,
+        cap,
+        run_id,
+        node_id,
+        aud: AudienceClaim::one(audience.clone()),
+        azp,
+        exp,
+        iat: now,
+        nbf: now,
+        jti: new_id()?,
+        sid: subject.sid,
+        tid: key.tid,
+        org: None,
+        epoch: subject.epoch,
+        rev,
+        scope,
+        amr: subject.amr,
+        acr: subject.acr,
+        cnf: None,
+    };
+    claims
+        .validate(now, &audience, &state.audiences.trust)
+        .map_err(|e| {
+            tracing::error!(error = %e, "an issued delegated token would not verify");
+            Refusal::unavailable("claims")
+        })?;
+    Ok(claims)
 }
 
 /// What was issued.
@@ -590,14 +846,44 @@ pub async fn exchange(state: &AppState, req: TokenRequest) -> Result<Issued, Ref
         .filter(|t| !t.is_empty())
         .ok_or(Refusal::request("subject_token is required"))?;
     token_type(req.subject_token_type.as_deref())?;
-    if req.actor_token.is_some() || req.actor_token_type.is_some() {
-        return Err(Refusal::request("delegation is not served yet"));
-    }
+    let actor_token = match (req.actor_token.as_deref(), req.actor_token_type.as_deref()) {
+        (None, None) => None,
+        (Some(t), tt) if !t.is_empty() => {
+            token_type(tt)?;
+            Some(t)
+        }
+        _ => {
+            return Err(Refusal::request(
+                "actor_token and actor_token_type go together",
+            ));
+        }
+    };
 
     let id = verify(state, subject_token).await?;
+    // A delegated token is asked for with an actor, or by exchanging one
+    // for the next hop (ADR-0033).
+    let delegating = actor_token.is_some() || matches!(id, Identity::Delegated(_));
+    if delegating {
+        if admin {
+            return Err(Refusal::target("an admin token is never delegated"));
+        }
+        if !state
+            .audiences
+            .get(&audience)
+            .is_some_and(|r| r.delegation_aware)
+        {
+            return Err(Refusal::target(
+                "this audience does not take delegated tokens",
+            ));
+        }
+    }
+    let own_iss = state.keys.iss();
     let tenant = match &id {
-        Identity::External(t) => Tenant::exchanged(state.keys.iss(), t),
-        Identity::Access(c) if c.iss == *state.keys.iss() => Tenant::of(&id),
+        Identity::External(t) if !state.audiences.workloads.contains(&t.tenant.iss) => {
+            Tenant::exchanged(own_iss, t)
+        }
+        Identity::Access(c) if c.iss == *own_iss => Tenant::of(&id),
+        Identity::Delegated(c) if c.iss == *own_iss => Tenant::of(&id),
         _ => return Err(Refusal::grant("issuer")),
     };
     let mut conn = state.db.conn().await?;
@@ -605,6 +891,7 @@ pub async fn exchange(state: &AppState, req: TokenRequest) -> Result<Issued, Ref
     let subject = match &id {
         Identity::External(t) => external(&tx, t, subject_token).await?,
         Identity::Access(c) => own(&tx, c).await?,
+        Identity::Delegated(c) => own_delegated(&tx, c).await?,
         _ => return Err(Refusal::grant("issuer")),
     };
     let scope = scope(req.scope.as_deref(), subject.scope.as_ref())?;
@@ -622,6 +909,29 @@ pub async fn exchange(state: &AppState, req: TokenRequest) -> Result<Issued, Ref
                 "step_up",
             ));
         }
+    }
+    if delegating {
+        // The person who caused the work, never a service or an agent.
+        if !user {
+            return Err(Refusal::grant("delegation_subject"));
+        }
+        let acting = match actor_token {
+            Some(t) => Some(actor(state, &tx, t).await?),
+            None => None,
+        };
+        let claims = delegated(state, &req, &tx, subject, acting, audience, scope).await?;
+        let access_token = state.keys.sign_jwt(DELEGATED_TOKEN_TYP, &claims)?;
+        tx.commit().await?;
+        return Ok(Issued {
+            jti: claims.jti,
+            response: TokenResponse {
+                access_token,
+                issued_token_type: ACCESS_TOKEN_TYPE,
+                token_type: "Bearer",
+                expires_in: claims.exp - claims.iat,
+                scope: claims.scope.map(|s| s.to_string()),
+            },
+        });
     }
     let now = now_secs();
     let ttl = if admin {
