@@ -17,6 +17,7 @@
 //! - [`expiry`]: the timer that removes expired assignments and bumps the
 //!   revision.
 //! - [`keys`]: the service's own issuer: its signing keys and its JWKS.
+//! - [`ledger`]: forwarding audit records to attache's evidence ledger.
 //! - [`events`]: the CloudEvents envelope of the outbox's events.
 //! - [`exchange`]: token exchange (RFC 8693) at `POST /oauth2/token`.
 //! - [`revocation`]: raised epochs and disabled principals, per tenant.
@@ -37,6 +38,7 @@ pub mod events;
 pub mod exchange;
 pub mod expiry;
 pub mod keys;
+pub mod ledger;
 pub mod models;
 pub mod revocation;
 pub mod server;

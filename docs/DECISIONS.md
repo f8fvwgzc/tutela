@@ -55,6 +55,7 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0036](#adr-0036-webhooks-delivered-from-the-outbox-registered-by-part-3c) | Webhooks: delivered from the outbox, registered by part 3c | Accepted |
 | [0037](#adr-0037-the-event-stream-services-only-one-feed-per-tenant-bounded) | The event stream: services only, one feed per tenant, bounded | Accepted |
 | [0038](#adr-0038-signed-bundles-a-service-with-read_audit-everywhere-its-own-typ-and-no-skew-at-exp) | Signed bundles: a service with `read_audit` everywhere, its own `typ`, and no skew at `exp` | Accepted |
+| [0039](#adr-0039-forwarding-to-attaches-evidence-ledger-signed-acknowledged-resumable) | Forwarding to attache's evidence ledger: signed, acknowledged, resumable | Accepted |
 
 ---
 
@@ -1461,3 +1462,29 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 - **A clock skew on `exp`**, as tokens have. A bundle carries grants, not identity; a minute past `exp` is a minute of an expired grant.
 - **Push whole bundles over SSE.** One tenant's data per message per stream; the stream says `rev` moved, and the product pulls.
 
+---
+
+## ADR-0039: Forwarding to attache's evidence ledger: signed, acknowledged, resumable
+
+**Status:** Accepted, 2026-11-02. Built in Phase B, part 3b. It builds the forwarding of CONTRACTS.md 9.3 and 9.4 and TM-20, against attache's Append API as attache documents it (`docs/operations.md` "Forwarding audit records to the ledger", `docs/design/evidence-ledger.md` decision 13, `docs/api/openapi.yaml` `/ledger/append`).
+
+**Context.** TM-20's honest limit is that someone with full database and key access can rebuild the local chain; a copy in attache's ledger, in another trust zone, shows it. attache already serves `POST /api/v1/ledger/append`: up to 500 audit.v1 records per request, a `200` only when all are durable, a key `(service, id)` that dedupes a retry and refuses a changed payload, a gap in `seq` reported and kept, and every record checked against the producer's Ed25519 keys named in its `ledger.producers`. The caller is an `auth.tokens` entry (an `att_` bearer token) and sends `X-Agentsc-CSRF: 1`. attache reads records with `tutela-contracts` v0.1.0, which ignores fields it does not know (`details`).
+
+**Decision.**
+
+1. **Off unless configured.** `TUTELA_LEDGER_URL` (the Append API's URL) turns it on; then `TUTELA_LEDGER_TOKEN` (the `att_` token) and `TUTELA_AUDIT_KEY` (the producer's Ed25519 seed, 32 bytes in base64) are required, and start-up fails naming the missing one. Both are secrets: never logged, `Debug` redacted.
+2. **One producer key for the deployment**, from the environment, the same on every replica, like attache's own `--ledger-key-file`. Its public key (standard base64) and `key_id` (the RFC 7638 thumbprint of its OKP JWK, as attache computes it) are logged at start, for attache's `ledger.producers[].keys`. Rotation: give attache both keys, then change `TUTELA_AUDIT_KEY`. Sealing it in the database like the signing keys (ADR-0030) is part 4's, with `tutela keys rotate`.
+3. **What is signed** is the record's body as the local chain keeps it (ADR-0034): the canonical JSON with `seq` and without `signature`. `signature = {key_id, value}`, pure Ed25519, base64url. So the bytes the ledger verifies are the bytes the local chain hashed.
+4. **Every replica forwards**, every 2 s: for each chain (each tenant of the directory, and the deployment's own), it claims the chain for a 60 s lease (`tutela.audit_forward`, migration 11), reads up to 500 records past `shipped_seq`, signs them, sends them through `tutela-safenet`, and only on a `200` that acknowledges every record moves `shipped_seq`. Anything else leaves it; the next tick sends the same batch, and the ledger dedupes. Two replicas never send one chain at once.
+5. **The ledger's host may be private.** It is the operator's own URL, not a tenant's, so its host is allowed through `tutela-safenet`'s allow-list for private hosts; https only outside dev mode, no redirects.
+6. **Never in the way of a local write.** Records are written in their change's transaction whatever the ledger does; forwarding reads them afterwards, and a ledger that is down only makes them wait (`tutelad_ledger_records{result="refused"}` counts the batches it did not take).
+
+**Consequences.**
+- attache's chains for Tutela are `forwarded:tutelad:<tenant>:<day>`; a gap there means a record lost between the two, which this design cannot cause short of a deleted local record (which the local verifier also finds).
+- Nothing in attache had to change. The test runs against a stand-in of the Append API that checks what attache's code checks; a test against a running attache is not part of `make` (no image could be pulled).
+- Records of the deployment's chain name the reserved tenant `ten_00000000-0000-7000-8000-000000000000`; attache keeps them in a chain of their own.
+
+**Alternatives considered.**
+- **Ship through the OpenTelemetry Collector.** It may drop data (CONTRACTS.md 9.4).
+- **Mark shipped on send.** A record lost on the way would never be sent again.
+- **One relay with a lease for the whole deployment** (CONTRACTS.md 9.3 had one give `seq`). The chain gives `seq` now (ADR-0034), so per-chain claims are enough, and every replica shares the work.

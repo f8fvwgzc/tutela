@@ -39,7 +39,8 @@ const MANIFEST: &str = "version = 1\n[app]\nname = \"rls_test\"\n";
 
 /// Every table with tenant data today. The test also reads the catalog, so a
 /// new tenant table that nobody seeds below fails here, on purpose.
-const TENANT_TABLES: [&str; 19] = [
+const TENANT_TABLES: [&str; 20] = [
+    "audit_forward",
     "audit_head",
     "audit_record",
     "boundary_rule",
@@ -176,6 +177,14 @@ async fn fill(owner: &mut Client) -> (TenantKey, OrgId) {
     .build()
     .unwrap();
     tutela_store::append_audit(&tx, &t, &[draft]).await.unwrap();
+    tutela_store::audit::claim_forward(
+        &tx,
+        &tutela_store::audit::Chain::Tenant(t.clone()),
+        "seed",
+        std::time::Duration::from_secs(1),
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
     (t, org)
 }

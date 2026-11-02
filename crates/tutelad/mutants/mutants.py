@@ -54,6 +54,8 @@ SSE = ["-p", "tutelad", "--test", "sse"]
 BUNDLE_SRC = "crates/tutelad/src/bundle.rs"
 BUNDLE_SDK = "crates/tutela-sdk/src/bundle.rs"
 BUNDLE = ["-p", "tutelad", "--test", "bundle"]
+LEDGER_SRC = "crates/tutelad/src/ledger.rs"
+LEDGER = ["-p", "tutelad", "--test", "ledger"]
 
 # (id, file, what it breaks, old text, new text, cargo test arguments).
 # `old` must occur once.
@@ -393,6 +395,19 @@ MUTANTS = [
      "        if !self.config.trust.allows(&claims.iss, &claims.tid) {\n",
      "        if false && !self.config.trust.allows(&claims.iss, &claims.tid) {\n",
      BUNDLE),
+    # Forwarding to attache's evidence ledger (ADR-0039).
+    ("L01", LEDGER_SRC, "a batch the ledger did not take is marked shipped",
+     "                    tracing::warn!(reason = why, \"the ledger did not take a batch; it waits\");\n                    None\n",
+     "                    tracing::warn!(reason = why, \"the ledger did not take a batch; it waits\");\n                    Some(last)\n",
+     LEDGER),
+    ("L02", LEDGER_SRC, "a record is signed over other bytes than its body",
+     "            let sig = self.pair.sign(e.body.as_bytes());\n",
+     "            let sig = self.pair.sign(e.id.as_bytes());\n",
+     LEDGER),
+    ("L03", STORE_AUDIT, "a second replica sends a chain another one holds",
+     "             WHERE tenant_id = $1 AND (claimed_until IS NULL \\\n               OR claimed_until < clock_timestamp() OR claimed_by = $2) \\\n",
+     "             WHERE tenant_id = $1 \\\n",
+     LEDGER),
 ]
 
 

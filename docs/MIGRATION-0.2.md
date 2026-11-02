@@ -180,3 +180,9 @@ These matter to whoever runs `tutelad`, and to a product that verifies its token
 - **`tutela-store`:** `ScopePathSnapshot::entries`.
 - **`tutela-sdk`:** new module `bundle`, and `Verifier::verify_bundle`.
 
+## Forwarding to attache's evidence ledger (part 3b)
+
+- **Migration 11** adds `tutela.audit_forward`. Run `grant_service` again.
+- **Off unless configured.** Set `TUTELA_LEDGER_URL` (attache's `.../api/v1/ledger/append`), `TUTELA_LEDGER_TOKEN` (the `att_` token of an `auth.tokens` entry) and `TUTELA_AUDIT_KEY` (a 32-byte Ed25519 seed, base64, the same on every replica) ([ADR-0039](DECISIONS.md#adr-0039-forwarding-to-attaches-evidence-ledger-signed-acknowledged-resumable)).
+- **For attache's operator:** add `tutelad` to `ledger.producers` with that token and the public key `tutelad` logs at start (`public_key`, standard base64). Nothing else changes in attache.
+

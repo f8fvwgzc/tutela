@@ -104,6 +104,10 @@ pub struct Config {
     /// 3600 s (ADR-0038). A bundle ends sooner at the first assignment in
     /// it that expires.
     pub bundle_ttl: Duration,
+    /// `TUTELA_LEDGER_URL`, `TUTELA_LEDGER_TOKEN` and `TUTELA_AUDIT_KEY`:
+    /// forwarding of audit records to attache's evidence ledger (ADR-0039).
+    /// `None`: off.
+    pub ledger: Option<crate::ledger::LedgerConfig>,
 }
 
 /// The secrets `tutelad` needs at start-up. `Debug` shows none of them.
@@ -336,6 +340,34 @@ impl Config {
         );
         let webhook_poll = Duration::from_millis(parsed(&get, "TUTELA_WEBHOOK_POLL_MS", "1000")?);
         let event_retention = seconds(&get, "TUTELA_EVENT_RETENTION_SECS", "604800")?;
+        let ledger = match get("TUTELA_LEDGER_URL").filter(|v| !v.is_empty()) {
+            None => None,
+            Some(url) => {
+                let token = get("TUTELA_LEDGER_TOKEN")
+                    .filter(|v| !v.is_empty())
+                    .ok_or_else(|| {
+                        anyhow!("TUTELA_LEDGER_TOKEN is required with TUTELA_LEDGER_URL")
+                    })?;
+                let key = get("TUTELA_AUDIT_KEY")
+                    .and_then(|k| {
+                        use base64::Engine as _;
+                        base64::engine::general_purpose::STANDARD
+                            .decode(k.trim())
+                            .ok()
+                    })
+                    .filter(|k| k.len() == 32)
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "TUTELA_AUDIT_KEY must be 32 bytes in base64 with TUTELA_LEDGER_URL"
+                        )
+                    })?;
+                Some(crate::ledger::LedgerConfig {
+                    url,
+                    token: Zeroizing::new(token),
+                    key: Zeroizing::new(key),
+                })
+            }
+        };
         let bundle_ttl = seconds(&get, "TUTELA_BUNDLE_TTL_SECS", "300")?;
         ensure!(
             (1..=3600).contains(&bundle_ttl.as_secs()),
@@ -382,6 +414,7 @@ impl Config {
             event_retention,
             streams,
             bundle_ttl,
+            ledger,
         })
     }
 
@@ -858,6 +891,31 @@ mod tests {
         );
         assert_eq!(good.secrets.pepper().1, 1);
         assert_eq!(good.secrets.pepper().0.len(), 32);
+        assert!(good.ledger.is_none(), "forwarding is off unless configured");
+        // Forwarding to the ledger needs its token and the producer key; the
+        // error names the variable, never a value, and Debug shows neither.
+        let url = (
+            "TUTELA_LEDGER_URL",
+            "https://embassy.example.test/api/v1/ledger/append",
+        );
+        let token = ("TUTELA_LEDGER_TOKEN", "att_secret-token-for-tests-only");
+        let key = (
+            "TUTELA_AUDIT_KEY",
+            "KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio=",
+        );
+        for (extra, why) in [
+            (vec![url, key], "TUTELA_LEDGER_TOKEN is required"),
+            (vec![url, token], "TUTELA_AUDIT_KEY must be 32 bytes"),
+            (
+                vec![url, token, ("TUTELA_AUDIT_KEY", "c2hvcnQ=")],
+                "TUTELA_AUDIT_KEY must be 32 bytes",
+            ),
+        ] {
+            let e = run(&extra).unwrap_err();
+            assert!(e.contains(why), "{e}");
+            assert!(!e.contains(token.1), "{e}");
+        }
+        assert!(run(&[url, token, key]).is_ok());
         std::fs::remove_file(path).unwrap();
     }
 

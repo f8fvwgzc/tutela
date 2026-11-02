@@ -53,6 +53,11 @@ const MIGRATIONS: &[(i32, &str, &str)] = &[
         "webhooks",
         include_str!("../migrations/0010_webhooks.sql"),
     ),
+    (
+        11,
+        "audit_forward",
+        include_str!("../migrations/0011_audit_forward.sql"),
+    ),
 ];
 
 /// One lock id for every migrator of this schema (`pg_advisory_xact_lock`).
