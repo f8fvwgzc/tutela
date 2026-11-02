@@ -118,9 +118,9 @@ What Tutela **never** does:
 | `tutelad` | Service binary (OCI image `ghcr.io/f8fvwgzc/tutelad`) | The Tutela service: APIs, admin, events, audit, token exchange; later the login server | Tenants, orgs, users, memberships, groups, roles, bindings, apps, key hashes, signing keys, webhooks, outbox, audit chain | B (login server: C) |
 | Tutela Console | Web UI, served by `tutelad` | Admin screens for the whole deployment | None of its own; it uses `tutelad` | B |
 | `tutela` CLI | Binary | `tutela init`, `tutela apply`, `tutela codegen`, `tutela apps create`, `tutela keys rotate` | None (local files only) | `init`, `apply`, `codegen`: A. `apps create`, `keys rotate`: B (they need `tutelad`) |
-| `@f8fvwgzc/tutela-react` | npm package | `<Can>`, `<Field>`, `<Protect>`, `useCan`; embeddable admin parts | The permission map, in browser memory | A (admin parts: B) |
+| `@f8fvwgzc/tutela-react` | npm package (`sdk/react`) | `<Can>`, `<Field>`, `<Protect>`, `useCan`; embeddable admin parts | The permission map, in browser memory | A (admin parts and `useCan`: built in B, part 4b1) |
 | `@f8fvwgzc/tutela-node` | npm package | Server middleware for Node: verify tokens, call the check API | None | A (checks need `tutelad`: B) |
-| `@f8fvwgzc/tutela-js` | npm package | Browser client without React; `tutela-react` builds on it | None | A |
+| `@f8fvwgzc/tutela-js` | npm package (`sdk/js`) | Browser and Node client of `tutelad` without React; `tutela-react` builds on it | Tokens and permission maps, in memory only | A (the `tutelad` client: built in B, part 4b1) |
 | `tutela-py` (import `tutela`) | Python package | Token verifier, FastAPI dependency, check client | None | A (checks need `tutelad`: B) |
 
 ### `tutela-contracts` (exists)

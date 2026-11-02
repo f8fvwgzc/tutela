@@ -526,6 +526,8 @@ The token is `typ: agent+jwt`: `sub` the person, `act` the chain with the new ac
 
 **Metadata.** `GET /.well-known/oauth-authorization-server` (RFC 8414), no token: `issuer`, `token_endpoint`, `jwks_uri`, `grant_types_supported` (token exchange and `client_credentials`), `token_endpoint_auth_methods_supported` (`none`, `client_secret_basic`, `client_secret_post`).
 
+A browser exchange as the Console and the embedded admin components do it (no client authentication, one upstream token for both audiences) is in [JS-SDK.md, The token flow](JS-SDK.md#the-token-flow).
+
 ### 4.9 Apps and client authentication (Phase B, built)
 
 Built in part 4a ([ADR-0044](DECISIONS.md#adr-0044-apps-one-tenant-each-a-hashed-client-secret-and-azp-bound-to-the-client-that-authenticated)). An **app** belongs to one tenant (under `TUTELA_ISSUER`). Its client id is `app_<uuidv7>`, its principal a service account `sa:sa_<uuidv7>` of the tenant that holds only what assignments give it, and its client secret an API key of section 5 (`tut_sk_…`), shown once and stored as SHA-256(pepper ‖ key) (5.4). Apps are made by the tenant's owner over the admin API (7.13.8) or by the operator (`tutelad apps create --tenant <tid> --name <name>`, which prints `{"client_id", "principal", "client_secret"}` once).
@@ -1524,6 +1526,8 @@ Every answer on the API port has `x-request-id`: the one the caller sent (AuthZE
 - **A reader** (`tutela_sdk::Verifier::verify_bundle`, `tutela_sdk::bundle::OfflinePdp`) checks the bundle as a token of a Tutela-format issuer (header, issuer, `kid` not denied, signature against the same JWKS), then `format`, `(iss, tid)` on its trust list and `exp` with **no** clock skew; refuses a lower `rev` than the one it holds; and answers nothing (`ExpiredBundle`) from `exp` on.
 
 ### 7.13 Admin API (`tutela.admin.v1`)
+
+The JavaScript client of every route below, with the token flow of a person in a browser and the typed errors, is `@f8fvwgzc/tutela-js` ([JS-SDK.md](JS-SDK.md), part 4b1).
 
 **Built in Phase B, part 3c** ([ADR-0040](DECISIONS.md#adr-0040-tutelaadminv1-one-code-path-the-admin-token-rule-on-grpc-and-keys-at-every-org)). The proto is `crates/tutela-contracts/proto/tutela/admin/v1/admin.proto`, service `tutela.admin.v1.Admin`. Each method runs the code of its HTTP route and answers the same thing. The model routes of 7.9 are part of it.
 
