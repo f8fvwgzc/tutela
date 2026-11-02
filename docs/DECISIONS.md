@@ -56,6 +56,7 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0037](#adr-0037-the-event-stream-services-only-one-feed-per-tenant-bounded) | The event stream: services only, one feed per tenant, bounded | Accepted |
 | [0038](#adr-0038-signed-bundles-a-service-with-read_audit-everywhere-its-own-typ-and-no-skew-at-exp) | Signed bundles: a service with `read_audit` everywhere, its own `typ`, and no skew at `exp` | Accepted |
 | [0039](#adr-0039-forwarding-to-attaches-evidence-ledger-signed-acknowledged-resumable) | Forwarding to attache's evidence ledger: signed, acknowledged, resumable | Accepted |
+| [0040](#adr-0040-tutelaadminv1-one-code-path-the-admin-token-rule-on-grpc-and-keys-at-every-org) | `tutela.admin.v1`: one code path, the admin token rule on gRPC, and keys at every org | Accepted |
 
 ---
 
@@ -1488,3 +1489,44 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 - **Ship through the OpenTelemetry Collector.** It may drop data (CONTRACTS.md 9.4).
 - **Mark shipped on send.** A record lost on the way would never be sent again.
 - **One relay with a lease for the whole deployment** (CONTRACTS.md 9.3 had one give `seq`). The chain gives `seq` now (ADR-0034), so per-chain claims are enough, and every replica shares the work.
+
+---
+
+## ADR-0040: `tutela.admin.v1`: one code path, the admin token rule on gRPC, and keys at every org
+
+**Status:** Accepted, 2026-11-02. Built in Phase B, part 3c ([#106](https://github.com/f8fvwgzc/tutela/issues/106)). It gives the model routes of [ADR-0026](#adr-0026-a-tenant-owns-its-model-versions) their gRPC methods, builds the agent management [ADR-0033](#adr-0033-delegated-agent-tokens-from-token-exchange) left to this part, the `set_boundary` route [ADR-0025](#adr-0025-moves-and-links-in-write_check) asked for, and `PutResourceTypes` (PERMISSION-MODEL.md 15.2, INTEGRATION.md onto-intelli step 6). It **adds to [ADR-0032](#adr-0032-admin-tokens-a-person-steps-up-a-pipeline-keeps-its-service-token) item 4**: gRPC now has the admin token check, for `tutela.admin.v1` only.
+
+**Context.** attache creates, quarantines and enables its agents through `tutela.admin.v1` (INTEGRATION.md attache step 5, TM-02). onto-intelli pushes its types with `PutResourceTypes`, and "imported changes become a proposal that a tenant admin publishes; they are never published automatically" (PERMISSION-MODEL.md 15.2). ADR-0032 left gRPC with no admin verifier and asked part 3c to give `tutela.admin.v1` the same rule as the HTTP admin routes, or make it services-only. The store calls (`register_agent`, `set_disabled`, `revoke_sessions`, `set_boundary`, `move_scope`) trust their caller and take no actor (ADR-0034 item 11).
+
+**Decision.**
+
+1. **One service, `tutela.admin.v1.Admin`, and HTTP routes under `/v1/admin/`** beside the model routes under `/v1/models`. Each operation is one function in `tutelad::admin` or `tutelad::models`; `admin::http` and `admin::grpc` only adapt, as the decision APIs do (ADR-0021). A gRPC method answers typed messages where the answer is small, and the route's JSON as text (`result_json`) where it is a report: a model version, an impact report, a proposal.
+2. **The admin token rule on gRPC too.** A request whose path starts with `/tutela.admin.v1.Admin/` goes through the admin token check of the HTTP admin routes (`api::admin_identity`): a person sends an admin token (`aud=tutela-admin`, `acr` a step-up value), a service (`sa`, `key`) its `tutela-authz` token. An agent, a delegated token and an external token never pass. So the Console and a pipeline use either protocol with the same token. `tutela.authz.v1`'s `Explain` and `Simulate` stay services-only (ADR-0032 item 4): they live in the check API's service, which has one verifier.
+3. **Who may ask:** the admin keys of MANIFEST.md 6, on data that has just been checked (`ActionClass::Admin`):
+   - an agent (register, list, read, disable, enable, revoke): `manage_agents` at **every org** of the tenant. An agent is a principal of the whole tenant, not of one org, so the admin of one org must not reach it;
+   - a person (read, disable, enable, revoke sessions): `manage_access` at every org, for the same reason;
+   - a scope's move and link rules: `<type>:manage_boundaries` on the scope, at the path the store holds for it (item 6);
+   - `PutResourceTypes`: what proposing a model needs, `manage_access` and `manage_fields` at every org (ADR-0026 item 8).
+4. **Agents.** `POST /v1/admin/agents` makes the id, `agent:agt_<uuidv7>` (CONTRACTS.md 1.2: Tutela makes its ids; attache keeps the mapping to its own). A workload, when given, is on attache's path `/ns/<namespace>/svc/<service>`; one workload names one agent per tenant (409 `exists`), and `GET /v1/admin/agents?workload=` finds it again, so attache can recover from a lost answer. Registering bumps no revision and emits no event (ADR-0035 item 5): a new agent holds nothing.
+5. **A principal of another tenant is not there.** An agent must be registered in the caller's tenant to be read or changed: 404 otherwise. A person may have no row yet (a person of a trusted Tutela-format issuer, CONTRACTS.md 1.6) and is then enabled at epoch 0; disabling one writes a row in the caller's tenant only, under its row-level security, and changes nothing anywhere else.
+6. **Principals go in the body, never in the URL.** A principal id is personal data (CONTRACTS.md 9.5), and 7.1 keeps personal data out of URLs, so the routes that name one are `POST` with `{"principal"}`.
+7. **`PUT /v1/admin/boundaries`** checks the key on the scope at its stored path: a caller cannot place a scope under one it owns to set its rules. An org has no rules (400); an unregistered scope is 404. The store bumps the revision and emits `tutela.permissions.changed.v1` in the same transaction.
+8. **`move_scope` gets no route.** A move is the product's write after its `write_check` (CONTRACTS.md 6.7, ADR-0025 item 8). A route that moved a registered scope would skip the boundary rules the move verdict applies. In service mode a product also has no route yet to register scopes, assign roles or manage groups; that API, with a move that runs the verdict and `move_scope` in one transaction, is [#107](https://github.com/f8fvwgzc/tutela/issues/107).
+9. **`PutResourceTypes` stores a proposal.** `POST /v1/admin/resource-types {types, expected_version?}` merges the pushed types into the tenant's active model and stores the result through the same code as `POST /v1/models/proposals`, with `origin: resource_types` in its audit record. Only additions are taken: a new type, and new fields, actions, features and parents of a type. A push that would change or remove what the model has is 409 `not_additive`; one that adds nothing is 409 `no_change`. Nothing is published until another principal approves (ADR-0029), with an approval token when it widens; a new confidential or secret field holds nothing for anyone (MANIFEST.md 4). The merged text is the active model parsed and written again: it keeps every value, not the comments. When the tenant followed the app's manifest, approving the proposal gives it its own model (ADR-0026 item 3).
+10. **Audit** (ADR-0034). Every change writes its record in its transaction, with who asked and what moved (the principal, its new epoch, the revision; the scope and the rule). Every refusal for want of a key writes a `denied` record in a transaction of its own before the answer (`admin::guard`), so an admin call is never refused unseen. Reads of agents and of a principal's state are not recorded, as the model routes' reads are not: ADR-0034's list is of reads that show other people's access.
+11. **Errors** are the problem documents of CONTRACTS.md 7.1, with `not_found` (404), `exists`, `not_additive`, `no_change` and `version_conflict` (409). gRPC maps 400 to `INVALID_ARGUMENT`, 401 `UNAUTHENTICATED`, 403 `PERMISSION_DENIED`, 404 `NOT_FOUND`, 409 `ABORTED`, everything else `UNAVAILABLE`, with `<code>: <text>` as the message.
+12. **Metrics:** `tutelad_admin_operations_total{operation, outcome}` (`ok`, `forbidden`, `refused`, `not_found`, `conflict`, `invalid`, `error`). The model methods count in `tutelad_model_operations_total` over gRPC as over HTTP.
+
+**Consequences.**
+- attache registers, quarantines and enables agents with its service account's `tutela-authz` token; that account needs `manage_agents` at every org of the tenant (an Owner-like role at each org, given when the org is made). MIGRATION-0.2.md says how.
+- A refused admin call grows its own tenant's audit log by one record. Only a verified principal of that tenant can cause it, as for a refused write check.
+- The Console can use HTTP or gRPC with the person's admin token.
+- Service-mode scopes, bindings and groups are open ([#107](https://github.com/f8fvwgzc/tutela/issues/107)).
+
+**Alternatives considered.**
+- **`tutela.admin.v1` for services only.** attache and onto-intelli are services, but the Console is a person, and two rules for one API invite drift. The admin verifier already existed for HTTP.
+- **Principals in the URL path** (`/v1/admin/principals/{principal}`). Shorter, but it puts personal data in URLs and access logs.
+- **Keys on one org for agents.** An agent may be assigned roles in every org of its tenant; one org's admin could quarantine another org's agents.
+- **`PutResourceTypes` publishing at once.** PERMISSION-MODEL.md 15.2 refuses it.
+- **Keep the comments of the active model.** It needs a TOML editor that keeps the document; the tree has `toml` only, and the model's meaning is what the proposal's diff and impact report show.
+

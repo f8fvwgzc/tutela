@@ -137,6 +137,7 @@ pub struct Metrics {
     sweeps: Family<SweepLabels, Counter>,
     decisions: Family<DecisionLabels, Counter>,
     model_operations: Family<DecisionLabels, Counter>,
+    admin_operations: Family<DecisionLabels, Counter>,
     revision_checks: Family<SweepLabels, Counter>,
     tenant_loads: Family<SweepLabels, Counter>,
     key_refreshes: Family<SweepLabels, Counter>,
@@ -205,6 +206,12 @@ impl Metrics {
             "model_operations",
             "Calls of the model API, by operation and how they ended",
             model_operations.clone(),
+        );
+        let admin_operations = Family::<DecisionLabels, Counter>::default();
+        registry.register(
+            "admin_operations",
+            "Calls of the admin API (tutela.admin.v1), by operation and how they ended",
+            admin_operations.clone(),
         );
         let decisions = Family::<DecisionLabels, Counter>::default();
         registry.register(
@@ -289,6 +296,7 @@ impl Metrics {
             sweeps,
             decisions,
             model_operations,
+            admin_operations,
             revision_checks,
             tenant_loads,
             key_refreshes,
@@ -409,6 +417,17 @@ impl Metrics {
     /// `conflict`, `stale`, `invalid` or `error`.
     pub fn count_model(&self, operation: &'static str, outcome: &'static str) {
         self.model_operations
+            .get_or_create(&DecisionLabels {
+                operation: operation.to_owned(),
+                outcome: outcome.to_owned(),
+            })
+            .inc();
+    }
+
+    /// Counts one call of the admin API: `ok`, `forbidden`, `refused`,
+    /// `not_found`, `conflict`, `invalid` or `error`.
+    pub fn count_admin(&self, operation: &'static str, outcome: &'static str) {
+        self.admin_operations
             .get_or_create(&DecisionLabels {
                 operation: operation.to_owned(),
                 outcome: outcome.to_owned(),

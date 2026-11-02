@@ -321,6 +321,43 @@ pub async fn register_agent(
     Ok(())
 }
 
+/// The most agents [`agents`] returns at once.
+pub const MAX_AGENT_PAGE: usize = 1000;
+
+/// The agents registered in `tenant`, by principal, after `after`, at most
+/// `limit` (1 to [`MAX_AGENT_PAGE`]).
+///
+/// # Errors
+///
+/// [`UnknownTenant`](crate::StoreErrorKind::UnknownTenant), or a database
+/// error.
+pub async fn agents(
+    tx: &Transaction<'_>,
+    tenant: &TenantKey,
+    after: Option<&Principal>,
+    limit: usize,
+) -> Result<Vec<PrincipalState>, StoreError> {
+    enter(tx, tenant).await?;
+    let limit = i64::try_from(limit.clamp(1, MAX_AGENT_PAGE)).unwrap_or(1);
+    tx.query(
+        &format!(
+            "SELECT {COLUMNS} FROM tutela.principal p WHERE p.tenant_id = $1 \
+             AND p.principal LIKE 'agent:%' AND ($2::text IS NULL OR p.principal > $2) \
+             ORDER BY p.principal LIMIT $3"
+        ),
+        &[
+            &tenant.tid.to_string(),
+            &after.map(ToString::to_string),
+            &limit,
+        ],
+    )
+    .await
+    .db()?
+    .iter()
+    .map(state)
+    .collect()
+}
+
 /// `/ns/<namespace>/svc/<service>`, and nothing more.
 #[must_use]
 pub fn is_attache_path(w: &WorkloadId) -> bool {

@@ -7,6 +7,7 @@
 //! - [`api`]: the API port (HTTP and gRPC on one listener, every request
 //!   behind [`tutela_sdk::http::AuthLayer`]) and the ops port (`/healthz`,
 //!   `/readyz`, `/metrics`).
+//! - [`admin`]: the admin API, `tutela.admin.v1` and its HTTP routes.
 //! - [`authz`]: the permission decision APIs, one code path for HTTP and gRPC.
 //! - [`bundle`]: signed bundles of a tenant's data, for offline checks.
 //! - [`cache`]: the tenant data decisions are made from, and how it stays
@@ -27,6 +28,7 @@
 //! - [`stream`]: `GET /v1/events`, a tenant's events as Server-Sent Events.
 //! - [`server`]: the two listeners and the graceful shutdown.
 
+pub mod admin;
 pub mod api;
 pub mod audit;
 pub mod authz;
