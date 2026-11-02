@@ -72,6 +72,17 @@ pub struct AppState {
     /// The outbound client that checks a webhook's URL and its DNS answer
     /// when it is registered (TM-18): loopback `http` only in dev mode.
     pub safenet: Arc<tutela_safenet::Client>,
+    /// `TUTELA_KEY_PEPPER` and its version: client secrets are hashed with
+    /// it (CONTRACTS.md 5.4, ADR-0044).
+    pub pepper: Arc<crate::apps::Pepper>,
+}
+
+impl AppState {
+    /// The pepper and its version.
+    #[must_use]
+    pub fn pepper(&self) -> (&[u8], u32) {
+        (&self.pepper.bytes, self.pepper.version)
+    }
 }
 
 /// An error answer: `application/problem+json` (RFC 9457, CONTRACTS.md 7.1).
@@ -344,6 +355,15 @@ pub fn api_router(state: &AppState, grpc: Router, request_timeout: Duration) -> 
             post(admin::http::remove_member),
         )
         .route("/v1/admin/roles", get(admin::http::roles))
+        .route(
+            "/v1/admin/apps",
+            get(admin::http::apps).post(admin::http::create_app),
+        )
+        .route("/v1/admin/apps/{id}/rotate", post(admin::http::rotate_app))
+        .route(
+            "/v1/admin/apps/{id}/disable",
+            post(admin::http::disable_app),
+        )
         .route(
             "/v1/admin/tenant",
             get(admin::http::tenant)

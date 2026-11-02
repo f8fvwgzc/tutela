@@ -81,9 +81,14 @@ ADMIN_LOCKED_SRC = "crates/tutelad/src/admin/locked.rs"
 PDP_GRANT = "crates/tutela-pdp/src/grant.rs"
 BINDINGS = ["-p", "tutelad", "--test", "admin_bindings"]
 PDP_GRANTS = ["-p", "tutela-pdp", "--lib", "tests_grant"]
+APPS_SRC = "crates/tutelad/src/apps.rs"
+ADMIN_APPS_SRC = "crates/tutelad/src/admin/apps.rs"
+STORE_APPS = "crates/tutela-store/src/apps.rs"
+APPS = ["-p", "tutelad", "--test", "apps"]
 
 # (id, file, what it breaks, old text, new text, cargo test arguments).
 # M01-M14 are part 4a's (#107): scopes, role assignments and groups.
+# C01-C08 are part 4a's apps and client authentication (#118).
 # `old` must occur once.
 #
 # Not every guard can be a mutant. `models::principal` refuses agents, and
@@ -94,6 +99,38 @@ PDP_GRANTS = ["-p", "tutela-pdp", "--lib", "tests_grant"]
 # it, so no agent can be found for one (an equivalent mutant, run and kept
 # out of this list).
 MUTANTS = [
+    ("C01", APPS_SRC, "a client secret is stored in plain text (its own bytes, in hex)",
+     "    d.as_ref().iter().map(|b| format!(\"{b:02x}\")).collect()\n",
+     "    let _ = d;\n    key.as_bytes().iter().map(|b| format!(\"{b:02x}\")).collect()\n",
+     APPS),
+    ("C02", ADMIN_APPS_SRC, "a client secret is shown again, in the audit log",
+     "            .detail(\"prefix\", format!(\"tut_sk_{}\", hash.prefix)),\n",
+     "            .detail(\"prefix\", secret.to_string()),\n",
+     APPS),
+    ("C03", EXCHANGE_SRC, "an exchange accepts a client of another app",
+     "            if of_app && subject.azp.as_str() != c.app.id {\n",
+     "            if false && of_app && subject.azp.as_str() != c.app.id {\n",
+     APPS),
+    ("C04", EXCHANGE_SRC, "a client of another tenant exchanges this tenant's token",
+     "            if client.tenant != tenant {\n",
+     "            if false && client.tenant != tenant {\n",
+     APPS),
+    ("C05", EXCHANGE_SRC, "an exchange with no client authentication keeps an app's azp",
+     "            if of_app {\n",
+     "            if false && of_app {\n",
+     APPS),
+    ("C06", APPS_SRC, "the secret is not compared",
+     "    if verify_slices_are_equal(secret.hash.hash.as_bytes(), computed.as_bytes()).is_err() {\n",
+     "    if false && verify_slices_are_equal(secret.hash.hash.as_bytes(), computed.as_bytes()).is_err() {\n",
+     APPS),
+    ("C07", APPS_SRC, "another app's secret authenticates this app",
+     "    if secret.app_id != creds.id {\n",
+     "    if false && secret.app_id != creds.id {\n",
+     APPS),
+    ("C08", STORE_APPS, "a rotation keeps the old secrets for good",
+     "SET expires_at = least(coalesce(expires_at, $3), $3)",
+     "SET expires_at = expires_at",
+     APPS),
     ("M01", ADMIN_SCOPES_SRC, "a move over the admin API skips write_check's verdict",
      "    if verdict.effect != Effect::Allow {\n",
      "    if false && verdict.effect != Effect::Allow {\n",
@@ -529,8 +566,8 @@ MUTANTS = [
      "        None if false && deleted => Err(StoreError::unknown_tenant()),\n",
      LIFECYCLE),
     ("G02", STORE_LIFECYCLE, "a purge deletes the audit chain",
-     "const PURGED: [&str; 16] = [\n    \"webhook_delivery\",\n",
-     "const PURGED: [&str; 17] = [\n    \"audit_record\",\n    \"webhook_delivery\",\n",
+     "const PURGED: [&str; 18] = [\n    \"app_secret\",\n",
+     "const PURGED: [&str; 19] = [\n    \"audit_record\",\n    \"app_secret\",\n",
      LIFECYCLE),
     ("G03", STORE_BINDINGS, "the jobs still visit a soft-deleted tenant",
      "FROM tutela.tenant WHERE deleted_at IS NULL ORDER BY tenant_id",

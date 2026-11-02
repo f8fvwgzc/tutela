@@ -2102,13 +2102,23 @@ async fn revoking_and_disabling_raise_the_epoch_and_the_revision() {
     })
     .await;
     assert_eq!(e, 1);
+    // An app's service account has an epoch too (ADR-0044 item 9).
     let sa: Principal = "sa:sa_0193a1b2-c3d4-7c55-ad66-7e8f90a1b2c3"
+        .parse()
+        .unwrap();
+    let e = in_tenant(&mut db.client, async |tx| {
+        crate::revoke_sessions(tx, &t, &sa).await.unwrap()
+    })
+    .await;
+    assert_eq!(e, 1);
+    // An API key's principal has none: its key is revoked instead.
+    let key: Principal = "key:key_0193a1b2-c3d4-7c55-ad66-7e8f90a1b2c3"
         .parse()
         .unwrap();
     assert_eq!(
         kind(
             in_tenant(&mut db.client, async |tx| crate::revoke_sessions(
-                tx, &t, &sa
+                tx, &t, &key
             )
             .await)
             .await

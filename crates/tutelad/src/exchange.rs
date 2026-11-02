@@ -16,6 +16,13 @@
 //!   tenant.
 //! - **Any other issuer's token** is refused: its tenant is not this
 //!   service's to issue for.
+//! - **An app** (ADR-0044) authenticates with its client secret, by HTTP
+//!   Basic or in the form. `grant_type=client_credentials` gives its service
+//!   account a token of its tenant. In an exchange, an app gets a token whose
+//!   `azp` is its client id, and a subject token whose `azp` is an app's is
+//!   exchanged by that app only. An exchange with no client authentication
+//!   stays open to a public client (a browser): its `azp` is the subject
+//!   token's, and never an app's.
 //!
 //! Every refusal of the subject token is `invalid_grant`, and says nothing
 //! of which check failed; the log names it, never the token. Metrics count
@@ -51,8 +58,10 @@ use tutela_sdk::{
     CacheRules, Clock, ExternalToken, Identity, JwksSource, Verifier, VerifierConfig,
 };
 use tutela_store::{PrincipalState, StoreErrorKind};
+use zeroize::Zeroizing;
 
 use crate::api::AppState;
+use crate::apps::{Client, Credentials};
 use crate::audit::{self, Record};
 use crate::config::Config;
 use crate::db::{DbError, TenantTx};
@@ -66,6 +75,8 @@ pub const TOKEN_PATH: &str = "/oauth2/token";
 pub const METADATA_PATH: &str = "/.well-known/oauth-authorization-server";
 /// RFC 8693's grant type.
 pub const GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:token-exchange";
+/// The client-credentials grant (RFC 6749 4.4), for an app (ADR-0044).
+pub const CLIENT_CREDENTIALS: &str = "client_credentials";
 /// An access token, as a token type.
 pub const ACCESS_TOKEN_TYPE: &str = "urn:ietf:params:oauth:token-type:access_token";
 /// A JWT, as a token type.
@@ -266,6 +277,9 @@ pub struct TokenRequest {
     run_id: Option<String>,
     /// The step inside the run.
     node_id: Option<String>,
+    /// `client_secret_post` (RFC 6749 2.3.1), or a public client's id.
+    client_id: Option<String>,
+    client_secret: Option<String>,
 }
 
 /// A token response (RFC 8693 2.2.1).
@@ -312,6 +326,17 @@ impl Refusal {
     /// The subject or actor token cannot be used. One text for every reason.
     const fn grant(reason: &'static str) -> Self {
         Self::new("invalid_grant", "the token cannot be exchanged", reason)
+    }
+
+    /// The client did not authenticate (RFC 6749 5.2). One text for every
+    /// reason, with `WWW-Authenticate`.
+    pub(crate) const fn client(reason: &'static str) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            error: "invalid_client",
+            description: "the client could not be authenticated",
+            reason,
+        }
     }
 
     const fn unavailable(reason: &'static str) -> Self {
@@ -365,7 +390,14 @@ impl IntoResponse for Refusal {
             "error": self.error,
             "error_description": self.description,
         });
-        no_store((self.status, axum::Json(body)).into_response())
+        let mut res = no_store((self.status, axum::Json(body)).into_response());
+        if self.status == StatusCode::UNAUTHORIZED {
+            res.headers_mut().insert(
+                header::WWW_AUTHENTICATE,
+                HeaderValue::from_static("Basic realm=\"tutela\""),
+            );
+        }
+        res
     }
 }
 
@@ -380,6 +412,8 @@ pub enum Kind {
     Admin,
     /// A delegated token, `typ: agent+jwt` (CONTRACTS.md 4.5).
     Delegated,
+    /// An app's own token, by `client_credentials` (ADR-0044).
+    Client,
 }
 
 impl Kind {
@@ -388,11 +422,15 @@ impl Kind {
             Self::Access => "access",
             Self::Admin => "admin",
             Self::Delegated => "delegated",
+            Self::Client => "client",
         }
     }
 
     /// The kind a request asks for, from its audience.
     fn of(req: &TokenRequest) -> Self {
+        if req.grant_type.as_deref() == Some(CLIENT_CREDENTIALS) {
+            return Self::Client;
+        }
         let delegated_subject = req
             .subject_token
             .as_deref()
@@ -840,7 +878,186 @@ pub struct Issued {
 ///
 /// A [`Refusal`]: what to answer, with the reason for the log.
 pub async fn exchange(state: &AppState, req: TokenRequest) -> Result<Issued, Refusal> {
-    exchange_traced(state, req, &mut Trail::default()).await
+    exchange_traced(state, req, None, &mut Trail::default()).await
+}
+
+/// How a request authenticated its client: an app with its secret, or a
+/// public client that only named itself, or neither.
+struct Creds {
+    secret: Option<Credentials>,
+    public_id: Option<String>,
+}
+
+/// The client's credentials: HTTP Basic or the form, never both (RFC 6749
+/// 2.3.1). A secret with no id is no credential.
+fn credentials(basic: Option<Credentials>, req: &TokenRequest) -> Result<Creds, Refusal> {
+    match (
+        basic,
+        req.client_id.as_deref(),
+        req.client_secret.as_deref(),
+    ) {
+        (Some(_), Some(_), _) | (Some(_), _, Some(_)) => {
+            Err(Refusal::request("authenticate the client one way only"))
+        }
+        (Some(b), None, None) => Ok(Creds {
+            secret: Some(b),
+            public_id: None,
+        }),
+        (None, Some(id), Some(secret)) => Ok(Creds {
+            secret: Some(Credentials {
+                id: id.to_owned(),
+                secret: Zeroizing::new(secret.to_owned()),
+            }),
+            public_id: None,
+        }),
+        (None, None, Some(_)) => Err(Refusal::client("no_client_id")),
+        (None, id, None) => Ok(Creds {
+            secret: None,
+            public_id: id.map(str::to_owned),
+        }),
+    }
+}
+
+/// Binds the issued token's `azp` to the client (ADR-0044 items 6 and 7):
+/// an app that authenticated becomes the `azp`, and a subject token whose
+/// `azp` is an app's is exchanged by that app only. With no client
+/// authentication nothing may name an app.
+async fn bind_client(
+    tx: &TenantTx<'_>,
+    subject: &mut Subject,
+    client: Option<&Client>,
+    creds: &Creds,
+) -> Result<(), Refusal> {
+    let key = tx.tenant();
+    let of_app = crate::apps::registered(tx, key, subject.azp.as_str()).await?;
+    match client {
+        Some(c) => {
+            if of_app && subject.azp.as_str() != c.app.id {
+                return Err(Refusal::grant("client"));
+            }
+            subject.azp = ClientId::parse(&c.app.id).map_err(|_| Refusal::unavailable("client"))?;
+        }
+        None => {
+            if of_app {
+                return Err(Refusal::client("client_required"));
+            }
+            if let Some(id) = &creds.public_id
+                && crate::apps::registered(tx, key, id).await?
+            {
+                return Err(Refusal::client("client_required"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `grant_type=client_credentials` (RFC 6749 4.4): the app's service
+/// account gets an access token of the app's tenant, for one registered
+/// audience (`TUTELA_AUDIENCE` when none is asked), never an admin or a
+/// delegated one.
+async fn client_credentials(
+    state: &AppState,
+    req: &TokenRequest,
+    creds: Creds,
+    trail: &mut Trail,
+) -> Result<Issued, Refusal> {
+    let Some(c) = creds.secret.as_ref() else {
+        return Err(Refusal::client("no_client"));
+    };
+    if req.subject_token.is_some() || req.actor_token.is_some() {
+        return Err(Refusal::request(
+            "client_credentials takes no subject or actor token",
+        ));
+    }
+    if req.resource.is_some() {
+        return Err(Refusal::target(
+            "name the service with `audience`, not `resource`",
+        ));
+    }
+    let client = crate::apps::authenticate(state, c).await?;
+    trail.tenant = Some(client.tenant.clone());
+    trail.principal = Some(client.app.principal.clone());
+    let audience: Audience = match req.audience.as_deref() {
+        None => state.audiences.own.clone(),
+        Some(a) => a
+            .parse()
+            .map_err(|_| Refusal::target("the audience is not registered"))?,
+    };
+    if audience == Audience::TUTELA_ADMIN || state.audiences.get(&audience).is_none() {
+        return Err(Refusal::target("the audience is not registered for apps"));
+    }
+    let scope = scope(req.scope.as_deref(), None)?;
+    let mut conn = state.db.conn().await?;
+    let tx = conn.begin(&client.tenant).await?;
+    let sa = &client.app.principal;
+    let epoch = match tutela_store::principal_state(&tx, tx.tenant(), sa).await? {
+        Some(s) if s.disabled => return Err(Refusal::client("disabled")),
+        Some(s) => s.epoch,
+        None => 0,
+    };
+    let now = now_secs();
+    let exp = now
+        + state
+            .audiences
+            .token_ttl
+            .as_secs()
+            .min(MAX_ACCESS_TOKEN_LIFETIME_SECS);
+    let key = tx.tenant();
+    let rev = tutela_store::rev(&tx, key).await?;
+    let claims = AccessTokenClaims {
+        iss: key.iss.clone(),
+        sub: sa.clone(),
+        aud: AudienceClaim::one(audience.clone()),
+        azp: ClientId::parse(&client.app.id).map_err(|_| Refusal::unavailable("client"))?,
+        exp,
+        iat: now,
+        nbf: now,
+        jti: new_id()?,
+        sid: None,
+        tid: key.tid,
+        org: None,
+        epoch,
+        rev,
+        scope: scope.clone(),
+        amr: None,
+        acr: None,
+        act: None,
+    };
+    claims
+        .validate(now, &audience, &state.audiences.trust)
+        .map_err(|e| {
+            tracing::error!(error = %e, "an app's token would not verify");
+            Refusal::unavailable("claims")
+        })?;
+    let access_token = state.keys.sign_jwt("at+jwt", &claims)?;
+    let record = Record::new(
+        key,
+        tutela_contracts::audit::Actor::new(sa.clone()),
+        "tutela_token:issue",
+        ("tutela_token", &claims.jti.to_string()),
+    )
+    .allowed(rev)
+    .detail("kind", Kind::Client.as_str())
+    .detail("jti", claims.jti.to_string())
+    .detail("principal", sa.to_string())
+    .detail("app", client.app.id.clone())
+    .detail("aud", audience.as_str())
+    .detail("azp", claims.azp.as_str())
+    .detail("exp", exp);
+    audit::write(state, &tx, vec![record])
+        .await
+        .map_err(|_| Refusal::unavailable("audit"))?;
+    tx.commit().await?;
+    Ok(Issued {
+        jti: claims.jti,
+        response: TokenResponse {
+            access_token,
+            issued_token_type: ACCESS_TOKEN_TYPE,
+            token_type: "Bearer",
+            expires_in: exp - now,
+            scope: scope.map(|s| s.to_string()),
+        },
+    })
 }
 
 /// The records of a token that was issued, and of the person made for it.
@@ -881,10 +1098,13 @@ fn issued_records(
 async fn exchange_traced(
     state: &AppState,
     req: TokenRequest,
+    basic: Option<Credentials>,
     trail: &mut Trail,
 ) -> Result<Issued, Refusal> {
     let kind = Kind::of(&req);
+    let creds = credentials(basic, &req)?;
     match req.grant_type.as_deref() {
+        Some(CLIENT_CREDENTIALS) => return client_credentials(state, &req, creds, trail).await,
         Some(GRANT_TYPE) => {}
         Some(_) => {
             return Err(Refusal::new(
@@ -967,6 +1187,17 @@ async fn exchange_traced(
         _ => return Err(Refusal::grant("issuer")),
     };
     trail.tenant = Some(tenant.clone());
+    // An app authenticates for the subject's own tenant only.
+    let client = match creds.secret.as_ref() {
+        Some(c) => {
+            let client = crate::apps::authenticate(state, c).await?;
+            if client.tenant != tenant {
+                return Err(Refusal::grant("client_tenant"));
+            }
+            Some(client)
+        }
+        None => None,
+    };
     let mut conn = state.db.conn().await?;
     let tx = conn.begin(&tenant).await?;
     let mut subject = match &id {
@@ -975,6 +1206,7 @@ async fn exchange_traced(
         Identity::Delegated(c) => own_delegated(&tx, c).await?,
         _ => return Err(Refusal::grant("issuer")),
     };
+    bind_client(&tx, &mut subject, client.as_ref(), &creds).await?;
     let scope = scope(req.scope.as_deref(), subject.scope.as_ref())?;
 
     let user = subject.principal.kind() == tutela_contracts::principal::PrincipalKind::User;
@@ -1000,7 +1232,7 @@ async fn exchange_traced(
             Some(t) => Some(actor(state, &tx, t).await?),
             None => None,
         };
-        let claims = delegated(
+        let mut claims = delegated(
             state,
             &req,
             &tx,
@@ -1010,6 +1242,10 @@ async fn exchange_traced(
             scope,
         )
         .await?;
+        // An app that authenticated is the client, whoever acts.
+        if client.is_some() {
+            claims.azp = subject.azp.clone();
+        }
         let access_token = state.keys.sign_jwt(DELEGATED_TOKEN_TYP, &claims)?;
         let chain: Vec<String> = claims
             .act
@@ -1144,12 +1380,12 @@ pub async fn token(State(state): State<AppState>, headers: HeaderMap, body: Byte
         ))
     };
     let mut trail = Trail::default();
-    let result = match parsed {
-        Ok(req) => {
+    let result = match (parsed, crate::apps::basic(&headers)) {
+        (Ok(req), Ok(basic)) => {
             kind = Kind::of(&req);
-            exchange_traced(&state, req, &mut trail).await
+            exchange_traced(&state, req, basic, &mut trail).await
         }
-        Err(e) => Err(e),
+        (Err(e), _) | (_, Err(e)) => Err(e),
     };
     if let (Err(refusal), Some(tenant)) = (&result, &trail.tenant) {
         audit_refusal(&state, tenant, &trail, kind, refusal).await;
@@ -1225,8 +1461,8 @@ pub async fn metadata(State(state): State<AppState>) -> Response {
         "issuer": iss,
         "token_endpoint": format!("{iss}{TOKEN_PATH}"),
         "jwks_uri": state.keys.jwks_url(),
-        "grant_types_supported": [GRANT_TYPE],
-        "token_endpoint_auth_methods_supported": ["none"],
+        "grant_types_supported": [GRANT_TYPE, CLIENT_CREDENTIALS],
+        "token_endpoint_auth_methods_supported": ["none", "client_secret_basic", "client_secret_post"],
         "response_types_supported": [],
     }))
     .into_response()

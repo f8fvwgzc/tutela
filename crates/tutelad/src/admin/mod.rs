@@ -21,6 +21,7 @@
 //! asked: in the change's transaction, last; a refusal for want of a key in
 //! a transaction of its own before the answer (`guard`).
 
+pub mod apps;
 pub mod bindings;
 pub mod boundaries;
 pub mod grpc;

@@ -215,3 +215,22 @@ These matter to whoever runs `tutelad`, and to a product that verifies its token
 - **New setting:** `TUTELA_AUDIT_VERIFY_SECS` (default 3600; `0` off): every replica walks every audit chain this often ([ADR-0042](DECISIONS.md#adr-0042-the-audit-logs-leftovers-a-chain-check-on-a-timer-the-callers-trace-in-each-record)). Alert on `tutelad_audit_chains_broken` above 0.
 - **Audit records** of a request now carry `request_id`, and `trace_id` and `span_id` when the caller sent a `traceparent`. attache's ledger and any reader of audit.v1 already accept these fields; `ip` stays empty.
 
+
+## Scopes, role assignments and groups over the admin API (part 4a)
+
+- **New routes and methods** ([CONTRACTS.md 7.13.7](CONTRACTS.md#7137-scopes-role-assignments-and-groups), [ADR-0043](DECISIONS.md#adr-0043-scopes-assignments-and-groups-over-the-admin-api-checked-on-the-data-they-change)): a product in service mode registers, moves and deletes its scopes, assigns roles and manages groups through `tutelad`, as library mode calls `tutela-store`. Its service account needs the keys each route names (for example `write` on the parent to register a scope, `manage_access` on a scope to assign there).
+- **Narrow-only:** a change that gives anyone more than the caller holds at the same place is refused with 403 `not_held`, a removal that uncovers wider access too. A service account with the seeded `owner` role at each org it serves may give anything in those orgs.
+- **A move** is refused unless `write_check`'s verdict allows it for the caller (403 `move_refused`, naming the scopes that wait for an owner).
+- **`tutela-store`:** new `lock` (the tenant's revision row, for update), `group`, `group_page`, `group_member_page`, `scope_page`, `GroupSummary`, `ScopeInfo`. **`tutela-pdp`:** new `grant_excess`.
+
+## Apps and client authentication (part 4a)
+
+- **Migration 13** adds `tutela.app_directory`, `tutela.app` and `tutela.app_secret`, and lets a service account have an epoch ([ADR-0044](DECISIONS.md#adr-0044-apps-one-tenant-each-a-hashed-client-secret-and-azp-bound-to-the-client-that-authenticated)). Run `tutelad migrate` as the owner, then `grant_service` again (`tutelad migrate` does both).
+- **What attache and texc-symphony do to authenticate as an app, when they bump:**
+  1. The tenant's owner makes one app per product and tenant: `tutela apps create --name attache` with an admin token (or `POST /v1/admin/apps`), or the operator at bootstrap: `tutelad apps create --tenant <tid> --name attache`. Keep the printed `client_id` and `client_secret` in the product's secret store: the secret is shown once.
+  2. The owner gives the app's service account (`principal` in the answer) the roles the product needs, with `POST /v1/admin/assignments`: attache needs `manage_agents` at every org (for example `owner` at each org); texc-symphony's pipeline needs `manage_access` and `manage_fields` at every org to publish the model, and `read_audit` to see the impact report.
+  3. The product asks `POST /oauth2/token` with `grant_type=client_credentials` and its client id and secret (HTTP Basic, or `client_id` and `client_secret` in the form) for its own `tutela-authz` token, and again before it expires (`expires_in`, at most `TUTELA_TOKEN_TTL_SECS`). This replaces a service token from Keycloak exchanged at `tutelad`.
+  4. When it exchanges its users' tokens, it authenticates too: the issued token's `azp` is then its client id, and a token whose `azp` is its client id can be exchanged by it only.
+  5. To rotate: `tutela apps rotate` (or `POST /v1/admin/apps/{id}/rotate {overlap_secs}`) gives a new secret; deploy it within the overlap (default one hour). To revoke: `POST /v1/admin/apps/{id}/disable`; its tokens stop within `TUTELA_REVISION_CHECK_MS`.
+- **A browser app** (the Console) does not authenticate: an exchange with no client authentication still works, keeps the sign-in's `azp`, and may not name an app.
+- **`tutela-store`:** new `apps` items: `create_app`, `app`, `apps`, `app_secret`, `app_tenant`, `rotate_app_secret`, `disable_app`, `AppInfo`, `SecretHash`, `StoredSecret`. `set_disabled` and `revoke_sessions` take a service account too.

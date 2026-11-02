@@ -144,6 +144,7 @@ Done:
 | The audit log's leftovers: every chain walked on a timer (`TUTELA_AUDIT_VERIFY_SECS`), a broken link reported as an error log and `tutelad_audit_chains_broken`; `request_id`, `trace_id` and `span_id` in each record of a request; the two-process bundle test | Done (part 3c) | [ADR-0042](DECISIONS.md#adr-0042-the-audit-logs-leftovers-a-chain-check-on-a-timer-the-callers-trace-in-each-record) |
 | Forwarding of audit records to attache's evidence ledger through its acknowledged Append API, off unless `TUTELA_LEDGER_URL` is set: each record signed by the deployment's Ed25519 producer key over its body, marked shipped only on acknowledgement, one replica per chain at a time, resuming after the last acknowledged `seq`; nothing changed in attache | Done (part 3b) | [ADR-0039](DECISIONS.md#adr-0039-forwarding-to-attaches-evidence-ledger-signed-acknowledged-resumable) |
 | Scopes, role assignments and groups over `tutela.admin.v1` and its HTTP routes: register, move (behind `write_check`'s verdict, on the data it writes), delete and the private flag of scopes; assign, end and remove roles; groups and their members; the roles and types of the model; pages with `next_after`. Every binding change, a removal too, is held to the narrow-only rule before and after (`tutela_pdp::grant_excess`), under the tenant's write lock | Done (part 4a, [#107](https://github.com/f8fvwgzc/tutela/issues/107)) | [ADR-0043](DECISIONS.md#adr-0043-scopes-assignments-and-groups-over-the-admin-api-checked-on-the-data-they-change), CONTRACTS.md 7.13.7 |
+| Apps and client authentication: an app per tenant with a service account and a client secret (an API key, stored as SHA-256(pepper ‖ key), shown once), made by the tenant's owner (`POST /v1/admin/apps`) or the operator (`tutelad apps create`); rotation with an overlap; disabling; `client_credentials`; `azp` bound to the client that authenticated, and an exchange with no client authentication open to public clients only | Done (part 4a, [#118](https://github.com/f8fvwgzc/tutela/issues/118)) | [ADR-0044](DECISIONS.md#adr-0044-apps-one-tenant-each-a-hashed-client-secret-and-azp-bound-to-the-client-that-authenticated), CONTRACTS.md 4.9, 7.13.8 |
 
 Not started:
 
@@ -151,7 +152,6 @@ Not started:
 |---|---|---|
 | `tutela apply` against `tutelad`, `tutela apps create`, `tutela keys rotate` | 4 | `tutela apply` calls `POST /v1/models/publish`, per tenant. |
 | A test of token exchange against a real Keycloak ([#87](https://github.com/f8fvwgzc/tutela/issues/87)) | open | No image could be pulled; tested against a local signer of Keycloak-shaped tokens. |
-| Client authentication at the token endpoint | 4 | With apps (`tutela apps create`): bind `azp` to the client (ADR-0031). |
 | Tutela Console and embeddable admin components | 4 | |
 | Helm chart and bootstrap job; the OCI image ([#49](https://github.com/f8fvwgzc/tutela/issues/49)) | 4 | The chart must set the values in `deploy/tutelad.env`, including `RUST_BACKTRACE=1` and `RUST_LIB_BACKTRACE=0`. |
 | OTLP export of traces | open | Logs and audit records carry the caller's `traceparent` trace and span ids today. |

@@ -150,6 +150,15 @@ impl Conn {
 }
 
 impl Conn {
+    /// The tenant an app belongs to, from the app directory, which holds no
+    /// tenant data: the token endpoint enters it to read the app's secret.
+    pub(crate) async fn app_tenant(&mut self, app: &str) -> Result<Option<TenantKey>, DbError> {
+        let tx = self.0.transaction().await?;
+        let key = tutela_store::app_tenant(&tx, app).await?;
+        tx.commit().await?;
+        Ok(key)
+    }
+
     /// The tenants in the directory, for a job that serves all of them.
     pub(crate) async fn tenants(&mut self) -> Result<Vec<TenantKey>, DbError> {
         let tx = self.0.transaction().await?;

@@ -39,7 +39,9 @@ const MANIFEST: &str = "version = 1\n[app]\nname = \"rls_test\"\n";
 
 /// Every table with tenant data today. The test also reads the catalog, so a
 /// new tenant table that nobody seeds below fails here, on purpose.
-const TENANT_TABLES: [&str; 20] = [
+const TENANT_TABLES: [&str; 22] = [
+    "app",
+    "app_secret",
     "audit_forward",
     "audit_head",
     "audit_record",
@@ -159,6 +161,13 @@ async fn fill(owner: &mut Client) -> (TenantKey, OrgId) {
     )
     .await
     .unwrap();
+    // An app: the directory maps its id to the tenant, like the tenant
+    // directory, and holds nothing else; its record and secret are tenant
+    // data (ADR-0044).
+    let (_, secret) = tutelad::apps::new_secret(&[7; 32], 1).unwrap();
+    tutela_store::create_app(&tx, &t, "rls app", USER, &secret)
+        .await
+        .unwrap();
     tutela_store::emit(
         &tx,
         &t,
@@ -220,7 +229,8 @@ async fn tenant_tables(c: &Client) -> Vec<String> {
             "SELECT c.relname::text FROM pg_class c \
              JOIN pg_namespace n ON n.oid = c.relnamespace \
              JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = 'tenant_id' \
-             WHERE n.nspname = 'tutela' AND c.relkind = 'r' AND c.relname <> 'tenant'",
+             WHERE n.nspname = 'tutela' AND c.relkind = 'r' \
+             AND c.relname NOT IN ('tenant', 'app_directory')",
             &[],
         )
         .await

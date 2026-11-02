@@ -468,7 +468,7 @@ Tokens are never written to logs, URLs or span attributes.
 
 ### 4.8 Token exchange (Phase B, built)
 
-`tutelad` exchanges a trusted token for a short-lived Tutela token at `POST /oauth2/token` (RFC 8693, [ADR-0031](DECISIONS.md#adr-0031-token-exchange-the-tenant-from-the-trust-list-a-person-from-iss-sub)). The endpoint is on the API port and needs no bearer token: the subject token is the credential. There is no client authentication until apps exist (part 4).
+`tutelad` exchanges a trusted token for a short-lived Tutela token at `POST /oauth2/token` (RFC 8693, [ADR-0031](DECISIONS.md#adr-0031-token-exchange-the-tenant-from-the-trust-list-a-person-from-iss-sub)). The endpoint is on the API port and needs no bearer token: the subject token is the credential. An app may authenticate as the client (4.9); a public client (a browser) does not.
 
 **Request.** `Content-Type: application/x-www-form-urlencoded`. A parameter sent twice is refused; an unknown one is ignored, and `tid` or `tenant` are never read.
 
@@ -524,7 +524,23 @@ Tokens are never written to logs, URLs or span attributes.
 
 The token is `typ: agent+jwt`: `sub` the person, `act` the chain with the new actor first (at most 4; a fifth is `invalid_grant`), `azp` the actor token's or the subject's, `epoch` the person's, and `exp` the earliest of now + `TUTELA_DELEGATED_TTL_SECS` (default 90, 60 to 120), the person's token and the agent's token. No `cnf` yet. A disabled agent or person gets nothing, and their issued tokens are refused on `tutelad`'s API within `TUTELA_REVISION_CHECK_MS`.
 
-**Metadata.** `GET /.well-known/oauth-authorization-server` (RFC 8414), no token: `issuer`, `token_endpoint`, `jwks_uri`, `grant_types_supported`.
+**Metadata.** `GET /.well-known/oauth-authorization-server` (RFC 8414), no token: `issuer`, `token_endpoint`, `jwks_uri`, `grant_types_supported` (token exchange and `client_credentials`), `token_endpoint_auth_methods_supported` (`none`, `client_secret_basic`, `client_secret_post`).
+
+### 4.9 Apps and client authentication (Phase B, built)
+
+Built in part 4a ([ADR-0044](DECISIONS.md#adr-0044-apps-one-tenant-each-a-hashed-client-secret-and-azp-bound-to-the-client-that-authenticated)). An **app** belongs to one tenant (under `TUTELA_ISSUER`). Its client id is `app_<uuidv7>`, its principal a service account `sa:sa_<uuidv7>` of the tenant that holds only what assignments give it, and its client secret an API key of section 5 (`tut_sk_…`), shown once and stored as SHA-256(pepper ‖ key) (5.4). Apps are made by the tenant's owner over the admin API (7.13.8) or by the operator (`tutelad apps create --tenant <tid> --name <name>`, which prints `{"client_id", "principal", "client_secret"}` once).
+
+**Client authentication** at `POST /oauth2/token`: HTTP Basic with `client_id:client_secret` (`client_secret_basic`), or `client_id` and `client_secret` in the form (`client_secret_post`), never both (`invalid_request`). Any failure is `401` `{"error": "invalid_client", "error_description": "the client could not be authenticated"}` with `WWW-Authenticate: Basic realm="tutela"`: a bad or unknown id, a bad secret, another app's secret, a disabled app, an expired secret, a secret hashed under another pepper version.
+
+**`grant_type=client_credentials`** (RFC 6749 4.4), client authentication required: an access token (4.2) for the app's service account. `tid` is the app's tenant; `azp` the client id; `aud` the asked `audience` (default `TUTELA_AUDIENCE`; an `[[audience]]` of the trust file; never `tutela-admin`: `invalid_target`); `epoch` the service account's; no `sid`, `amr` or `acr`; `exp` at most `TUTELA_TOKEN_TTL_SECS` from now; `scope` as asked. A `subject_token` or `actor_token` is `invalid_request`.
+
+**In a token exchange** (4.8):
+
+- with client authentication, the app must belong to the subject's tenant (else `invalid_grant`), and the issued token's `azp` is its client id, also for a delegated token;
+- a subject token whose `azp` is the client id of an app of the tenant is exchanged only by that app, authenticated: another app gets `invalid_grant`, no client authentication `invalid_client`;
+- without client authentication (a public client, such as the Console in a browser) the exchange works as before and the token keeps the subject token's `azp`; a `client_id` in the form that names an app, without its secret, is `invalid_client`.
+
+**Rotation:** `POST /v1/admin/apps/{id}/rotate {"overlap_secs"?}` gives a new secret; every older one keeps working for `overlap_secs` (default 3600, at most 604800; 0 ends them now). **Disabling** an app ends its secrets at once and disables its service account with a raised epoch: its tokens are refused on `tutelad`'s API within `TUTELA_REVISION_CHECK_MS`, and `tutela.principal.disabled.v1` goes out.
 
 ---
 
@@ -1644,6 +1660,19 @@ A webhook is `{"id", "url", "types", "disabled", "created_by"}`. A webhook of an
               "fields": [{"name": "amount", "sensitivity": "confidential"}],
               "features": ["@ai"], "actions": ["approve"] }] }
 ```
+
+#### 7.13.8 Apps
+
+**Built in part 4a** ([ADR-0044](DECISIONS.md#adr-0044-apps-one-tenant-each-a-hashed-client-secret-and-azp-bound-to-the-client-that-authenticated)). Every route needs every admin key at every org (the tenant's owner). A client id may be in a URL path.
+
+| Route | gRPC | Does |
+|---|---|---|
+| `POST /v1/admin/apps` `{"name"}` | `CreateApp` | A new app, its service account and its first client secret: `{"app": <app>, "client_secret": "tut_sk_…"}`. **The secret is shown this once.** |
+| `GET /v1/admin/apps` | `ListApps` | `{"apps": [<app>…]}`, oldest first. Never a secret. |
+| `POST /v1/admin/apps/{id}/rotate` `{"overlap_secs"?}` | `RotateAppSecret` | A new secret, answered as at creation and shown this once; the old ones work for the overlap (4.9). 404 for an app that is not there or is disabled. |
+| `POST /v1/admin/apps/{id}/disable` | `DisableApp` | Ends every secret and disables the service account (4.9). Answers the app. |
+
+An app is `{"client_id", "name", "principal", "created_by", "created_at"?, "disabled_at"?}`. An app of another tenant is 404. Every call is recorded with who asked; a record names the key's id and display prefix (`tut_sk_<prefix>`), never the secret.
 
 ## 8. Events
 

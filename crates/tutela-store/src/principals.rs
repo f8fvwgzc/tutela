@@ -166,9 +166,11 @@ pub async fn principal_state(
 
 fn person_or_agent(p: &Principal) -> Result<(), StoreError> {
     match p.kind() {
-        PrincipalKind::User | PrincipalKind::Agent => Ok(()),
+        // An app's service account too: disabling the app raises its epoch
+        // (ADR-0044 item 9).
+        PrincipalKind::User | PrincipalKind::Agent | PrincipalKind::ServiceAccount => Ok(()),
         _ => Err(StoreError::invalid(
-            "only a user or an agent principal has an epoch here",
+            "only a user, an agent or a service account has an epoch here",
         )),
     }
 }

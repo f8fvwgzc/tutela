@@ -582,7 +582,7 @@ async fn the_token_endpoint_refuses_bad_requests() {
     let aud = ("audience", AUD);
     for (pairs, error) in [
         (
-            vec![("grant_type", "client_credentials"), st, stt, aud],
+            vec![("grant_type", "password"), st, stt, aud],
             "unsupported_grant_type",
         ),
         (vec![st, stt, aud], "invalid_request"),
@@ -661,7 +661,10 @@ async fn the_metadata_names_the_token_endpoint_and_the_jwks() {
     assert_eq!(m["jwks_uri"], format!("{OWN_ISS}/.well-known/jwks.json"));
     assert_eq!(
         m["grant_types_supported"],
-        json!(["urn:ietf:params:oauth:grant-type:token-exchange"])
+        json!([
+            "urn:ietf:params:oauth:grant-type:token-exchange",
+            "client_credentials"
+        ])
     );
     w.finish().await;
 }
