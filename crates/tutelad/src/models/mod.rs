@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::http::StatusCode;
+use tutela_contracts::claims::Audience;
 use tutela_contracts::keys::{ActionKey, ResourceId, ResourceType};
 use tutela_contracts::principal::{Principal, PrincipalKind};
 use tutela_pdp::model::{Model, ModelDiff, diff};
@@ -67,20 +68,31 @@ pub(crate) fn observed<T>(
     r
 }
 
-/// The person or service behind a token. A delegated token and an external
-/// one have no right here: admin keys never pass through delegation.
-pub(crate) fn principal(id: &Identity) -> Option<&Principal> {
-    match id {
-        Identity::Access(c)
-            if matches!(
-                c.sub.kind(),
-                PrincipalKind::User | PrincipalKind::ServiceAccount | PrincipalKind::Key
-            ) =>
-        {
-            Some(&c.sub)
-        }
-        _ => None,
-    }
+/// The person or service behind a token, on the admin routes (ADR-0032):
+///
+/// - a person (`user`) with an admin token, `aud=tutela-admin`, whose `acr`
+///   is a step-up value of this deployment (`step_up`);
+/// - a service (`sa`, `key`) with a token of the service's own audience: a
+///   pipeline cannot step up, and the admin keys and approval tokens still
+///   hold.
+///
+/// A person's `tutela-authz` token, a service's admin token, an agent, a
+/// delegated token and an external one have no right here: admin keys never
+/// pass through delegation.
+pub(crate) fn principal(
+    id: &Identity,
+    step_up: impl Fn(Option<&str>) -> bool,
+) -> Option<&Principal> {
+    let Identity::Access(c) = id else {
+        return None;
+    };
+    let admin = c.aud.single() == Some(&Audience::TUTELA_ADMIN);
+    let allowed = match c.sub.kind() {
+        PrincipalKind::User => admin && step_up(c.acr.as_deref()),
+        PrincipalKind::ServiceAccount | PrincipalKind::Key => !admin,
+        _ => false,
+    };
+    allowed.then_some(&c.sub)
 }
 
 /// The caller, if it holds every one of `keys` at every org of its tenant,
@@ -95,7 +107,9 @@ pub(crate) async fn admin(
     tenant: &Tenant,
     keys: &[&str],
 ) -> Result<Principal, Problem> {
-    let who = principal(id).ok_or_else(Problem::forbidden)?.clone();
+    let who = principal(id, |acr| state.audiences.is_step_up(acr))
+        .ok_or_else(Problem::forbidden)?
+        .clone();
     let need = floor(id, None);
     let view = state
         .cache

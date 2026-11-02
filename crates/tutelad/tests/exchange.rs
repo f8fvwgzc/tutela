@@ -46,6 +46,10 @@ struct X {
 }
 
 async fn x() -> Option<X> {
+    x_with(|_| {}).await
+}
+
+async fn x_with(tune: impl FnOnce(&mut tutelad::Config)) -> Option<X> {
     let mut d = migrated().await?;
     publish(&mut d.owner, MANIFEST, None).await;
     let a = seed_of(&mut d.owner, OWN_ISS, USER, "reader").await;
@@ -70,7 +74,8 @@ async fn x() -> Option<X> {
     );
     let trust = TrustFile::parse(&file, false).unwrap();
     let issuer = Issuer::new();
-    let cfg = config(&d.service_url, trust);
+    let mut cfg = config(&d.service_url, trust);
+    tune(&mut cfg);
     let st = state(&cfg, &issuer);
     let s = start(&cfg, st.clone()).await;
     Some(X {
@@ -705,5 +710,111 @@ async fn an_exchanged_token_stays_in_its_tenant() {
     .await;
     w.until_refused(&tb).await;
     assert_eq!(w.get("/v1/whoami", &t).await.status(), StatusCode::OK);
+    w.finish().await;
+}
+
+/// ADR-0032, TM-06: an admin token is issued to a person whose sign-in
+/// stepped up, for at most 300 s; to nobody else.
+#[tokio::test]
+async fn tm06_an_admin_token_is_for_a_person_after_step_up() {
+    // Access tokens may live 600 s here; an admin token still lives 300 s.
+    let Some(mut w) = x_with(|c| c.token_ttl = Duration::from_secs(600)).await else {
+        return;
+    };
+    // No step-up: the one refusal that says why, so the Console asks for MFA.
+    let (status, body) = w.exchange(&w.kc(KC, "kc-admin"), "tutela-admin").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "invalid_grant");
+    assert_eq!(
+        body["error_description"],
+        "step-up authentication is required"
+    );
+
+    // A realm token that lives 600 s: only the admin limit holds the new
+    // token to 300 s.
+    let mut c = kc_claims(KC, "kc-admin");
+    c["acr"] = json!(common::STEP_UP);
+    c["exp"] = json!(now() + 600);
+    let admin = w.token(&w.kc_with(&c), "tutela-admin").await;
+    let ac = claims(&admin).1;
+    assert_eq!(ac["aud"], "tutela-admin");
+    assert_eq!(ac["acr"], common::STEP_UP);
+    assert!(ac["exp"].as_u64().unwrap() - ac["iat"].as_u64().unwrap() <= 300);
+    // It is a person with no admin key yet: authenticated, refused.
+    assert_eq!(
+        w.get("/v1/models", &admin).await.status(),
+        StatusCode::FORBIDDEN
+    );
+    let (a, org, me) = (w.a.key.clone(), w.a.org.clone(), principal(&admin));
+    w.store(async |tx| {
+        tutela_store::assign(
+            tx,
+            &a,
+            &tutela_pdp::Subject::Principal(me.clone()),
+            &tutela_pdp::model::RoleKey::parse("owner").unwrap(),
+            &org,
+            None,
+        )
+        .await
+        .unwrap()
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    assert_eq!(w.get("/v1/models", &admin).await.status(), StatusCode::OK);
+    // Not on a product route.
+    assert_eq!(
+        w.get("/v1/whoami", &admin).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    // An own token that stepped up is exchanged for an admin token; one that
+    // did not, never.
+    c["jti"] = json!(uuid::Uuid::now_v7().to_string());
+    let stepped = w.token(&w.kc_with(&c), AUD).await;
+    w.token(&stepped, "tutela-admin").await;
+    let plain = w.token(&w.kc(KC, "kc-admin"), AUD).await;
+    assert_eq!(w.refused(&plain, "tutela-admin").await, "invalid_grant");
+    // A service never gets one.
+    let now = now();
+    let sa =
+        w.st.keys
+            .sign_jwt(
+                "at+jwt",
+                &json!({
+                    "iss": OWN_ISS, "sub": common::SA, "aud": AUD, "azp": "crm-api",
+                    "exp": now + 300, "iat": now, "nbf": now,
+                    "jti": uuid::Uuid::now_v7().to_string(),
+                    "tid": w.a.tid, "epoch": 0, "rev": 0, "acr": common::STEP_UP,
+                }),
+            )
+            .unwrap();
+    assert_eq!(w.refused(&sa, "tutela-admin").await, "invalid_grant");
+    let metrics = http()
+        .get(w.s.ops_url("/metrics"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        metrics.contains(r#"tutelad_token_operations_total{operation="admin",outcome="issued"} 2"#),
+        "{metrics}"
+    );
+    w.finish().await;
+}
+
+/// With no step-up value configured, no admin token is issued at all.
+#[tokio::test]
+async fn tm22_no_step_up_configured_means_no_admin_token() {
+    let Some(w) = x_with(|c| c.admin_acr.clear()).await else {
+        return;
+    };
+    let mut c = kc_claims(KC, "kc-admin");
+    c["acr"] = json!(common::STEP_UP);
+    assert_eq!(
+        w.refused(&w.kc_with(&c), "tutela-admin").await,
+        "invalid_grant"
+    );
     w.finish().await;
 }

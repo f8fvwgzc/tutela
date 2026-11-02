@@ -56,3 +56,12 @@ T11: caught by 2 test(s) - a revoked token of this service is exchanged again
       an_epoch_bump_revokes_issued_tokens, a_disabled_user_gets_no_token_and_loses_the_ones_issued
 T12: caught by 1 test(s) - one upstream subject is one person across issuers
       tm04_provisioning_keys_on_issuer_and_subject_never_email
+
+T13: caught by 1 test(s) - a person's tutela-authz token opens the admin routes
+      tm06_a_person_steps_up_and_a_pipeline_keeps_its_service_token
+T14: caught by 2 test(s) - an admin token is issued without step-up
+      tm06_an_admin_token_is_for_a_person_after_step_up, tm22_no_step_up_configured_means_no_admin_token
+T15: caught by 1 test(s) - a service's admin token opens the admin routes
+      tm06_a_person_steps_up_and_a_pipeline_keeps_its_service_token
+T16: caught by 1 test(s) - an admin token lives as long as an access token
+      tm06_an_admin_token_is_for_a_person_after_step_up

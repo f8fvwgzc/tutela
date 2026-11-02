@@ -386,7 +386,7 @@ Payload:
 
 | Audience | Used by | Extra rules |
 |---|---|---|
-| `tutela-admin` | Tutela Console and the embeddable admin components (Phase B) | `exp − iat ≤ 300` (5 minutes). Step-up MFA: `acr` must be one of the values the deployment configures as MFA (before Phase C this comes from the upstream IdP). Never sent to product APIs. |
+| `tutela-admin` | Tutela Console and the embeddable admin components (Phase B) | `exp − iat ≤ 300` (5 minutes). Step-up MFA: `acr` must be one of the values the deployment configures as MFA, `TUTELA_ADMIN_ACR` (before Phase C this comes from the upstream IdP). Never sent to product APIs. **Built** ([ADR-0032](DECISIONS.md#adr-0032-admin-tokens-a-person-steps-up-a-pipeline-keeps-its-service-token)): token exchange (4.8) issues it only to a person whose subject token's `acr` is a step-up value; `tutelad`'s admin routes (7.9, 7.10) take it from a person, and every other route refuses it. A service (`sa`, `key`) uses its `tutela-authz` token on the admin routes instead, for a pipeline such as `tutela apply`; a service's admin token is refused there. |
 | `tutela-authz` (name planned) | The remote check API and the permission map (section 7, Phase B) | Usually a service-account token of a product backend. |
 
 ### 4.5 Delegated (agent) tokens
@@ -477,7 +477,7 @@ Tokens are never written to logs, URLs or span attributes.
 | `grant_type` | `urn:ietf:params:oauth:grant-type:token-exchange`. Anything else: `unsupported_grant_type`. |
 | `subject_token` | An external issuer's token whose one audience is `tutelad`'s own (`TUTELA_AUDIENCE`), or a token of `tutelad`'s own issuer for any audience it issues. Nothing else. |
 | `subject_token_type` | `urn:ietf:params:oauth:token-type:access_token` or `urn:ietf:params:oauth:token-type:jwt`. Never an ID token. |
-| `audience` | Exactly one registered audience: `TUTELA_AUDIENCE`, or an `[[audience]]` of the trust file. Unknown: `invalid_target`. |
+| `audience` | Exactly one registered audience: `TUTELA_AUDIENCE`, an `[[audience]]` of the trust file, or `tutela-admin` (4.4). Unknown: `invalid_target`. |
 | `resource` | Refused (`invalid_target`): name the service with `audience`. |
 | `scope` | Optional. Space-separated (RFC 6749 3.3). When the subject token has a scope, every asked scope must be in it (`invalid_scope`). |
 | `requested_token_type` | Absent, the access-token type, or the JWT type. |
@@ -507,7 +507,9 @@ Tokens are never written to logs, URLs or span attributes.
 
 **Response.** `200`, `Cache-Control: no-store`: `{"access_token", "issued_token_type": "urn:ietf:params:oauth:token-type:access_token", "token_type": "Bearer", "expires_in", "scope"?}`.
 
-**Errors** (RFC 6749 5.2), `400` with `{"error", "error_description"}` and `Cache-Control: no-store`: `invalid_request`, `unsupported_grant_type`, `invalid_target`, `invalid_scope`, and `invalid_grant` for every problem with the subject token, with one description: it never says which check failed, and never holds a token. `503 temporarily_unavailable` when the database or the signing keys fail.
+**Admin tokens** (`audience=tutela-admin`, 4.4): only for a person (`user:`), only when the subject token's `acr` is in `TUTELA_ADMIN_ACR`, never with an actor. `exp − iat ≤ 300`. With `TUTELA_ADMIN_ACR` unset, none is issued. A subject token without step-up gets `invalid_grant` with the description `step-up authentication is required`, so the client knows to ask for MFA.
+
+**Errors** (RFC 6749 5.2), `400` with `{"error", "error_description"}` and `Cache-Control: no-store`: `invalid_request`, `unsupported_grant_type`, `invalid_target`, `invalid_scope`, and `invalid_grant` for every problem with the subject token, with one description (except the step-up case above): it never says which check failed, and never holds a token. `503 temporarily_unavailable` when the database or the signing keys fail.
 
 **Metadata.** `GET /.well-known/oauth-authorization-server` (RFC 8414), no token: `issuer`, `token_endpoint`, `jwks_uri`, `grant_types_supported`.
 
@@ -1301,6 +1303,8 @@ A verified token for a tenant that is not in the directory gets 403 `unknown_ten
 
 **Status: Phase B, built.** Every published model is a kept, numbered version of its tenant ([ADR-0026](DECISIONS.md#adr-0026-a-tenant-owns-its-model-versions)). A publish here changes one tenant. HTTP only: the gRPC form comes with `tutela.admin.v1` (part 3). `tutela apply` against `tutelad` (part 4) calls these routes.
 
+**Which token** ([ADR-0032](DECISIONS.md#adr-0032-admin-tokens-a-person-steps-up-a-pipeline-keeps-its-service-token)). A person sends an admin token (`aud=tutela-admin`, 4.4) whose `acr` is a step-up value of the deployment (`TUTELA_ADMIN_ACR`); a person's `tutela-authz` token gets 403 `forbidden`. A service (`sa`, `key`), for example `tutela apply` in a pipeline, sends its `tutela-authz` token; a service's admin token gets 403. An admin token on any route outside 7.9 and 7.10 gets 401.
+
 **Who may ask.** The rules of 7.1 on tokens apply, and these need admin keys **at every org of the tenant**, read from data that has just been checked. A delegated token, an agent and an external token never pass: 403 `forbidden`. A service needs the keys like anyone else.
 
 | To | Needs at every org |
@@ -1398,6 +1402,7 @@ A body may be up to 16 MiB, so a 4 MiB manifest fits after JSON escaping. `tutel
 
 **Status: Phase B, built** ([ADR-0028](DECISIONS.md#adr-0028-explain-and-simulate-need-read_audit-on-the-resource)). Both take the body of 7.2. Both show the model and other principals' assignments, so they need more than a check:
 
+- **Which token.** As 7.9: a person's admin token after step-up, or a service's `tutela-authz` token. gRPC's `Explain` and `Simulate` take no admin token, so over gRPC only a service may ask.
 - **Who may ask.** The caller's own principal must hold the admin key `<type>:read_audit` on the resource, at its path, on data that has just been checked: org admins for everything, scope owners for their own scope (PERMISSION-MODEL.md 5.3). So a person asking about itself needs it too, and a product's service account needs it like anyone else. An agent, a delegated token and an external token never pass. Without it: 403 `forbidden`.
 - **The path is checked.** Every registered scope on the path, and the resource if it is one, must have the path the store holds; otherwise 400 `invalid_request`. A caller cannot put a resource under a scope it owns to read who holds it.
 - The subject may be any principal, with actors, as for a service's check (7.1).

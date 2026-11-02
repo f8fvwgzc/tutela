@@ -150,6 +150,22 @@ MUTANTS = [
      "         WHERE a.tenant_id = $1 AND a.iss = $2 AND a.sub = $3\"\n",
      "         WHERE a.tenant_id = $1 AND $2::text IS NOT NULL AND a.sub = $3\"\n",
      EXCHANGE),
+    ("T13", MODELS, "a person's tutela-authz token opens the admin routes",
+     "        PrincipalKind::User => admin && step_up(c.acr.as_deref()),\n",
+     "        PrincipalKind::User => true,\n",
+     ["-p", "tutelad", "--test", "models"]),
+    ("T14", EXCHANGE_SRC, "an admin token is issued without step-up",
+     "        if !state.audiences.is_step_up(subject.acr.as_deref()) {\n",
+     "        if false && !state.audiences.is_step_up(subject.acr.as_deref()) {\n",
+     EXCHANGE),
+    ("T15", MODELS, "a service's admin token opens the admin routes",
+     "        PrincipalKind::ServiceAccount | PrincipalKind::Key => !admin,\n",
+     "        PrincipalKind::ServiceAccount | PrincipalKind::Key => true,\n",
+     ["-p", "tutelad", "--test", "models"]),
+    ("T16", EXCHANGE_SRC, "an admin token lives as long as an access token",
+     "        MAX_ADMIN_TOKEN_LIFETIME_SECS\n",
+     "        MAX_ACCESS_TOKEN_LIFETIME_SECS\n",
+     EXCHANGE),
 ]
 
 

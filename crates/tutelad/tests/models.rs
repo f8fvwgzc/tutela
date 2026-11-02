@@ -81,13 +81,13 @@ async fn get(w: &World, path: &str, token: &str) -> reqwest::Response {
 }
 
 async fn active(w: &World, s: &Seed) -> Value {
-    let t = w.issuer.token(ADMIN, &s.tid, 0);
+    let t = w.issuer.console(ADMIN, &s.tid, 0);
     let v: Value = get(w, "/v1/models", &t).await.json().await.unwrap();
     v["active"].clone()
 }
 
 async fn publish(w: &World, s: &Seed, body: &Value) -> reqwest::Response {
-    let t = w.issuer.token(ADMIN, &s.tid, 0);
+    let t = w.issuer.console(ADMIN, &s.tid, 0);
     w.post("/v1/models/publish", &t, body).await
 }
 
@@ -103,7 +103,7 @@ fn problem(v: &Value) -> &str {
 async fn can_write(w: &World, s: &Seed, user: &str, rev: u64) -> bool {
     let mut q = common::ask(user, "invoice:write", s);
     q["context"] = json!({"at_least_revision": rev});
-    let t = w.issuer.token(SA, &s.tid, 0);
+    let t = w.issuer.console(SA, &s.tid, 0);
     let v: Value = w
         .post("/access/v1/evaluation", &t, &q)
         .await
@@ -194,7 +194,7 @@ async fn tm08_a_widening_publish_is_refused_without_an_approval_token() {
     assert_eq!(v["version"], 2);
     assert!(can_write(&w, &w.a, USER, v["rev"].as_u64().unwrap()).await);
 
-    let t = w.issuer.token(ADMIN, &tid, 0);
+    let t = w.issuer.console(ADMIN, &tid, 0);
     let base: Value = get(&w, "/v1/models/1", &t).await.json().await.unwrap();
     assert_eq!(base["source"], MANIFEST);
     assert_eq!(base["origin"], "app");
@@ -227,14 +227,14 @@ async fn tm05_a_publish_changes_its_own_tenant_only() {
     assert_eq!(b1["version"], 2);
 
     let rev = {
-        let t = w.issuer.token(ADMIN, &w.b.tid, 0);
+        let t = w.issuer.console(ADMIN, &w.b.tid, 0);
         let v: Value = get(&w, "/v1/models", &t).await.json().await.unwrap();
         v["versions"][0]["rev"].as_u64().unwrap()
     };
     assert!(!can_write(&w, &w.b, common::B_USER, rev).await);
 
     // Tenant A's token sees nothing of B's version, and B's history is B's.
-    let t = w.issuer.token(ADMIN, &w.a.tid, 0);
+    let t = w.issuer.console(ADMIN, &w.a.tid, 0);
     let v = b1["version"].as_i64().unwrap();
     let res = get(&w, &format!("/v1/models/{v}"), &t).await;
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
@@ -286,7 +286,7 @@ async fn tm08_a_rollback_is_a_new_version_and_passes_the_same_checks() {
     assert_eq!(now["digest"], v1["digest"]);
     assert_eq!(now["own"], true);
     // Nothing was rewritten.
-    let t = w.issuer.token(ADMIN, &w.a.tid, 0);
+    let t = w.issuer.console(ADMIN, &w.a.tid, 0);
     let list: Value = get(&w, "/v1/models", &t).await.json().await.unwrap();
     let numbers: Vec<i64> = list["versions"]
         .as_array()
@@ -318,7 +318,7 @@ async fn who_may_look_at_or_change_a_model() {
     let body = json!({"source": with_reader("none"), "expected_version": head["version"]});
     // A plain member of the tenant, its product service, and an agent.
     for sub in [USER, SA, AGENT] {
-        let t = w.issuer.token(sub, &tid, 0);
+        let t = w.issuer.console(sub, &tid, 0);
         assert_eq!(
             get(&w, "/v1/models", &t).await.status(),
             StatusCode::FORBIDDEN,
@@ -336,7 +336,7 @@ async fn who_may_look_at_or_change_a_model() {
         );
     }
     // An admin of tenant B is no one in tenant A: its token is for tenant B.
-    let t = w.issuer.token(common::B_USER, &tid, 0);
+    let t = w.issuer.console(common::B_USER, &tid, 0);
     assert_eq!(
         w.post("/v1/models/publish", &t, &body).await.status(),
         StatusCode::FORBIDDEN
@@ -345,7 +345,7 @@ async fn who_may_look_at_or_change_a_model() {
     let res = http().get(w.s.api_url("/v1/models")).send().await.unwrap();
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     // A service holding the keys may: `tutela apply` in a pipeline.
-    let t = w.issuer.token(ADMIN_SA, &tid, 0);
+    let t = w.issuer.console(ADMIN_SA, &tid, 0);
     assert_eq!(get(&w, "/v1/models", &t).await.status(), StatusCode::OK);
     let res = w.post("/v1/models/publish", &t, &body).await;
     assert_eq!(res.status(), StatusCode::OK);
@@ -361,11 +361,11 @@ async fn an_org_admin_of_part_of_a_tenant_does_not_change_the_whole_of_it() {
     tx.commit().await.unwrap();
     // A new org in tenant A, with no admin yet. A new token asks past the
     // lease with its revision.
-    let t = w.issuer.token(ADMIN, &w.a.tid, 1_000);
+    let t = w.issuer.console(ADMIN, &w.a.tid, 1_000);
     let res = get(&w, "/v1/models", &t).await;
     assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
     tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
-    let t = w.issuer.token(ADMIN, &w.a.tid, 0);
+    let t = w.issuer.console(ADMIN, &w.a.tid, 0);
     assert_eq!(
         get(&w, "/v1/models", &t).await.status(),
         StatusCode::FORBIDDEN
@@ -379,7 +379,7 @@ async fn a_publish_compares_against_what_is_there() {
     admins(&mut w).await;
     let head = active(&w, &w.a).await;
     let v = head["version"].as_i64().unwrap();
-    let t = w.issuer.token(ADMIN, &w.a.tid, 0);
+    let t = w.issuer.console(ADMIN, &w.a.tid, 0);
     let ask = |body: Value| {
         let (w, t) = (&w, t.clone());
         async move {
@@ -460,7 +460,7 @@ async fn tm14_the_service_role_writes_no_manifest_and_no_approver_key() {
 }
 
 async fn dry_run(w: &World, s: &Seed, sub: &str, source: &str) -> reqwest::Response {
-    let t = w.issuer.token(sub, &s.tid, 0);
+    let t = w.issuer.console(sub, &s.tid, 0);
     w.post("/v1/models/impact", &t, &json!({"source": source}))
         .await
 }
@@ -556,12 +556,91 @@ async fn an_impact_report_that_stops_early_says_so_and_is_kept_with_the_version(
     assert_eq!(res.status(), StatusCode::OK);
     let out: Value = res.json().await.unwrap();
     assert_eq!(out["impact"]["complete"], false);
-    let t = w.issuer.token(ADMIN, &w.a.tid, 0);
+    let t = w.issuer.console(ADMIN, &w.a.tid, 0);
     let kept: Value = get(&w, &format!("/v1/models/{}", out["version"]), &t)
         .await
         .json()
         .await
         .unwrap();
     assert_eq!(kept["impact"], out["impact"]);
+    w.finish().await;
+}
+
+/// ADR-0032, TM-01, TM-06: on the admin routes a person needs an admin
+/// token after step-up, and a service keeps its own token, for a pipeline.
+/// An admin token is refused on every other route.
+#[tokio::test]
+async fn tm06_a_person_steps_up_and_a_pipeline_keeps_its_service_token() {
+    let Some(mut w) = world().await else { return };
+    admins(&mut w).await;
+    let tid = w.a.tid.clone();
+    let status = async |t: &str| get(&w, "/v1/models", t).await.status();
+    let step_up = common::STEP_UP;
+    assert_eq!(
+        status(&w.issuer.admin_token(ADMIN, &tid, step_up, 0, 300)).await,
+        StatusCode::OK
+    );
+    // The person's tutela-authz token: authenticated, with no right here.
+    assert_eq!(
+        status(&w.issuer.token(ADMIN, &tid, 0)).await,
+        StatusCode::FORBIDDEN
+    );
+    // An admin token without step-up.
+    assert_eq!(
+        status(&w.issuer.admin_token(ADMIN, &tid, "1", 0, 300)).await,
+        StatusCode::FORBIDDEN
+    );
+    // A 6-minute-old admin token: a life over 300 s, or expired.
+    assert_eq!(
+        status(&w.issuer.admin_token(ADMIN, &tid, step_up, 360, 420)).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        status(&w.issuer.admin_token(ADMIN, &tid, step_up, 400, 300)).await,
+        StatusCode::UNAUTHORIZED
+    );
+    // A service: its own token works, an admin token does not.
+    assert_eq!(
+        status(&w.issuer.token(ADMIN_SA, &tid, 0)).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        status(&w.issuer.admin_token(ADMIN_SA, &tid, step_up, 0, 300)).await,
+        StatusCode::FORBIDDEN
+    );
+    // Explain takes the same rule.
+    let q = common::ask(USER, "invoice:read", &w.a);
+    let admin = w.issuer.admin_token(ADMIN, &tid, step_up, 0, 300);
+    assert_eq!(
+        w.post("/v1/authz/explain", &admin, &q).await.status(),
+        StatusCode::OK
+    );
+    let plain = w.issuer.token(ADMIN, &tid, 0);
+    assert_eq!(
+        w.post("/v1/authz/explain", &plain, &q).await.status(),
+        StatusCode::FORBIDDEN
+    );
+    // TM-01: every other route refuses the admin token, as any token of
+    // another audience.
+    assert_eq!(
+        get(&w, "/v1/whoami", &admin).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    for (path, body) in [
+        ("/access/v1/evaluation", q.clone()),
+        (
+            "/access/v1/evaluations",
+            json!({"evaluations": [q.clone()]}),
+        ),
+        ("/access/v1/search/resource", json!({})),
+        ("/v1/authz/permissions", json!({})),
+        ("/v1/authz/write-check", json!({})),
+    ] {
+        assert_eq!(
+            w.post(path, &admin, &body).await.status(),
+            StatusCode::UNAUTHORIZED,
+            "{path}"
+        );
+    }
     w.finish().await;
 }

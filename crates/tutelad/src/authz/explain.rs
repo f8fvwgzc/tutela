@@ -65,13 +65,15 @@ fn verify_path(
 /// May this token's own principal see why an answer on `resource` is what
 /// it is?
 fn may_explain(
+    state: &AppState,
     snapshot: &Snapshot,
     tenant: &TenantKey,
     id: &Identity,
     resource: &ResourceRef,
     need: Option<u64>,
 ) -> Result<(), Problem> {
-    let who = models::principal(id).ok_or_else(Problem::forbidden)?;
+    let who = models::principal(id, |acr| state.audiences.is_step_up(acr))
+        .ok_or_else(Problem::forbidden)?;
     verify_path(&snapshot.paths, tenant, resource)?;
     let action = ActionKey::parse(&format!("{}:read_audit", resource.type_name))
         .map_err(|_| Problem::forbidden())?;
@@ -142,7 +144,7 @@ pub async fn explain(
         let need = floor(id, ask.at_least);
         let view = view(state, OP, &tenant, need).await?;
         let snapshot = view.for_class(ActionClass::Admin)?;
-        may_explain(snapshot, tenant.key(), id, &ask.resource, need)?;
+        may_explain(state, snapshot, tenant.key(), id, &ask.resource, need)?;
         let e = snapshot
             .pdp
             .explain(&ask.request(tenant.key().clone(), need))
@@ -291,7 +293,7 @@ pub async fn simulate(
         {
             let view = view(state, OP, &tenant, need).await?;
             let snapshot = view.for_class(ActionClass::Admin)?;
-            may_explain(snapshot, tenant.key(), id, &ask.resource, need)?;
+            may_explain(state, snapshot, tenant.key(), id, &ask.resource, need)?;
         }
         let c = body.candidate.unwrap_or_default();
         let model: Option<Arc<Model>> = if c.source.is_some() || c.restore.is_some() {

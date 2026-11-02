@@ -33,7 +33,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use serde::{Deserialize, Serialize};
 use tutela_contracts::claims::{
-    AccessTokenClaims, Audience, AudienceClaim, ClientId, MAX_ACCESS_TOKEN_LIFETIME_SECS, Scope,
+    AccessTokenClaims, Audience, AudienceClaim, ClientId, MAX_ACCESS_TOKEN_LIFETIME_SECS,
+    MAX_ADMIN_TOKEN_LIFETIME_SECS, Scope,
 };
 use tutela_contracts::id::{SessionId, Uuid7};
 use tutela_contracts::principal::Principal;
@@ -87,6 +88,12 @@ pub struct Audiences {
     trust: TrustList,
     /// `TUTELA_TOKEN_TTL_SECS`.
     token_ttl: Duration,
+    /// `TUTELA_ADMIN_ACR`.
+    admin_acr: Vec<String>,
+    /// The verifier of `aud=tutela-admin` tokens, for the admin routes only
+    /// (ADR-0032): the trust file's Tutela-format issuers and the own issuer,
+    /// never an external issuer, never a delegated token.
+    admin: Arc<Verifier>,
 }
 
 impl Audiences {
@@ -145,12 +152,56 @@ impl Audiences {
                 },
             );
         }
+        let main = config.verifier_config();
+        let mut admin_trust = if config.dev_mode {
+            TrustList::dev_mode()
+        } else {
+            TrustList::new()
+        };
+        for entry in config.trust.issuer.iter().filter(|e| !e.external) {
+            for tenant in &entry.tenants {
+                if admin_trust.insert(entry.iss.clone(), *tenant).is_err() {
+                    tracing::error!(iss = %entry.iss, "an issuer could not be trusted for admin tokens");
+                }
+            }
+        }
+        if admin_trust.insert_directory(config.issuer.clone()).is_err() {
+            tracing::error!("the own issuer could not be trusted for admin tokens");
+        }
+        let admin = Arc::new(Verifier::with(
+            VerifierConfig {
+                audience: Audience::TUTELA_ADMIN,
+                trust: admin_trust,
+                issuers: main.issuers.into_iter().filter(|i| !i.external).collect(),
+                delegation: false,
+                delegation_aware: false,
+                denied_kids: std::collections::HashSet::new(),
+                cache: CacheRules::default(),
+            },
+            Arc::new(OwnJwks::new(Arc::clone(ring), Arc::clone(other))),
+            Arc::clone(clock),
+        ));
         Self {
             own: config.audience.clone(),
             entries,
             trust,
             token_ttl: config.token_ttl,
+            admin_acr: config.admin_acr.clone(),
+            admin,
         }
+    }
+
+    /// `true` when `acr` is a step-up value of this deployment
+    /// (`TUTELA_ADMIN_ACR`).
+    #[must_use]
+    pub fn is_step_up(&self, acr: Option<&str>) -> bool {
+        acr.is_some_and(|a| self.admin_acr.iter().any(|v| v == a))
+    }
+
+    /// The verifier of admin tokens.
+    #[must_use]
+    pub const fn admin_verifier(&self) -> &Arc<Verifier> {
+        &self.admin
     }
 
     /// The registered audience `aud`.
@@ -162,7 +213,10 @@ impl Audiences {
     /// Every verifier of the service's own tokens by audience, for the
     /// key job's deny-list.
     pub fn verifiers(&self) -> impl Iterator<Item = &Arc<Verifier>> {
-        self.entries.values().filter_map(|r| r.verifier.as_ref())
+        self.entries
+            .values()
+            .filter_map(|r| r.verifier.as_ref())
+            .chain(std::iter::once(&self.admin))
     }
 }
 
@@ -292,12 +346,24 @@ impl IntoResponse for Refusal {
 pub enum Kind {
     /// An access token.
     Access,
+    /// An admin token, `aud=tutela-admin` (CONTRACTS.md 4.4).
+    Admin,
 }
 
 impl Kind {
     const fn as_str(self) -> &'static str {
         match self {
             Self::Access => "access",
+            Self::Admin => "admin",
+        }
+    }
+
+    /// The kind a request asks for, from its audience.
+    fn of(req: &TokenRequest) -> Self {
+        if req.audience.as_deref() == Some(Audience::TUTELA_ADMIN.as_str()) {
+            Self::Admin
+        } else {
+            Self::Access
         }
     }
 }
@@ -343,8 +409,9 @@ struct AudOnly {
     aud: Option<serde_json::Value>,
 }
 
-/// The one audience a token names, unverified.
-fn peek_audience(token: &str) -> Option<String> {
+/// The one audience a token names, unverified: it only picks the verifier,
+/// which then checks everything.
+pub(crate) fn peek_audience(token: &str) -> Option<String> {
     match payload::<AudOnly>(token)?.aud? {
         serde_json::Value::String(s) => Some(s),
         serde_json::Value::Array(a) if a.len() == 1 => a.first()?.as_str().map(str::to_owned),
@@ -509,10 +576,10 @@ pub async fn exchange(state: &AppState, req: TokenRequest) -> Result<Issued, Ref
         .ok_or(Refusal::request("audience is required"))?
         .parse()
         .map_err(|_| Refusal::target("the audience is not registered"))?;
-    state
-        .audiences
-        .get(&audience)
-        .ok_or(Refusal::target("the audience is not registered"))?;
+    let admin = audience == Audience::TUTELA_ADMIN;
+    if !admin && state.audiences.get(&audience).is_none() {
+        return Err(Refusal::target("the audience is not registered"));
+    }
     match req.requested_token_type.as_deref() {
         None | Some(ACCESS_TOKEN_TYPE | JWT_TOKEN_TYPE) => {}
         Some(_) => return Err(Refusal::request("only an access token can be issued")),
@@ -542,20 +609,34 @@ pub async fn exchange(state: &AppState, req: TokenRequest) -> Result<Issued, Ref
     };
     let scope = scope(req.scope.as_deref(), subject.scope.as_ref())?;
 
+    let user = subject.principal.kind() == tutela_contracts::principal::PrincipalKind::User;
+    if admin {
+        // An admin token is for a person, after step-up (ADR-0032).
+        if !user {
+            return Err(Refusal::grant("admin_subject"));
+        }
+        if !state.audiences.is_step_up(subject.acr.as_deref()) {
+            return Err(Refusal::new(
+                "invalid_grant",
+                "step-up authentication is required",
+                "step_up",
+            ));
+        }
+    }
     let now = now_secs();
-    let exp = subject.exp.min(
-        now + state
-            .audiences
-            .token_ttl
-            .as_secs()
-            .min(MAX_ACCESS_TOKEN_LIFETIME_SECS),
-    );
+    let ttl = if admin {
+        MAX_ADMIN_TOKEN_LIFETIME_SECS
+    } else {
+        MAX_ACCESS_TOKEN_LIFETIME_SECS
+    };
+    let exp = subject
+        .exp
+        .min(now + state.audiences.token_ttl.as_secs().min(ttl));
     if exp <= now {
         return Err(Refusal::grant("expired"));
     }
     let key = tenant.key();
     let rev = tutela_store::rev(&tx, key).await?;
-    let user = subject.principal.kind() == tutela_contracts::principal::PrincipalKind::User;
     let claims = AccessTokenClaims {
         iss: key.iss.clone(),
         sub: subject.principal,
@@ -600,7 +681,7 @@ pub async fn exchange(state: &AppState, req: TokenRequest) -> Result<Issued, Ref
 /// `POST /oauth2/token`: an `application/x-www-form-urlencoded` body
 /// (RFC 6749 3.2).
 pub async fn token(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
-    let kind = Kind::Access;
+    let mut kind = Kind::Access;
     let form = headers
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
@@ -619,7 +700,10 @@ pub async fn token(State(state): State<AppState>, headers: HeaderMap, body: Byte
         ))
     };
     let result = match parsed {
-        Ok(req) => exchange(&state, req).await,
+        Ok(req) => {
+            kind = Kind::of(&req);
+            exchange(&state, req).await
+        }
         Err(e) => Err(e),
     };
     match result {

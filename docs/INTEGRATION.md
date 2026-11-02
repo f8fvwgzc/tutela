@@ -624,7 +624,11 @@ So your own customers can manage roles at runtime, embed `RoleEditor`,
 `MembersTable` and the permission matrix from `@f8fvwgzc/tutela-react`.
 
 - They use a separate token with `aud=tutela-admin`, a 5-minute TTL and
-  step-up MFA.
+  step-up MFA. Your backend gets it by token exchange, with the person's
+  token after step-up (its `acr` must be one of `TUTELA_ADMIN_ACR`), and
+  `audience=tutela-admin` ([CONTRACTS.md 4.4](CONTRACTS.md#44-special-audiences)).
+  A service account (for `tutela apply` in a pipeline) uses its own
+  `tutela-authz` token on the same routes instead.
 - Every change goes through `tutelad`: narrow-only delegation, an impact
   report, and approval for widening changes.
 
