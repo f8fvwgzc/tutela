@@ -42,7 +42,7 @@ Only the left column exists in `tutela-contracts` after the first commit. Everyt
 | 6 | Decision | The Decision object: effect, level, field mask, rule ids, reason, rev, obligations | `Pdp::check`, `Pdp::batch`, `Pdp::list_filter`, `Pdp::write_check` (A; built in `tutela-pdp`, [ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)) |
 | 7 | Remote check API | — | Built in `tutelad` (B): evaluation, search, the permission map, write-check and gRPC. |
 | 8 | Events | CloudEvents envelope, event type grammar and names | Outbox, webhook delivery and SSE (B, **built**: 8.4 to 8.6, [ADR-0035](DECISIONS.md#adr-0035-the-outbox-events-numbered-per-tenant-in-commit-order) to [ADR-0037](DECISIONS.md#adr-0037-the-event-stream-services-only-one-feed-per-tenant-bounded)) |
-| 9 | audit.v1 | The audit.v1 record | Local hash chain and sequence numbers (B, **built**: 9.4, [ADR-0034](DECISIONS.md#adr-0034-the-local-audit-log-one-chain-per-tenant-written-with-the-change)); producer signatures and forwarding to attache's evidence ledger (B) |
+| 9 | audit.v1 | The audit.v1 record | Local hash chain and sequence numbers, producer signatures and forwarding to attache's evidence ledger (B, **built**: 9.3, 9.4, [ADR-0034](DECISIONS.md#adr-0034-the-local-audit-log-one-chain-per-tenant-written-with-the-change), [ADR-0039](DECISIONS.md#adr-0039-forwarding-to-attaches-evidence-ledger-signed-acknowledged-resumable)) |
 | 10 | Versioning | The rules apply from the first commit | Deprecation headers on live endpoints (B) |
 
 ---
@@ -1626,7 +1626,7 @@ A Server-Sent Events stream (`text/event-stream`) for browsers and SDK caches.
 
 ## 9. The audit.v1 record
 
-**First commit:** the audit.v1 record struct is in `tutela-contracts`. **Built in Phase B, part 3b:** the canonical body (RFC 8785), `details`, the sequence numbers and the local hash chain ([ADR-0034](DECISIONS.md#adr-0034-the-local-audit-log-one-chain-per-tenant-written-with-the-change)). Producer signatures and forwarding are Phase B.
+**First commit:** the audit.v1 record struct is in `tutela-contracts`. **Built in Phase B, part 3b:** the canonical body (RFC 8785), `details`, the sequence numbers and the local hash chain ([ADR-0034](DECISIONS.md#adr-0034-the-local-audit-log-one-chain-per-tenant-written-with-the-change)), and the producer signature with forwarding to attache's evidence ledger ([ADR-0039](DECISIONS.md#adr-0039-forwarding-to-attaches-evidence-ledger-signed-acknowledged-resumable)).
 
 ### 9.1 Fields
 
@@ -1708,7 +1708,7 @@ Each producer service signs its own records. So a record cannot be forged by ano
   - `tutela_store::verify_audit_chain` reports the first broken link: a gap, a changed record, a broken link, a body that is not its row's, or a head past the last record.
 - The deployment's own records (its signing keys) have a chain under the tenant id `ten_00000000-0000-7000-8000-000000000000`, which is never in the tenant directory. Its records name `(TUTELA_ISSUER, that id)` as their tenant.
 - `tutelad`'s own actions (the expiry sweep, signing keys, a refusal before any principal is known) name the actor `sa:sa_00000000-0000-7000-8000-000000000000`, a principal no token may hold.
-- When configured, Tutela forwards copies to **attache's evidence ledger** through its acknowledged Append API. A record is marked shipped only after the ledger acknowledges it.
+- When configured, Tutela forwards copies to **attache's evidence ledger** through its acknowledged Append API. A record is marked shipped only after the ledger acknowledges it. **Built** ([ADR-0039](DECISIONS.md#adr-0039-forwarding-to-attaches-evidence-ledger-signed-acknowledged-resumable)): off unless `TUTELA_LEDGER_URL` is set (then `TUTELA_LEDGER_TOKEN`, attache's `att_` token, and `TUTELA_AUDIT_KEY`, the producer's Ed25519 seed, are required); `POST <TUTELA_LEDGER_URL>` with `{"records": [...]}` (at most 500), `Authorization: Bearer <token>` and `X-Agentsc-CSRF: 1`, as attache documents it; each record signed over its body (9.3) by the deployment's one producer key, whose public key and `key_id` `tutelad` logs at start for attache's `ledger.producers`. Each chain is claimed by one replica at a time, and resumes after the last acknowledged `seq`.
 - Audit never travels through the OpenTelemetry Collector (it can drop data). The Collector carries traces and metrics only.
 
 ### 9.5 Privacy rules

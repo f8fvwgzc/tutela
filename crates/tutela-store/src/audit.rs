@@ -409,3 +409,132 @@ fn body_is_its_rows(body: &str, seq: u64, tid: &str) -> bool {
             == Some(tid)
         && v.get("schema").and_then(serde_json::Value::as_str) == Some("audit.v1")
 }
+
+// ---------------------------------------------------------------------------
+// Forwarding to attache's evidence ledger (ADR-0039).
+
+/// A chain: one tenant's, or the deployment's own.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Chain {
+    /// A tenant's chain.
+    Tenant(TenantKey),
+    /// The deployment's own chain ([`DEPLOYMENT_TENANT`]).
+    Deployment,
+}
+
+async fn enter_chain(tx: &Transaction<'_>, chain: &Chain) -> Result<TenantId, StoreError> {
+    match chain {
+        Chain::Tenant(k) => {
+            enter(tx, k).await?;
+            Ok(k.tid)
+        }
+        Chain::Deployment => enter_deployment(tx).await,
+    }
+}
+
+/// Claims `chain` for `replica` for `lease`, to forward its records, and
+/// returns how far the ledger has acknowledged it. `None` when another
+/// replica holds it.
+///
+/// # Errors
+///
+/// [`UnknownTenant`](crate::StoreErrorKind::UnknownTenant), or a database
+/// error.
+pub async fn claim_forward(
+    tx: &Transaction<'_>,
+    chain: &Chain,
+    replica: &str,
+    lease: std::time::Duration,
+) -> Result<Option<u64>, StoreError> {
+    let tid = enter_chain(tx, chain).await?.to_string();
+    tx.execute(
+        "INSERT INTO tutela.audit_forward (tenant_id) VALUES ($1) ON CONFLICT DO NOTHING",
+        &[&tid],
+    )
+    .await
+    .db()?;
+    let row = tx
+        .query_opt(
+            "UPDATE tutela.audit_forward SET claimed_by = $2, \
+             claimed_until = clock_timestamp() + make_interval(secs => $3) \
+             WHERE tenant_id = $1 AND (claimed_until IS NULL \
+               OR claimed_until < clock_timestamp() OR claimed_by = $2) \
+             RETURNING shipped_seq",
+            &[&tid, &replica, &lease.as_secs_f64()],
+        )
+        .await
+        .db()?;
+    row.map(|r| {
+        u64::try_from(r.try_get::<_, i64>(0).db()?)
+            .map_err(|_| StoreError::corrupt("audit forward"))
+    })
+    .transpose()
+}
+
+/// Up to `limit` records of `chain` after `after`, in chain order.
+///
+/// # Errors
+///
+/// As [`claim_forward`].
+pub async fn chain_records(
+    tx: &Transaction<'_>,
+    chain: &Chain,
+    after: u64,
+    limit: usize,
+) -> Result<Vec<AuditEntry>, StoreError> {
+    let tid = enter_chain(tx, chain).await?;
+    page(tx, &tid, after, limit).await
+}
+
+/// Ends `replica`'s claim on `chain`; with `acked`, first records that the
+/// ledger acknowledged every record up to that `seq`. Never moves back.
+/// Returns `false` when the replica no longer held the claim (its lease
+/// ran out): nothing is recorded then.
+///
+/// # Errors
+///
+/// As [`claim_forward`].
+pub async fn finish_forward(
+    tx: &Transaction<'_>,
+    chain: &Chain,
+    replica: &str,
+    acked: Option<u64>,
+) -> Result<bool, StoreError> {
+    let tid = enter_chain(tx, chain).await?.to_string();
+    let acked = acked
+        .map(i64::try_from)
+        .transpose()
+        .map_err(|_| StoreError::invalid("an audit position"))?;
+    let n = tx
+        .execute(
+            "UPDATE tutela.audit_forward SET \
+             shipped_seq = greatest(shipped_seq, coalesce($3, shipped_seq)), \
+             shipped_at = CASE WHEN $3 IS NULL THEN shipped_at ELSE clock_timestamp() END, \
+             claimed_by = NULL, claimed_until = NULL \
+             WHERE tenant_id = $1 AND claimed_by = $2",
+            &[&tid, &replica, &acked],
+        )
+        .await
+        .db()?;
+    Ok(n == 1)
+}
+
+/// How far the ledger has acknowledged `chain`.
+///
+/// # Errors
+///
+/// As [`claim_forward`].
+pub async fn forwarded(tx: &Transaction<'_>, chain: &Chain) -> Result<u64, StoreError> {
+    let tid = enter_chain(tx, chain).await?.to_string();
+    let seq: Option<i64> = tx
+        .query_opt(
+            "SELECT shipped_seq FROM tutela.audit_forward WHERE tenant_id = $1",
+            &[&tid],
+        )
+        .await
+        .db()?
+        .map(|r| r.try_get(0))
+        .transpose()
+        .db()?;
+    u64::try_from(seq.unwrap_or(0)).map_err(|_| StoreError::corrupt("audit forward"))
+}

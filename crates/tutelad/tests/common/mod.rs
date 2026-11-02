@@ -322,6 +322,7 @@ pub fn config(database_url: &str, trust: TrustFile) -> Config {
             ..tutelad::stream::StreamSettings::default()
         },
         bundle_ttl: Duration::from_secs(300),
+        ledger: None,
     }
 }
 

@@ -147,6 +147,7 @@ pub struct Metrics {
     streams: Family<SweepLabels, Counter>,
     open_streams: Gauge,
     bundles: Family<SweepLabels, Counter>,
+    ledger: Family<SweepLabels, Counter>,
 }
 
 impl Default for Metrics {
@@ -271,6 +272,12 @@ impl Metrics {
             "Signed bundles asked for, by result: issued, forbidden, unavailable",
             bundles.clone(),
         );
+        let ledger = Family::<SweepLabels, Counter>::default();
+        registry.register(
+            "ledger_records",
+            "Audit records forwarded to attache's evidence ledger: shipped (records), refused (batches that wait)",
+            ledger.clone(),
+        );
         Self {
             registry,
             requests,
@@ -292,7 +299,26 @@ impl Metrics {
             streams,
             open_streams,
             bundles,
+            ledger,
         }
+    }
+
+    /// Counts records the ledger acknowledged.
+    pub fn add_forwarded(&self, n: u64) {
+        self.ledger
+            .get_or_create(&SweepLabels {
+                result: "shipped".to_owned(),
+            })
+            .inc_by(n);
+    }
+
+    /// Counts one batch the ledger did not take; it waits.
+    pub fn count_forward_refused(&self) {
+        self.ledger
+            .get_or_create(&SweepLabels {
+                result: "refused".to_owned(),
+            })
+            .inc();
     }
 
     /// Counts one bundle asked for: `issued`, `forbidden` or `unavailable`.

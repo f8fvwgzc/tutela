@@ -39,6 +39,7 @@ pub struct Server {
     sweep_every: Duration,
     key_refresh: Duration,
     relay: Option<(crate::webhooks::Relay, Duration)>,
+    forwarder: Option<crate::ledger::Forwarder>,
 }
 
 impl Server {
@@ -88,7 +89,32 @@ impl Server {
             .context("setting up webhook delivery")?;
             Some((relay, config.webhook_poll))
         };
+        let forwarder = match &config.ledger {
+            None => None,
+            Some(ledger) => {
+                let policy = if config.dev_mode {
+                    tutela_safenet::Policy::new().dev_loopback()
+                } else {
+                    tutela_safenet::Policy::new()
+                };
+                let fwd = crate::ledger::Forwarder::new(
+                    state.db.clone(),
+                    ledger,
+                    policy,
+                    uuid::Uuid::now_v7().to_string(),
+                    Arc::clone(&state.metrics),
+                )
+                .context("setting up forwarding to the evidence ledger")?;
+                tracing::info!(
+                    key_id = fwd.key_id(),
+                    public_key = %fwd.public_key(),
+                    "audit records are forwarded to the evidence ledger"
+                );
+                Some(fwd)
+            }
+        };
         Ok(Self {
+            forwarder,
             relay,
             api_router: api::api_router(&state, grpc, config.request_timeout),
             ops_router: api::ops_router(&state),
@@ -147,6 +173,7 @@ impl Server {
             sweep_every,
             key_refresh,
             relay,
+            forwarder,
         } = self;
         let (stop_api, api_stopped) = watch::channel(false);
         let (stop_ops, ops_stopped) = watch::channel(false);
@@ -159,6 +186,13 @@ impl Server {
             sweep_every,
             jobs_stopped.clone(),
         ));
+        let forward_job = forwarder.map(|fwd| {
+            tokio::spawn(crate::ledger::run(
+                fwd,
+                Duration::from_secs(2),
+                jobs_stopped.clone(),
+            ))
+        });
         let relay_job = relay.map(|(relay, every)| {
             tokio::spawn(crate::webhooks::run(relay, every, jobs_stopped.clone()))
         });
@@ -193,6 +227,11 @@ impl Server {
             && tokio::time::timeout(stop_timeout, job).await.is_err()
         {
             tracing::warn!("webhook delivery did not stop in time");
+        }
+        if let Some(job) = forward_job
+            && tokio::time::timeout(stop_timeout, job).await.is_err()
+        {
+            tracing::warn!("forwarding to the ledger did not stop in time");
         }
         match finished {
             Ok(joined) => {

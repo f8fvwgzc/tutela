@@ -1,6 +1,6 @@
 # Tutela roadmap
 
-Status: **pre-alpha**. `v0.1.0` is a pre-release of the Rust crates in library mode. Parts 1, 2a and 2b of Phase B are merged: the `tutelad` service, tenant isolation, the bindings store, the check API, the permission map, the replica checks, `write_check` with moves and links, model versions per tenant, the impact report, explain and simulate, and two-person publish. Nothing is usable in production yet. See [Phase B status](#phase-b-status).
+Status: **pre-alpha**. `v0.1.0` is a pre-release of the Rust crates in library mode. Parts 1, 2a, 2b, 3a and 3b of Phase B are merged: the `tutelad` service, tenant isolation, the bindings store, the check API, the permission map, the replica checks, `write_check` with moves and links, model versions per tenant, the impact report, explain and simulate, two-person publish, the service's own issuer with token exchange, admin and delegated tokens, the local audit log, events with webhooks and SSE, and signed bundles. Nothing is usable in production yet. See [Phase B status](#phase-b-status).
 
 This file lists the four phases (A, B, C, D), what each one builds, how we know it is done, and how long it takes. The reasons behind the big choices are in [DECISIONS.md](DECISIONS.md). The design is in [ARCHITECTURE.md](ARCHITECTURE.md) and [PERMISSION-MODEL.md](PERMISSION-MODEL.md).
 
@@ -92,8 +92,8 @@ A gate is a list of checks. A phase is not done until its gate passes. No produc
 - Model versioning, impact report ("12 users gain read on contract"), explain and simulate, two-person publish (optional per tenant): **done** ([ADR-0026](DECISIONS.md#adr-0026-a-tenant-owns-its-model-versions) to [ADR-0029](DECISIONS.md#adr-0029-two-person-publish)).
 - Moves and links across scopes: `moves_out`, `moves_in`, `on_looser` and `links_from` from `boundary_rule`, checked in `write_check` with the before/after impact calculation (PERMISSION-MODEL §9, §10): **done** ([ADR-0025](DECISIONS.md#adr-0025-moves-and-links-in-write_check)). Assignment expiry with a revision bump when it passes ([ADR-0014](DECISIONS.md#adr-0014-tutela-store-in-phase-a-the-schema-row-level-security-and-checked-writes)): **done** ([ADR-0020](DECISIONS.md#adr-0020-the-bindings-store-closures-at-read-time-and-assignment-expiry)).
 - CLI: `tutela apply` against `tutelad` (adds the impact report and approvals; still refuses a widening diff without an approval token), `tutela apps create`, `tutela keys rotate`.
-- Webhooks (transactional outbox, Standard Webhooks signatures) and SSE `/v1/events`.
-- Local hash-chained audit log. Optional forwarding to attache's evidence ledger through its Append API.
+- Webhooks (transactional outbox, Standard Webhooks signatures) and SSE `/v1/events`: **done** in part 3b ([ADR-0035](DECISIONS.md#adr-0035-the-outbox-events-numbered-per-tenant-in-commit-order) to [ADR-0037](DECISIONS.md#adr-0037-the-event-stream-services-only-one-feed-per-tenant-bounded)); registering a webhook is part 3c's route.
+- Local hash-chained audit log. Optional forwarding to attache's evidence ledger through its Append API: **done** in part 3b ([ADR-0034](DECISIONS.md#adr-0034-the-local-audit-log-one-chain-per-tenant-written-with-the-change), [ADR-0039](DECISIONS.md#adr-0039-forwarding-to-attaches-evidence-ledger-signed-acknowledged-resumable)).
 - **Token-exchange service**: accepts the Keycloak token and issues a short-lived Tutela access token, with just-in-time user provisioning.
 - **Delegated agent tokens** (RFC 8693, `act` claim, `typ: agent+jwt`, only for `delegation_aware` audiences). Not optional.
 - Org lifecycle events (`tutela.org.created|updated|deleted.v1`, `tutela.user.deleted.v1`, ...).
@@ -110,7 +110,7 @@ A gate is a list of checks. A phase is not done until its gate passes. No produc
 
 ### Phase B status
 
-**State on 2026-11-02: parts 1, 2a, 2b and 3a are merged. Phase B is not done, and the service gate does not pass yet.** v0.2.0 is not tagged. attache and texc-symphony stay on `v0.1.0`.
+**State on 2026-11-02: parts 1, 2a, 2b, 3a and 3b are merged. Phase B is not done, and the service gate does not pass yet** (its end-to-end check needs the Console). v0.2.0 is not tagged. attache and texc-symphony stay on `v0.1.0`.
 
 Done:
 
@@ -137,13 +137,14 @@ Done:
 | Webhook delivery from the outbox: Standard Webhooks signatures (the spec's test vector passes), `tutela-safenet` at registration (DNS answer included) and at each send, a lease so two replicas never send one event at once, order per subject, retries with backoff and jitter for 24 hours, then dead and sent again by hand, secret rotation with an overlap, secrets sealed by `tutela-vault`. Registration is a function; its route is part 3c's | Done (part 3b) | [ADR-0036](DECISIONS.md#adr-0036-webhooks-delivered-from-the-outbox-registered-by-part-3c) |
 | SSE `GET /v1/events` for a service of the tenant: events, the `kid` deny-list (`denied_kids`) and revision changes (`rev`) pushed, resume by `Last-Event-ID` with `reset`, one feed per tenant per replica, bounded streams (count, age, buffer), ended on revocation and shutdown; `tutela_sdk::events` applies them to a verifier | Done (part 3b) | [ADR-0037](DECISIONS.md#adr-0037-the-event-stream-services-only-one-feed-per-tenant-bounded) |
 | Signed bundles at `GET /v1/authz/bundle` for a service with `read_audit` at every org: the tenant's data and active model, `typ: tutela-bundle+jwt`, signed with `KeyRing::signer()`, `exp` no later than the first expiry in it; `tutela_sdk` verifies them against the same JWKS (a denied `kid` refused) and `OfflinePdp` answers from them until `exp`, refusing an older, changed, other-tenant or newer-format bundle | Done (part 3b) | [ADR-0038](DECISIONS.md#adr-0038-signed-bundles-a-service-with-read_audit-everywhere-its-own-typ-and-no-skew-at-exp) |
+| Forwarding of audit records to attache's evidence ledger through its acknowledged Append API, off unless `TUTELA_LEDGER_URL` is set: each record signed by the deployment's Ed25519 producer key over its body, marked shipped only on acknowledgement, one replica per chain at a time, resuming after the last acknowledged `seq`; nothing changed in attache | Done (part 3b) | [ADR-0039](DECISIONS.md#adr-0039-forwarding-to-attaches-evidence-ledger-signed-acknowledged-resumable) |
 
 Not started:
 
 | Work | Part | Note |
 |---|---|---|
 | `tutela apply` against `tutelad`, `tutela apps create`, `tutela keys rotate` | 4 | `tutela apply` calls `POST /v1/models/publish`, per tenant. |
-| `tutela.admin.v1`, agent principal management, org lifecycle events, soft-delete of tenants | 3c | `grant_service` gives no write on `tenant` yet. The store calls for agents and revocation exist (part 3a). |
+| `tutela.admin.v1`, agent principal management, org lifecycle events, soft-delete of tenants, the route that registers webhooks | 3c | `grant_service` gives no write on `tenant` yet. The store calls for agents and revocation exist (part 3a); webhooks' store and delivery exist (part 3b). See [Notes for part 3c](#notes-for-part-3c). |
 | A test of token exchange against a real Keycloak ([#87](https://github.com/f8fvwgzc/tutela/issues/87)) | open | No image could be pulled; tested against a local signer of Keycloak-shaped tokens. |
 | Client authentication at the token endpoint | 4 | With apps (`tutela apps create`): bind `azp` to the client (ADR-0031). |
 | Tutela Console and embeddable admin components | 4 | |
@@ -208,6 +209,8 @@ Read these with [ADR-0025](DECISIONS.md#adr-0025-moves-and-links-in-write_check)
 
 #### Notes for part 3b
 
+Part 3b is done; these notes stay for what they say about the code. The notes for part 3c follow.
+
 Read these with [ADR-0030](DECISIONS.md#adr-0030-tutelads-own-issuer-signing-keys-the-jwks-and-paths-without-a-token) to [ADR-0033](DECISIONS.md#adr-0033-delegated-agent-tokens-from-token-exchange) and CONTRACTS.md 4.8.
 
 - **New code in part 3a.** `tutelad`: `keys.rs` (the `KeyRing`, the `Signer` trait, `OwnJwks`, the refresh job), `exchange.rs` (`Audiences`, the token endpoint, admin and delegated tokens), `revocation.rs` (the per-tenant book of raised epochs and disabled principals, and the middleware in `api.rs` that refuses such tokens with step `epoch`), `Tenant::exchanged`. `api.rs` has three routers: the public paths (`PUBLIC_PATHS`, no token), the admin routes (their own token check, `admin_auth`), and the rest (`AuthLayer`). `tutela-store`: `signing_keys.rs` and `principals.rs`, migrations 6 and 7. Mutants T01 to T23 are in `crates/tutelad/mutants/mutants.py`.
@@ -225,6 +228,20 @@ Read these with [ADR-0030](DECISIONS.md#adr-0030-tutelads-own-issuer-signing-key
   The token endpoint has no transaction at a refusal; write those records in their own.
 - **The revocation book** reads each active tenant every `TUTELA_REVISION_CHECK_MS`, beside the snapshot's own read. When SSE or a push exists, it can drop the lease. Neither it nor the tenant cache evicts a tenant: the directory bounds them now, not the trust file.
 - **Open from part 3a:** client authentication at the token endpoint (apps, part 4); `cnf` binding of delegated tokens; the `org` claim (membership is not modeled); one `ses_` per exchange; a timer for key rotation; a real Keycloak test ([#87](https://github.com/f8fvwgzc/tutela/issues/87)).
+
+#### Notes for part 3c
+
+Part 3b is done. Read these with [ADR-0034](DECISIONS.md#adr-0034-the-local-audit-log-one-chain-per-tenant-written-with-the-change) to [ADR-0039](DECISIONS.md#adr-0039-forwarding-to-attaches-evidence-ledger-signed-acknowledged-resumable).
+
+- **New code in part 3b.** `tutelad`: `audit.rs` (`Record`, `write`, `write_alone`, the reserved actor `audit::SYSTEM`), `events.rs` (the CloudEvent envelope), `webhooks.rs` (the relay, `register`, `sign`), `stream.rs` (`GET /v1/events`, the `Hub`), `bundle.rs` (`GET /v1/authz/bundle`), `ledger.rs` (the forwarder). `tutela-store`: `audit.rs` (the chains, the verifier, forwarding state), `events.rs` (the outbox, `OutboxEvent`, `emit`), `webhooks.rs`; migrations 8 to 11. `tutela-sdk`: `events` (feed a verifier from events) and `bundle` (`verify_bundle`, `OfflinePdp`). `tutela-contracts`: `jcs`, `AuditDraft`, `details`. `tutela-safenet`: `Client::check`. Mutants A01–A12, E01–E07, W01–W08, X01–X08, B01–B08 and L01–L03 are in `crates/tutelad/mutants/mutants.py`, every one caught; the script is not part of `make`, the tests that catch them are.
+- **How to audit a new operation.** Build `audit::Record::new(tenant, actor, "tutela_<thing>:<verb>", ("tutela_<thing>", id))`, end it with `.allowed(rev)`, `.denied(rev, reason)` or `.failed(rev, reason)`, add ids and numbers with `.detail(k, v)` (never a token, a secret, an e-mail or a field value), and call `audit::write(state, &tx, records)` **last** in the change's transaction, just before the commit: it locks the chain's head until then. A refusal or a read with no transaction calls `audit::write_alone` before it answers. Add a label to `audit::audit_label` for a new `tutela_*` type. The actor of the admin routes is `audit::actor_of(&identity)`.
+- **What part 3c must record** (the store calls take no actor, so the route records them): `register_agent` (the agent, its workload), `set_disabled` on and off and `revoke_sessions` (the principal and the new epoch, which the store returns), `set_boundary` and `move_scope` (the scope and the rule), org lifecycle, user deletion, webhook registration, rotation, disabling and `redeliver`, with **who asked**.
+- **How to add an event.** Each `tutela_store::OutboxEvent` variant is one line in the change's transaction: `tutela_store::emit(&tx, tenant, OutboxEvent::OrgCreated { org })`. `OrgCreated`, `OrgUpdated`, `OrgDeleted { org, purge_after }` and `UserDeleted` exist; `insert` is the crate-private form the store's own writes use. A new type is a variant, its `parts` (subject, org, data) and its `EventType` constant in `tutela-contracts` (CONTRACTS.md 8.3, additive). Every data write already emits `permissions.changed`; `revoke_sessions`, `set_disabled` and provisioning emit theirs.
+- **Webhook registration is part 3c's route** (ADR-0036 item 9): a person with a stepped-up admin token, or a service with its `tutela-authz` token, holding `read_audit` **and** `manage_access` at every org of the tenant (`models::admin` with both keys), in `tutela.admin.v1` and its HTTP admin routes. Build it on `tutelad::webhooks::register(tx, vault, relay_client, url, types, by)` (it checks the URL and its DNS answer with `tutela-safenet`), `tutela_store::webhooks::{rotate_webhook_secret, disable_webhook, webhooks, deliveries, redeliver}`. Show the secret once. Audit each call.
+- **The SSE contract** (CONTRACTS.md 8.6, ADR-0037): services only; messages `id`/`event`/`data`; control messages `denied_kids`, `rev`, `reset` with no `id`; resume by `Last-Event-ID`; bounded by `TUTELA_SSE_*`. A new event type reaches streams with no change here. If the Console needs events about one person, add a filter per principal; do not open the stream to people.
+- **The bundle format** (CONTRACTS.md 7.12, ADR-0038): `typ: tutela-bundle+jwt`, claims `iss`, `tid`, `tenant_iss`, `rev`, `iat`, `exp`, `jti`, `format: 1`, `model {digest, source}`, `data` (`TenantData` JSON), `paths`. A change to the format is `format: 2` beside 1; readers refuse a higher one. Who pulls: a service with `read_audit` at every org; part 4's apps may narrow it to a registered audience.
+- **Tenant soft-delete** must keep the tenant's audit chain (append-only, never deleted) and stop its feeds and relays when the tenant leaves the directory. Erasure of personal data inside audit bodies (`upstream_sub`, actor ids) is still open (TM-20).
+- **Open from part 3b:** a timer that verifies each chain and alerts on a broken link; the Console's view of dead webhook deliveries; per-principal SSE; `traceparent`, `request_id` and `ip` in audit records (left empty today); the relay and the forwarder visit every tenant of the directory each tick, which wants an index of tenants with work once tenants are many.
 
 #### Notes for part 3c and part 4
 

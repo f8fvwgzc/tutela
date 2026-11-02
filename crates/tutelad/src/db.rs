@@ -305,6 +305,42 @@ impl Conn {
     }
 }
 
+impl Conn {
+    /// Claims `chain` for forwarding and reads up to `batch` records past
+    /// what the ledger acknowledged, in a transaction of its own. `None`
+    /// when another replica holds the chain.
+    pub(crate) async fn forward_claim(
+        &mut self,
+        chain: &tutela_store::audit::Chain,
+        replica: &str,
+        lease: Duration,
+        batch: usize,
+    ) -> Result<Option<Vec<tutela_store::AuditEntry>>, DbError> {
+        let tx = self.0.transaction().await?;
+        let Some(after) = tutela_store::audit::claim_forward(&tx, chain, replica, lease).await?
+        else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+        let entries = tutela_store::audit::chain_records(&tx, chain, after, batch).await?;
+        tx.commit().await?;
+        Ok(Some(entries))
+    }
+
+    /// Ends a forwarding claim, with how far the ledger acknowledged.
+    pub(crate) async fn forward_done(
+        &mut self,
+        chain: &tutela_store::audit::Chain,
+        replica: &str,
+        acked: Option<u64>,
+    ) -> Result<bool, DbError> {
+        let tx = self.0.transaction().await?;
+        let held = tutela_store::audit::finish_forward(&tx, chain, replica, acked).await?;
+        tx.commit().await?;
+        Ok(held)
+    }
+}
+
 /// A record about the deployment's signing keys, by `tutelad` itself.
 fn key_record(
     iss: &tutela_contracts::tenant::Issuer,

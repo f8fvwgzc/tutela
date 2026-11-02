@@ -169,3 +169,10 @@ B07: caught by 1 test(s) - an expired bundle verifies
       tm13_a_pdp_answers_offline_from_a_bundle_until_it_expires
 B08: caught by 1 test(s) - a bundle of a tenant the issuer may not speak for verifies
       tm15_a_denied_kid_an_older_a_changed_and_a_newer_bundle_are_refused
+
+L01: caught by 2 test(s) - a batch the ledger did not take is marked shipped
+      tm20_a_ledger_outage_loses_nothing_and_blocks_nothing, tm20_a_refused_batch_waits_and_the_deployment_chain_is_forwarded
+L02: caught by 4 test(s) - a record is signed over other bytes than its body
+      tm20_records_are_forwarded_signed_and_marked_shipped, tm20_a_ledger_outage_loses_nothing_and_blocks_nothing, tm20_a_refused_batch_waits_and_the_deployment_chain_is_forwarded, two_replicas_never_send_one_chain_at_once
+L03: caught by 1 test(s) - a second replica sends a chain another one holds
+      two_replicas_never_send_one_chain_at_once
