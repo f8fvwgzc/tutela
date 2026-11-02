@@ -152,3 +152,20 @@ X07: caught by 1 test(s) - a denied kid is never pushed after the first message
       tm15_a_denied_kid_and_a_revocation_reach_a_products_verifier
 X08: caught by 1 test(s) - a stream outlives its age limit
       a_slow_client_is_reset_and_streams_are_bounded
+
+B01: caught by 1 test(s) - a bundle outlives the first assignment in it that expires
+      tm13_a_bundle_never_outlives_an_expiring_assignment
+B02: caught by 2 test(s) - a bundle is signed as an access token
+      tm13_a_pdp_answers_offline_from_a_bundle_until_it_expires, tm15_a_denied_kid_an_older_a_changed_and_a_newer_bundle_are_refused
+B03: caught by 1 test(s) - a bundle of a denied kid verifies
+      tm15_a_denied_kid_an_older_a_changed_and_a_newer_bundle_are_refused
+B04: caught by 1 test(s) - an offline PDP answers past the bundle's exp
+      tm13_a_pdp_answers_offline_from_a_bundle_until_it_expires
+B05: caught by 1 test(s) - an older bundle replaces a newer one
+      tm15_a_denied_kid_an_older_a_changed_and_a_newer_bundle_are_refused
+B06: caught by 1 test(s) - any service of the tenant pulls the whole tenant
+      tm13_only_a_service_with_read_audit_everywhere_pulls_a_bundle
+B07: caught by 1 test(s) - an expired bundle verifies
+      tm13_a_pdp_answers_offline_from_a_bundle_until_it_expires
+B08: caught by 1 test(s) - a bundle of a tenant the issuer may not speak for verifies
+      tm15_a_denied_kid_an_older_a_changed_and_a_newer_bundle_are_refused

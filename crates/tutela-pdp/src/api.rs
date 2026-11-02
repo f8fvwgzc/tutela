@@ -32,7 +32,7 @@ pub const MAX_APPROVERS: usize = 8;
 
 /// One node of a resource tree: a type and the product's own id
 /// (CONTRACTS.md 6.5). In JSON: `{"type": "matter", "id": "m-12"}`.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, serde::Deserialize)]
 pub struct PathEntry {
     /// The type. `org` for the root of the tree.
     #[serde(rename = "type")]

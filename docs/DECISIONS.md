@@ -54,6 +54,7 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0035](#adr-0035-the-outbox-events-numbered-per-tenant-in-commit-order) | The outbox: events numbered per tenant, in commit order | Accepted |
 | [0036](#adr-0036-webhooks-delivered-from-the-outbox-registered-by-part-3c) | Webhooks: delivered from the outbox, registered by part 3c | Accepted |
 | [0037](#adr-0037-the-event-stream-services-only-one-feed-per-tenant-bounded) | The event stream: services only, one feed per tenant, bounded | Accepted |
+| [0038](#adr-0038-signed-bundles-a-service-with-read_audit-everywhere-its-own-typ-and-no-skew-at-exp) | Signed bundles: a service with `read_audit` everywhere, its own `typ`, and no skew at `exp` | Accepted |
 
 ---
 
@@ -1427,4 +1428,36 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 - **A `tutela.signing_key.revoked.v1` event in every tenant's outbox.** A deployment-wide fact copied into every tenant, and webhooks would carry it to outside receivers that have no use for it.
 - **A query per stream per poll.** The load would grow with streams; one feed per tenant keeps it per tenant.
 - **`LISTEN`/`NOTIFY`** to wake feeds. Lower delay, but a connection outside the pool per replica, and the poll is still needed when a notification is lost (ADR-0021).
+
+---
+
+## ADR-0038: Signed bundles: a service with `read_audit` everywhere, its own `typ`, and no skew at `exp`
+
+**Status:** Accepted, 2026-11-02. Built in Phase B, part 3b. It does what [ADR-0024](#adr-0024-signed-bundles-wait-for-part-3) left to part 3, and closes the "bundle expiry" check of the service gate.
+
+**Context.** ADR-0024 waited for the key store (ADR-0030), a rule for who may pull a whole tenant, and SSE (ADR-0037). It asked for `expires_at` no later than `TenantBundle::next_expiry` measured as `cache::deadline` does, a loaded bundle through `Pdp::load`'s checks, the PDP side refusing a lower revision, an expired bundle, a bad signature and a newer format, the TM-13 tests, and a PDP that outlives `tutelad` until `expires_at`. The part 3a notes asked to decide whether bundles get their own `typ`, and to keep the bundle's `kid` on the deny-list rules.
+
+**Decision.**
+
+1. **`GET /v1/authz/bundle`** on the API port, behind the token check. It answers a JWS (`application/jwt`, `Cache-Control: no-store`).
+2. **Who:** a service (`sa`, `key`) with a token of `tutelad`'s own audience that holds `read_audit` at **every** org of its tenant, on data that has just been checked (`models::admin`, `ActionClass::Admin`). A bundle is everyone's access in the tenant, as the impact report is (ADR-0027 item 8), so it takes the key that looks at the whole tenant's model (ADR-0026 item 8). A person, an agent, a delegated and an external token get 403: a person never needs a whole tenant offline. Every pull writes an audit record first (`tutela_bundle:pull`, ADR-0034). This is stronger than "any service of the tenant", the weak rule ADR-0024 item 2 refused; apps (part 4) may narrow it further to a registered audience.
+3. **Its own `typ`: `tutela-bundle+jwt`.** No token verifier accepts it (CONTRACTS.md 4.1 accepts only `at+jwt` and `agent+jwt`), and the bundle verifier accepts nothing else, so a bundle can never pass as a credential, nor a token as a bundle.
+4. **Claims:** `iss` (`tutelad`'s own issuer, the signer), `tid`, `tenant_iss` (the issuer of the tenant key the data is kept under), `rev`, `iat`, `exp`, `jti`, `format: 1`, `model {digest, source}` (the tenant's **active** model, ADR-0026, with the SHA-256 of its text), `data` (`TenantData` in its new JSON form) and `paths` (every registered scope and its ancestors). Signed with `KeyRing::signer()`, ES256, the key the JWKS names.
+5. **`exp`** is the earlier of now + `TUTELA_BUNDLE_TTL_SECS` (default 300, 1 to 3600) and the first assignment in the bundle that expires: `next_expiry − read_at` on the database's clock, added to this clock's time **before** the read, rounded down (`bundle::expires_at`). A bundle whose data expires now is not issued (503).
+6. **The verifier** (`tutela_sdk::Verifier::verify_bundle`) reads the bundle like a token of a Tutela-format issuer: the header (no forbidden header, the `alg` the issuer allows), the issuer on the trust list (never an external issuer), the `kid` not on the deny-list, the key from the same JWKS cache and named by its thumbprint, the signature; then the format (a newer one is `Unsupported`, never guessed), `(iss, tid)` allowed by the trust list, and `exp` **with no clock skew**: a bundle is refused from the second it ends.
+7. **The PDP side** (`tutela_sdk::bundle::OfflinePdp`): `load` refuses a lower revision than the one it has (a replayed older bundle), another tenant's bundle, an expired one, and a model whose text is not its digest or does not compile; the data goes through `Pdp::load`'s checks. `check` answers `PdpError::ExpiredBundle` from `exp` on, also with `tutelad` gone: never an allow from an expired bundle. `paths()` serves `list_filter`.
+8. **A denied `kid`.** A product learns of it from SSE `denied_kids` (ADR-0037) and `apply_denied_kids` puts it on the verifier's deny-list: every bundle signed with it is refused at once, whatever its `exp`. A replica of `tutelad` signs with the next key at once (ADR-0030).
+9. **`TenantData` and its parts get a JSON form** in `tutela-pdp` (serde): subjects and members as principal strings or `group:<key>`, boundary rules as a list of `{"scope", "rule"}`, unknown fields refused. Reading only parses; `Pdp::load` still checks.
+10. **Metrics:** `tutelad_bundles{result}` (`issued`, `forbidden`, `unavailable`).
+
+**Consequences.**
+- **The service gate's "bundle expiry" check passes**: a replica's cache (ADR-0021, `tests/ha.rs`) and a product's offline PDP (`tests/bundle.rs`) both stop at their limit and at the first expiry, and fail closed. The offline test stops the in-process `tutelad` and keeps checking from the bundle until `exp`; it is not a second process.
+- A bundle is as large as its tenant (about the size of a whole-tenant read). Pull it on a timer below `exp`, or when SSE says `rev` moved.
+- Rotating the signing key keeps old bundles valid until the old key leaves the JWKS (`retire_at`); a denial ends them at once.
+
+**Alternatives considered.**
+- **Any service of the tenant.** The weakest rule in the service for its strongest read (ADR-0024 item 2).
+- **`typ: at+jwt`** or a plain `JWT`. A bundle could then be presented as a token to a verifier that reads `typ` loosely.
+- **A clock skew on `exp`**, as tokens have. A bundle carries grants, not identity; a minute past `exp` is a minute of an expired grant.
+- **Push whole bundles over SSE.** One tenant's data per message per stream; the stream says `rev` moved, and the product pulls.
 

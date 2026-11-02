@@ -1483,6 +1483,29 @@ Every answer on the API port has `x-request-id`: the one the caller sent (AuthZE
 
 `GET /metrics` counts every question in `tutelad_decisions_total`, labelled `operation` and `outcome` (`allow`, `deny`, `error`). Logs of a decision hold no subject and no resource, at any level.
 
+### 7.12 `GET /v1/authz/bundle` (signed bundles)
+
+**Built in Phase B, part 3b** ([ADR-0038](DECISIONS.md#adr-0038-signed-bundles-a-service-with-read_audit-everywhere-its-own-typ-and-no-skew-at-exp)). A tenant's data and its active model, signed by `tutelad`'s own issuer, for checks in a product's own process with no network (TM-13, TM-23).
+
+- **Who:** a service (`sa`, `key`) with a token of `tutelad`'s audience that holds `read_audit` at every org of its tenant. Anyone else: 403 (401 without a token). Every pull is audited.
+- **Answer:** `200`, `Content-Type: application/jwt`, `Cache-Control: no-store`, a compact JWS. Header: `typ: tutela-bundle+jwt` (never accepted as a token; a token is never accepted as a bundle), `alg: ES256`, `kid` (RFC 7638 thumbprint, as in 4.1).
+- **Claims:**
+
+| Claim | Rule |
+|---|---|
+| `iss` | `TUTELA_ISSUER`, the signer. A verifier's trust list must allow it for `tid`. |
+| `tid` | The tenant id. |
+| `tenant_iss` | The issuer of the tenant key the data is kept under: the `iss` of the tenant's own tokens. |
+| `rev` | The tenant revision the data was read at. |
+| `iat`, `exp` | NumericDate. `exp` is the earlier of `iat + TUTELA_BUNDLE_TTL_SECS` and the first assignment in the bundle that expires, measured on the database's clock. |
+| `jti` | `<uuidv7>`. |
+| `format` | `1`. A reader refuses a higher one (`UnsupportedBundle`). |
+| `model` | `{"digest", "source"}`: the tenant's active model and the SHA-256 (hex) of its text. |
+| `data` | The tenant's `TenantData` as JSON: `orgs`, `bindings` (`{"id", "subject", "role", "scope"}`, `subject` a principal string or `group:<key>`), `groups`, `private_scopes`, `field_rules`, `boundaries` (`[{"scope", "rule"}]`). |
+| `paths` | `[{"scope", "ancestors"}]`: every registered scope and its ancestors, nearest first. |
+
+- **A reader** (`tutela_sdk::Verifier::verify_bundle`, `tutela_sdk::bundle::OfflinePdp`) checks the bundle as a token of a Tutela-format issuer (header, issuer, `kid` not denied, signature against the same JWKS), then `format`, `(iss, tid)` on its trust list and `exp` with **no** clock skew; refuses a lower `rev` than the one it holds; and answers nothing (`ExpiredBundle`) from `exp` on.
+
 ## 8. Events
 
 **First commit:** the CloudEvents envelope and the event type grammar and names are in `tutela-contracts`. **Built in Phase B, part 3b:** the transactional outbox ([ADR-0035](DECISIONS.md#adr-0035-the-outbox-events-numbered-per-tenant-in-commit-order)). Webhook delivery, signing and SSE are Phase B.

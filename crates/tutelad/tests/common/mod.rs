@@ -321,6 +321,7 @@ pub fn config(database_url: &str, trust: TrustFile) -> Config {
             poll: Duration::from_millis(100),
             ..tutelad::stream::StreamSettings::default()
         },
+        bundle_ttl: Duration::from_secs(300),
     }
 }
 
@@ -395,6 +396,7 @@ pub fn state_with(config: &Config, issuer: &Issuer, delegation: bool) -> AppStat
         )),
         db,
         metrics,
+        bundle_ttl: config.bundle_ttl,
         stopping: Arc::new(AtomicBool::new(false)),
         dev_mode: config.dev_mode,
         impact_work: config.impact_work,

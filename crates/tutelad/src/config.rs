@@ -100,6 +100,10 @@ pub struct Config {
     /// `TUTELA_SSE_MAX_SECS` and `TUTELA_SSE_BUFFER`: how `GET /v1/events`
     /// streams behave (ADR-0037).
     pub streams: crate::stream::StreamSettings,
+    /// `TUTELA_BUNDLE_TTL_SECS`: the longest a signed bundle lasts, 1 to
+    /// 3600 s (ADR-0038). A bundle ends sooner at the first assignment in
+    /// it that expires.
+    pub bundle_ttl: Duration,
 }
 
 /// The secrets `tutelad` needs at start-up. `Debug` shows none of them.
@@ -332,6 +336,11 @@ impl Config {
         );
         let webhook_poll = Duration::from_millis(parsed(&get, "TUTELA_WEBHOOK_POLL_MS", "1000")?);
         let event_retention = seconds(&get, "TUTELA_EVENT_RETENTION_SECS", "604800")?;
+        let bundle_ttl = seconds(&get, "TUTELA_BUNDLE_TTL_SECS", "300")?;
+        ensure!(
+            (1..=3600).contains(&bundle_ttl.as_secs()),
+            "TUTELA_BUNDLE_TTL_SECS must be from 1 to 3600"
+        );
         let streams = crate::stream::StreamSettings {
             poll: Duration::from_millis(parsed(&get, "TUTELA_EVENTS_POLL_MS", "500")?),
             max_streams: parsed(&get, "TUTELA_SSE_MAX_STREAMS", "1000")?,
@@ -372,6 +381,7 @@ impl Config {
             webhook_poll,
             event_retention,
             streams,
+            bundle_ttl,
         })
     }
 

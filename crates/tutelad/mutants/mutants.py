@@ -51,6 +51,9 @@ HOOKS = ["-p", "tutelad", "--test", "webhooks"]
 HOOKS_ALL = ["-p", "tutelad", "--test", "webhooks", "--lib"]
 STREAM_SRC = "crates/tutelad/src/stream.rs"
 SSE = ["-p", "tutelad", "--test", "sse"]
+BUNDLE_SRC = "crates/tutelad/src/bundle.rs"
+BUNDLE_SDK = "crates/tutela-sdk/src/bundle.rs"
+BUNDLE = ["-p", "tutelad", "--test", "bundle"]
 
 # (id, file, what it breaks, old text, new text, cargo test arguments).
 # `old` must occur once.
@@ -357,6 +360,39 @@ MUTANTS = [
      "        until: now + left.min(settings.max_age),\n",
      "        until: now + left,\n",
      SSE),
+    # Signed bundles (ADR-0038).
+    ("B01", BUNDLE_SRC, "a bundle outlives the first assignment in it that expires",
+     "        end = end.min(started + left);\n",
+     "        let _ = left;\n",
+     BUNDLE),
+    ("B02", BUNDLE_SRC, "a bundle is signed as an access token",
+     "    let jws = state.keys.sign_jwt(BUNDLE_TYP, &claims).map_err(|e| {\n",
+     "    let jws = state.keys.sign_jwt(\"at+jwt\", &claims).map_err(|e| {\n",
+     BUNDLE),
+    ("B03", BUNDLE_SDK, "a bundle of a denied kid verifies",
+     "        if self.denied.read().map_or(true, |d| d.contains(&kid)) {\n",
+     "        if false && self.denied.read().map_or(true, |d| d.contains(&kid)) {\n",
+     BUNDLE),
+    ("B04", BUNDLE_SDK, "an offline PDP answers past the bundle's exp",
+     "        if self.clock.now() >= self.exp {\n",
+     "        if false && self.clock.now() >= self.exp {\n",
+     BUNDLE),
+    ("B05", BUNDLE_SDK, "an older bundle replaces a newer one",
+     "        if self.rev.is_some_and(|r| b.rev < r) {\n",
+     "        if false && self.rev.is_some_and(|r| b.rev < r) {\n",
+     BUNDLE),
+    ("B06", BUNDLE_SRC, "any service of the tenant pulls the whole tenant",
+     "    let who = crate::models::admin(state, id, &tenant, &crate::models::READ_KEYS).await?;\n",
+     "    let who = crate::models::admin(state, id, &tenant, &[]).await?;\n",
+     BUNDLE),
+    ("B07", BUNDLE_SDK, "an expired bundle verifies",
+     "        if now >= claims.exp {\n",
+     "        if false && now >= claims.exp {\n",
+     BUNDLE),
+    ("B08", BUNDLE_SDK, "a bundle of a tenant the issuer may not speak for verifies",
+     "        if !self.config.trust.allows(&claims.iss, &claims.tid) {\n",
+     "        if false && !self.config.trust.allows(&claims.iss, &claims.tid) {\n",
+     BUNDLE),
 ]
 
 

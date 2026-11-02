@@ -8,6 +8,7 @@
 //!   behind [`tutela_sdk::http::AuthLayer`]) and the ops port (`/healthz`,
 //!   `/readyz`, `/metrics`).
 //! - [`authz`]: the permission decision APIs, one code path for HTTP and gRPC.
+//! - [`bundle`]: signed bundles of a tenant's data, for offline checks.
 //! - [`cache`]: the tenant data decisions are made from, and how it stays
 //!   current.
 //! - [`tenant`]: how a request gets its tenant, from the verified token only.
@@ -28,6 +29,7 @@
 pub mod api;
 pub mod audit;
 pub mod authz;
+pub mod bundle;
 pub mod cache;
 pub mod config;
 pub mod db;
