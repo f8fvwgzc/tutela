@@ -43,6 +43,7 @@ mod models;
 mod principals;
 mod proposals;
 pub mod signing_keys;
+pub mod webhooks;
 mod write;
 
 #[cfg(test)]

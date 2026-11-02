@@ -343,6 +343,30 @@ pub async fn events_after(
     rows.iter().map(stored).collect()
 }
 
+/// The event with number `seq` of `tenant`, or `None` when it was pruned.
+///
+/// # Errors
+///
+/// [`UnknownTenant`](crate::StoreErrorKind::UnknownTenant), or a database
+/// error.
+pub async fn event_at(
+    tx: &Transaction<'_>,
+    tenant: &TenantKey,
+    seq: Cursor,
+) -> Result<Option<StoredEvent>, StoreError> {
+    enter(tx, tenant).await?;
+    let seq = i64::try_from(seq).map_err(|_| StoreError::invalid("an event position"))?;
+    tx.query_opt(
+        &format!("SELECT {COLUMNS} FROM tutela.event WHERE tenant_id = $1 AND seq = $2"),
+        &[&tenant.tid.to_string(), &seq],
+    )
+    .await
+    .db()?
+    .as_ref()
+    .map(stored)
+    .transpose()
+}
+
 /// The place of event `id` in `tenant`, to go on after it (an SSE
 /// `Last-Event-ID`), or `None` when the tenant has no such event: it was
 /// pruned, or it never was.

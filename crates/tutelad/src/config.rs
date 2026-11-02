@@ -89,6 +89,13 @@ pub struct Config {
     /// 120 s (CONTRACTS.md 4.5). It never outlives the person's token or the
     /// agent's.
     pub delegated_ttl: Duration,
+    /// `TUTELA_WEBHOOK_POLL_MS`: how often a replica delivers events to
+    /// webhooks (ADR-0036). `0` turns delivery off on this replica.
+    pub webhook_poll: Duration,
+    /// `TUTELA_EVENT_RETENTION_SECS`: how long events and ended webhook
+    /// deliveries are kept, at least two days (retries last 24 hours). An SSE
+    /// client that resumes from an older event gets `reset`.
+    pub event_retention: Duration,
 }
 
 /// The secrets `tutelad` needs at start-up. `Debug` shows none of them.
@@ -319,6 +326,12 @@ impl Config {
             !key_refresh.is_zero() && key_refresh <= jwks_cache,
             "TUTELA_KEY_REFRESH_SECS must be from 1 to TUTELA_JWKS_CACHE_SECS"
         );
+        let webhook_poll = Duration::from_millis(parsed(&get, "TUTELA_WEBHOOK_POLL_MS", "1000")?);
+        let event_retention = seconds(&get, "TUTELA_EVENT_RETENTION_SECS", "604800")?;
+        ensure!(
+            event_retention >= Duration::from_secs(2 * 24 * 3600),
+            "TUTELA_EVENT_RETENTION_SECS must be at least 172800 (two days)"
+        );
         Ok(Self {
             database_url: need("TUTELA_DATABASE_URL")?,
             listen: parsed(&get, "TUTELA_LISTEN", "0.0.0.0:8080")?,
@@ -341,6 +354,8 @@ impl Config {
             token_ttl,
             admin_acr,
             delegated_ttl,
+            webhook_poll,
+            event_retention,
         })
     }
 

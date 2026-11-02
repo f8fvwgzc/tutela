@@ -39,7 +39,7 @@ const MANIFEST: &str = "version = 1\n[app]\nname = \"rls_test\"\n";
 
 /// Every table with tenant data today. The test also reads the catalog, so a
 /// new tenant table that nobody seeds below fails here, on purpose.
-const TENANT_TABLES: [&str; 17] = [
+const TENANT_TABLES: [&str; 19] = [
     "audit_head",
     "audit_record",
     "boundary_rule",
@@ -57,6 +57,8 @@ const TENANT_TABLES: [&str; 17] = [
     "tenant_rev",
     "tenant_setting",
     "upstream_account",
+    "webhook",
+    "webhook_delivery",
 ];
 
 struct World {
@@ -146,6 +148,24 @@ async fn fill(owner: &mut Client) -> (TenantKey, OrgId) {
     )
     .await
     .unwrap();
+    tutela_store::webhooks::register_webhook(
+        &tx,
+        &t,
+        &common::vault(),
+        "https://hooks.example.test/h",
+        &[],
+        &USER.parse().unwrap(),
+    )
+    .await
+    .unwrap();
+    tutela_store::emit(
+        &tx,
+        &t,
+        tutela_store::OutboxEvent::ModelPublished { rev: 1 },
+    )
+    .await
+    .unwrap();
+    assert_eq!(tutela_store::webhooks::fan_out(&tx, &t).await.unwrap(), 1);
     let draft = tutelad::audit::Record::new(
         &t,
         tutela_contracts::audit::Actor::new(USER.parse().unwrap()),

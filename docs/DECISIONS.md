@@ -52,6 +52,7 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0033](#adr-0033-delegated-agent-tokens-from-token-exchange) | Delegated agent tokens from token exchange | Accepted |
 | [0034](#adr-0034-the-local-audit-log-one-chain-per-tenant-written-with-the-change) | The local audit log: one chain per tenant, written with the change | Accepted |
 | [0035](#adr-0035-the-outbox-events-numbered-per-tenant-in-commit-order) | The outbox: events numbered per tenant, in commit order | Accepted |
+| [0036](#adr-0036-webhooks-delivered-from-the-outbox-registered-by-part-3c) | Webhooks: delivered from the outbox, registered by part 3c | Accepted |
 
 ---
 
@@ -1361,4 +1362,36 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 - **Order by transaction id (`pg_current_xact_id()`) and read only below the snapshot's `xmin`.** No new lock, but `xmin` is the whole server's: any long transaction in any database of the server, the operator's own included, holds back every tenant's events. Tried and dropped: on a shared test server events were hidden for seconds.
 - **A table of its own for the counter.** A second lock to order against the revision row, and a deadlock to avoid by convention.
 - **Order by the event's UUIDv7.** Time of writing is not time of commit; a reader would skip an event of a transaction that commits late.
+
+---
+
+## ADR-0036: Webhooks: delivered from the outbox, registered by part 3c
+
+**Status:** Accepted, 2026-11-02. Built in Phase B, part 3b. It fixes the retry schedule CONTRACTS.md 8.5 and open point 6 left to Phase B.
+
+**Context.** CONTRACTS.md 8.4 and 8.5 fix the signature (Standard Webhooks), at least once, order per subject, retries for at least 24 hours, a dead-letter state, 15 s per attempt, no redirects, and `tutela-safenet` at registration and before each send. TM-18 and TM-19 add the rest. Two replicas must never send one event to one webhook at once. Who may register a webhook is not decided, and ADR-0032 has a rule for admin routes.
+
+**Decision.**
+
+1. **Store** (migration 10): `tutela.webhook` (URL, types, the secret and during a rotation the previous one, each sealed by `tutela-vault` for the purpose `webhook_secret` and the context `<tid>/<id>/<version>`, and `after_seq`, how far the tenant's events were handed to it) and `tutela.webhook_delivery` (one row per event per webhook), both under the tenant's row-level security. A secret is `whsec_<base64 of 32 random bytes>` and is returned once, at registration or rotation.
+2. **The relay** (`tutelad::webhooks::Relay`) runs on every replica every `TUTELA_WEBHOOK_POLL_MS` (default 1000; `0` turns it off on a replica). For each tenant of the directory, as the expiry sweep does, it hands new events to each webhook of their type, prunes, and **claims** due deliveries in one short transaction, then sends them with no database connection held, then records each end in a transaction of its own.
+3. **A claim is a lease** (`claimed_by`, `claimed_until`, 60 s, longer than one attempt), taken with `FOR UPDATE SKIP LOCKED`. Another replica skips a held delivery, so two never send one event to one webhook at once; a replica that dies mid-send leaves its lease to run out, and the next replica sends again: at least once. An end is recorded only by the replica that holds the lease.
+4. **Order per subject:** a delivery is claimed only when no earlier delivery of the same subject to the same webhook is pending. A dead one no longer holds the next back.
+5. **Retries:** the delay before try n+1 is 5 s × 2^(n−1), at most 1 hour, with up to a fifth taken off at random (jitter only shortens). A delivery not delivered 24 hours after its first try is **dead**: kept with its last status and an error code (`status`, `timeout`, `not_public`, `url`, `connect`, …), never a body or a URL, and sent again by hand with `tutela_store::webhooks::redeliver` (for the Console). That is about 30 tries.
+6. **Sending:** a `POST` of the CloudEvent (`application/cloudevents+json`) with `webhook-id` (the event id), `webhook-timestamp` and `webhook-signature` (`v1,<base64 HMAC-SHA256 of id.timestamp.body>`, one per secret, space-separated, during a rotation), through `tutela-safenet`: https only, every resolved address public, checked again at each send, no redirects, 15 s, a 64 KiB answer limit. A 2xx is delivered. `traceparent` is never sent to a webhook (CONTRACTS.md 8.1: outside hosts). Signatures match the Standard Webhooks test vector.
+7. **Rotation with an overlap:** `rotate_webhook_secret(…, overlap)` keeps the old secret signing until the overlap ends; then only the new one signs.
+8. **Registration is checked twice:** `tutelad::webhooks::register` runs `tutela_safenet::Client::check` (new: the URL rules and the DNS answer, every address, without a request) before the store keeps the URL, and each send checks again.
+9. **Who registers, and through which route: part 3c.** A webhook receives every event of its tenant and is a standing outbound channel to a URL a tenant names, so registering one is an admin action under ADR-0032: a person with a stepped-up admin token or a service with its `tutela-authz` token, holding `read_audit` **and** `manage_access` at every org of the tenant (the keys to look at and to change the whole tenant's access), on data that has just been checked. The route belongs with `tutela.admin.v1` (and its HTTP admin routes), so **part 3c builds it** on `tutelad::webhooks::register`, `rotate_webhook_secret`, `disable_webhook`, `webhooks`, `deliveries` and `redeliver`. Part 3b builds the store and delivery, and tests them through the store.
+10. **Retention:** events and ended deliveries are kept `TUTELA_EVENT_RETENTION_SECS` (default 7 days, at least 2), and an event a pending delivery still needs is never pruned. A delivery whose event is gone is dead (`pruned`).
+11. **Metrics:** `tutelad_webhook_deliveries{result}`: `delivered`, `retry`, `dead`, `blocked` (not a public address).
+
+**Consequences.**
+- Each replica visits every tenant of the directory once per tick, like the expiry sweep: a small query per tenant. Thousands of tenants would want a list of tenants with webhooks; that is an index the directory does not have yet.
+- A receiver gets each event at least once and must dedupe by `webhook-id`.
+- A tenant whose receiver is down for more than 24 hours loses nothing: the deliveries are dead and kept, and the Console (part 4) or part 3c's API sends them again.
+
+**Alternatives considered.**
+- **Hold a row lock while sending.** A database connection per open request, for up to 15 s each.
+- **Make delivery rows in the change's transaction.** The change would read every webhook of its tenant and grow with them; handing events out afterwards keeps the change's transaction small.
+- **Registration now, on an HTTP route of its own.** It would fix the admin rule for webhooks before `tutela.admin.v1` fixes it for everything else.
 

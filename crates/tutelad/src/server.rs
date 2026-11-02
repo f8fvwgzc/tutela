@@ -38,6 +38,7 @@ pub struct Server {
     stop_timeout: Duration,
     sweep_every: Duration,
     key_refresh: Duration,
+    relay: Option<(crate::webhooks::Relay, Duration)>,
 }
 
 impl Server {
@@ -63,7 +64,32 @@ impl Server {
             .add_service(AuthzService::server(state.clone()))
             .prepare()
             .into_axum_router();
+        let relay = if config.webhook_poll.is_zero() {
+            None
+        } else {
+            let policy = if config.dev_mode {
+                tutela_safenet::Policy::new().dev_loopback()
+            } else {
+                tutela_safenet::Policy::new()
+            };
+            let settings = crate::webhooks::Settings {
+                retention: config.event_retention,
+                ..crate::webhooks::Settings::default()
+            };
+            let relay = crate::webhooks::Relay::new(
+                state.db.clone(),
+                config.secrets.vault()?,
+                config.issuer.clone(),
+                policy,
+                uuid::Uuid::now_v7().to_string(),
+                settings,
+                Arc::clone(&state.metrics),
+            )
+            .context("setting up webhook delivery")?;
+            Some((relay, config.webhook_poll))
+        };
         Ok(Self {
+            relay,
             api_router: api::api_router(&state, grpc, config.request_timeout),
             ops_router: api::ops_router(&state),
             api,
@@ -120,6 +146,7 @@ impl Server {
             stop_timeout,
             sweep_every,
             key_refresh,
+            relay,
         } = self;
         let (stop_api, api_stopped) = watch::channel(false);
         let (stop_ops, ops_stopped) = watch::channel(false);
@@ -132,6 +159,9 @@ impl Server {
             sweep_every,
             jobs_stopped.clone(),
         ));
+        let relay_job = relay.map(|(relay, every)| {
+            tokio::spawn(crate::webhooks::run(relay, every, jobs_stopped.clone()))
+        });
         let key_job = tokio::spawn(keys::run(state.clone(), key_refresh, jobs_stopped));
 
         tokio::select! {
@@ -156,6 +186,11 @@ impl Server {
         }
         if tokio::time::timeout(stop_timeout, key_job).await.is_err() {
             tracing::warn!("the key refresh did not stop in time");
+        }
+        if let Some(job) = relay_job
+            && tokio::time::timeout(stop_timeout, job).await.is_err()
+        {
+            tracing::warn!("webhook delivery did not stop in time");
         }
         match finished {
             Ok(joined) => {
