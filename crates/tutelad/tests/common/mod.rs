@@ -311,6 +311,7 @@ pub fn config(database_url: &str, trust: TrustFile) -> Config {
         secrets: secrets(),
         jwks_cache: Duration::from_secs(300),
         key_refresh: Duration::from_secs(10),
+        token_ttl: Duration::from_secs(300),
     }
 }
 
@@ -349,14 +350,23 @@ pub fn state_with(config: &Config, issuer: &Issuer, delegation: bool) -> AppStat
     let db = Db::connect(&config.database_url, config.pool_size).unwrap();
     let metrics = Arc::new(Metrics::new());
     let keys = Arc::new(config.key_ring().unwrap());
+    let other: Arc<dyn JwksSource> = Arc::new(Keys(issuer.jwks()));
+    let clock: Arc<dyn Clock> = Arc::new(Now);
     AppState {
         verifier: Arc::new(Verifier::with(
             vc,
             Arc::new(tutelad::keys::OwnJwks::new(
                 Arc::clone(&keys),
-                Arc::new(Keys(issuer.jwks())),
+                Arc::clone(&other),
             )),
-            Arc::new(Now),
+            Arc::clone(&clock),
+        )),
+        audiences: Arc::new(tutelad::exchange::Audiences::new(
+            config, &keys, &other, &clock,
+        )),
+        revocations: Arc::new(tutelad::revocation::Revocations::new(
+            db.clone(),
+            config.limits,
         )),
         keys,
         cache: Arc::new(tutelad::cache::TenantCache::new(

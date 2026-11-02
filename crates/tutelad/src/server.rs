@@ -19,8 +19,10 @@ use crate::authz::grpc::AuthzService;
 use crate::cache::TenantCache;
 use crate::config::Config;
 use crate::db::Db;
+use crate::exchange::Audiences;
 use crate::expiry;
 use crate::keys;
+use crate::revocation::Revocations;
 use crate::telemetry::Metrics;
 
 /// The bound service, not yet serving.
@@ -53,8 +55,7 @@ impl Server {
             .with_context(|| format!("binding the ops port {}", config.ops_listen))?;
         // The keys before the first request, where the database allows; the
         // job loads them again on its timer.
-        if let Err(e) = keys::refresh(&state.keys, &state.verifier, &state.db, &state.metrics).await
-        {
+        if let Err(e) = keys::refresh(&state).await {
             tracing::warn!(error = %e, "starting without signing keys");
         }
         let (health, health_service) = tonic_health::server::health_reporter();
@@ -205,8 +206,16 @@ pub fn state(config: &Config) -> anyhow::Result<AppState> {
     let db = Db::connect(&config.database_url, config.pool_size)?;
     let metrics = Arc::new(Metrics::new());
     let keys = Arc::new(config.key_ring()?);
+    let other: Arc<dyn tutela_sdk::JwksSource> = Arc::new(config.jwks_source()?);
+    let clock: Arc<dyn tutela_sdk::Clock> = Arc::new(tutela_sdk::SystemClock);
     Ok(AppState {
-        verifier: Arc::new(config.verifier(Arc::clone(&keys))?),
+        verifier: Arc::new(config.verifier_with(
+            Arc::clone(&keys),
+            Arc::clone(&other),
+            Arc::clone(&clock),
+        )),
+        audiences: Arc::new(Audiences::new(config, &keys, &other, &clock)),
+        revocations: Arc::new(Revocations::new(db.clone(), config.limits)),
         keys,
         cache: Arc::new(TenantCache::new(
             db.clone(),

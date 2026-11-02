@@ -37,6 +37,11 @@ const MIGRATIONS: &[(i32, &str, &str)] = &[
         "signing_keys",
         include_str!("../migrations/0006_signing_keys.sql"),
     ),
+    (
+        7,
+        "principals",
+        include_str!("../migrations/0007_principals.sql"),
+    ),
 ];
 
 /// One lock id for every migrator of this schema (`pg_advisory_xact_lock`).

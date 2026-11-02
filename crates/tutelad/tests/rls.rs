@@ -39,18 +39,21 @@ const MANIFEST: &str = "version = 1\n[app]\nname = \"rls_test\"\n";
 
 /// Every table with tenant data today. The test also reads the catalog, so a
 /// new tenant table that nobody seeds below fails here, on purpose.
-const TENANT_TABLES: [&str; 11] = [
+const TENANT_TABLES: [&str; 14] = [
     "boundary_rule",
+    "exchanged_token",
     "field_rule",
     "group",
     "group_member",
     "model_proposal",
     "model_revision",
     "org",
+    "principal",
     "role_assignment",
     "scope_path",
     "tenant_rev",
     "tenant_setting",
+    "upstream_account",
 ];
 
 struct World {
@@ -123,6 +126,20 @@ async fn fill(owner: &mut Client) -> (TenantKey, OrgId) {
             rev: 0,
             proposed_by: USER,
         },
+    )
+    .await
+    .unwrap();
+    let kc: tutela_contracts::tenant::Issuer =
+        "https://kc.example.test/realms/acme".parse().unwrap();
+    tutela_store::provision_user(&tx, &t, &kc, "someone")
+        .await
+        .unwrap();
+    tutela_store::note_exchange(
+        &tx,
+        &t,
+        &kc,
+        "a-jti",
+        std::time::SystemTime::now() + std::time::Duration::from_secs(300),
     )
     .await
     .unwrap();

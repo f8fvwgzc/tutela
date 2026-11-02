@@ -47,6 +47,7 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0028](#adr-0028-explain-and-simulate-need-read_audit-on-the-resource) | Explain and simulate need `read_audit` on the resource | Accepted |
 | [0029](#adr-0029-two-person-publish) | Two-person publish | Accepted |
 | [0030](#adr-0030-tutelads-own-issuer-signing-keys-the-jwks-and-paths-without-a-token) | `tutelad`'s own issuer: signing keys, the JWKS, and paths without a token | Accepted |
+| [0031](#adr-0031-token-exchange-the-tenant-from-the-trust-list-a-person-from-iss-sub) | Token exchange: the tenant from the trust list, a person from (iss, sub) | Accepted |
 
 ---
 
@@ -1172,4 +1173,52 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 - **A key per replica.** Every verifier would have to trust every replica, and a restart would change the key (ADR-0024).
 - **Reload the verifier's trust list from the directory.** A tenant made between reloads would be refused, and the verifier would need a database.
 - **Serve the JWKS on the ops port.** It is kept out of the public load balancer, where products and SDKs must reach it.
+
+---
+
+## ADR-0031: Token exchange: the tenant from the trust list, a person from (iss, sub)
+
+**Status:** Accepted, 2026-11-02. Built in Phase B, part 3a. It builds the token-exchange service of [ADR-0006](#adr-0006-delegated-agent-tokens-in-phase-b-not-optional) and ROADMAP Phase B, and closes the gap of [ADR-0021](#adr-0021-the-check-api-one-code-path-a-snapshot-per-tenant-and-a-revision-lease) item 9: an external token has no principal, so it cannot ask.
+
+**Context.** A person signs in at Keycloak (or any issuer of the trust file marked `external`). Its token names the realm's subject, no Tutela principal, no tenant, no `epoch` and no `rev` (CONTRACTS.md 4.6). Tutela keys accounts by `(iss, sub)`, never by e-mail (ADR-0008, TM-04), and a tenant comes from the trust list, never from a request (CONTRACTS.md 1.6, TM-05). `tutelad` now signs tokens (ADR-0030). Apps and client credentials do not exist yet (part 4).
+
+**Decision.**
+
+1. **`POST /oauth2/token`, RFC 8693.** A form body (RFC 6749 3.2): `grant_type=urn:ietf:params:oauth:grant-type:token-exchange`, `subject_token`, `subject_token_type` (an access token or a JWT; an ID token never), and one `audience`. `resource` is refused: name the service. It needs no bearer token, like the JWKS (ADR-0030 item 9). The metadata is at `/.well-known/oauth-authorization-server` (RFC 8414).
+2. **Which subject tokens.**
+   - A token of an **external issuer** of the trust file, addressed to `tutelad`'s own audience (`TUTELA_AUDIENCE`, `tutela-authz`).
+   - A token of **`tutelad`'s own issuer**, of any audience it issues, to get one for another audience.
+   - Nothing else. A token of another Tutela-format issuer of the trust file is refused: its tenant is not this service's to issue for.
+3. **The tenant comes from the trust list.** An external issuer maps to exactly one tenant id. The exchanged token's tenant key is `(TUTELA_ISSUER, tid)`, and the directory must hold that tenant under `TUTELA_ISSUER`. A `tid` claim in the external token, or a parameter in the request, is never read. A tenant that the directory holds under the external issuer itself (the Phase A way) is not exchanged.
+4. **Just-in-time provisioning.** `tutela_store::provision_user` finds the person by the upstream `(iss, sub)` in `tutela.upstream_account` (migration 7), and makes a new `user:usr_<uuidv7>` the first time. Never by e-mail: two realms with the same subject or the same e-mail are two people. Making a person bumps no revision: with no assignment it holds nothing.
+5. **The issued token** (`typ: at+jwt`, ES256, CONTRACTS.md 4.2):
+   - `iss` = `TUTELA_ISSUER`, `sub` = the principal, `aud` = the one registered audience asked for, `azp` = the subject token's (required), `jti` new;
+   - `exp` = the earlier of now + `TUTELA_TOKEN_TTL_SECS` (default 300, 60 to 600) and the subject token's `exp`: it never outlives it;
+   - `epoch` = the principal's now, `rev` = the tenant's revision now;
+   - `sid`: a new `ses_<uuidv7>` per exchange of an external token, kept when an own token is exchanged again;
+   - `amr`: the external token's, or `["ext"]` when it has none: the issuer authenticated the person and did not say how. `ext` is never a step-up method;
+   - `acr`: copied, for step-up checks (CONTRACTS.md 4.4);
+   - `scope`: as asked, but only narrower than the subject token's when it has one;
+   - no `org` (membership is not modeled yet), no e-mail or name.
+   Every issued token passes the claim checks a verifier runs before it is signed.
+6. **Once per external token.** `tutela_store::note_exchange` records the issuer and the SHA-256 of the external token's `jti` until it expires; a second exchange is refused, and a token with no `jti` too. A client that needs several audiences exchanges its Tutela token again: a token of `tutelad` may be exchanged again for another audience, and the new token never outlives it. This is the answer to "a replayed subject token" while there is no client authentication: a stolen realm token wins at most a race.
+7. **One transaction.** The note, the provisioning and the revision are read in the tenant's transaction, which commits only after the new token is signed. A 503 uses nothing up.
+8. **Revocation.** A principal has an `epoch` and a disabled flag in `tutela.principal`. `revoke_sessions` and `set_disabled` raise the epoch and the tenant revision in one transaction; enabling again keeps the raised epoch. On the API port, after the token check, a token whose `epoch` is below its subject's, or whose subject or an actor is disabled, is refused with 401, and the log names the step `epoch`. Each replica keeps a book per tenant of the principals that refuse something, read again after `TUTELA_REVISION_CHECK_MS`, with the snapshot's failure rules (ADR-0021): stale until `TUTELA_MAX_AGE_READ_SECS`, then 503. An exchange of an own token reads the epoch from the database. gRPC health is not held: it needs no database and says nothing about anyone.
+9. **The audiences** are the service's own and the trust file's `[[audience]]` entries (`name`, `delegation_aware`). The trust file is operator config with no secret, like the issuers. `tutela-admin` is reserved for the admin audience (CONTRACTS.md 4.4).
+10. **Errors** are RFC 6749 5.2 JSON with `Cache-Control: no-store`: `invalid_request`, `unsupported_grant_type`, `invalid_target` (an audience nobody registered), `invalid_scope`, and `invalid_grant` for **every** problem with the subject token, with one text: the log names the check, never the token. 503 `temporarily_unavailable` when the database or the keys fail.
+11. **Metrics and logs.** `tutelad_token_operations_total{operation, outcome}`: the kind asked for (`access`) and `issued` or the error code. The log names the issued token's `jti`, never a token, a subject or an e-mail.
+
+**Consequences.**
+- After an exchange the check API accepts the token where it refused the external one, and a tenant made at runtime is reached through `TUTELA_ISSUER` (ADR-0030).
+- **No client authentication yet.** Apps and client credentials come with part 4 (`tutela apps create`); the token endpoint should then authenticate the client and bind `azp` to it.
+- A product that verifies `tutelad`'s tokens trusts `TUTELA_ISSUER` for its tenants (MIGRATION-0.2.md).
+- Revocation reaches a product's SDK through events: `tutela.session.revoked.v1` and `tutela.principal.disabled.v1` are part 3b. Until then a product waits for the token to expire (at most `TUTELA_TOKEN_TTL_SECS` plus the skew).
+- Part 3b's audit log records each issued token (its `jti`, the principal, the audience, the kind), each refusal with its reason, each provisioning, and each revocation and disabling.
+- Keycloak-shaped tokens are tested against a local signer, not a real Keycloak (no image could be pulled); a test against a real Keycloak is [#87](https://github.com/f8fvwgzc/tutela/issues/87).
+
+**Alternatives considered.**
+- **Keep the external tenant key `(realm, tid)`.** The tenant would change its key when its people switch to exchanged tokens, and a runtime tenant could never be reached.
+- **Exchange an external token once per audience.** A stolen token could still be spent for every other audience.
+- **Read the tenant from an `organization` claim.** A tenant-controlled IdP could name another tenant (TM-04, TM-05); the trust list is the operator's.
+- **Check the epoch per request in the database.** One more query on every check; the book follows the snapshot's lease instead.
 

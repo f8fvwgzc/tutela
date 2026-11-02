@@ -30,13 +30,12 @@ use serde::Serialize;
 use tokio::sync::watch;
 use tutela_contracts::claims::{CLOCK_SKEW_SECS, MAX_ACCESS_TOKEN_LIFETIME_SECS};
 use tutela_contracts::tenant::Issuer;
-use tutela_sdk::{JwksSource, Verifier};
+use tutela_sdk::JwksSource;
 use tutela_store::{KeySet, KeyTimes};
 use tutela_vault::Vault;
 
 use crate::api::AppState;
 use crate::db::{Db, DbError};
-use crate::telemetry::Metrics;
 
 /// The path of the JWKS on the API port. It needs no token.
 pub const JWKS_PATH: &str = "/.well-known/jwks.json";
@@ -348,31 +347,30 @@ impl JwksSource for OwnJwks {
     }
 }
 
-/// One refresh, and the verifier's deny-list after it. A denied `kid` is
-/// refused at once on this replica, even when the verifier has it cached.
+/// One refresh, and every verifier's deny-list after it. A denied `kid` is
+/// refused at once on this replica, even when a verifier has it cached.
 ///
 /// # Errors
 ///
 /// As [`KeyRing::refresh`].
-pub async fn refresh(
-    ring: &KeyRing,
-    verifier: &Verifier,
-    db: &Db,
-    metrics: &Metrics,
-) -> Result<(), KeyError> {
+pub async fn refresh(state: &AppState) -> Result<(), KeyError> {
+    let ring = &state.keys;
     let before = ring.published();
-    let result = ring.refresh(db).await;
-    metrics.count_key_refresh(result.is_ok());
-    for kid in ring.denied() {
-        verifier.deny_kid(&kid);
-    }
+    let result = ring.refresh(&state.db).await;
+    state.metrics.count_key_refresh(result.is_ok());
     let after = ring.published();
-    if after != before {
-        // A key that signs at once (the first, or one after a denial) must
-        // not wait for the verifier's refetch limit.
-        verifier.forget_jwks(ring.jwks_url()).await;
+    let verifiers = std::iter::once(&state.verifier).chain(state.audiences.verifiers());
+    for verifier in verifiers {
+        for kid in ring.denied() {
+            verifier.deny_kid(&kid);
+        }
+        if after != before {
+            // A key that signs at once (the first, or one after a denial)
+            // must not wait for the verifier's refetch limit.
+            verifier.forget_jwks(ring.jwks_url()).await;
+        }
     }
-    metrics.set_published_keys(after.len());
+    state.metrics.set_published_keys(after.len());
     result
 }
 
@@ -387,7 +385,7 @@ pub async fn run(state: AppState, every: Duration, mut stop: watch::Receiver<boo
             _ = tick.tick() => {}
             _ = stop.wait_for(|s| *s) => return,
         }
-        if let Err(e) = refresh(&state.keys, &state.verifier, &state.db, &state.metrics).await {
+        if let Err(e) = refresh(&state).await {
             tracing::warn!(error = %e, "the signing keys could not be refreshed");
         }
     }

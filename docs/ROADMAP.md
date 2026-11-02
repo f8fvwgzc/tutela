@@ -129,6 +129,7 @@ Done:
 | Explain and simulate, behind `read_audit` on the resource | Done | [ADR-0028](DECISIONS.md#adr-0028-explain-and-simulate-need-read_audit-on-the-resource) |
 | Two-person publish, optional per tenant; a proposal goes stale when its impact report would change | Done | [ADR-0029](DECISIONS.md#adr-0029-two-person-publish) |
 | `tutelad`'s own issuer: signing keys sealed by `tutela-vault`, the JWKS without a token, rotation with pre-publication, a `kid` deny-list, tenants made at runtime trusted through the directory; `TUTELA_MASTER_KEY`, `TUTELA_KEY_PEPPER` and `TUTELA_ISSUER` required at start-up | Done (part 3a) | [ADR-0030](DECISIONS.md#adr-0030-tutelads-own-issuer-signing-keys-the-jwks-and-paths-without-a-token) |
+| Token exchange (RFC 8693) at `POST /oauth2/token`: an external issuer's token for a Tutela access token, the tenant from the trust list, just-in-time provisioning by `(iss, sub)`, each external token once; own tokens for another audience; a raised `epoch` or a disabled principal refused on the API | Done (part 3a) | [ADR-0031](DECISIONS.md#adr-0031-token-exchange-the-tenant-from-the-trust-list-a-person-from-iss-sub) |
 
 Not started:
 
@@ -138,7 +139,6 @@ Not started:
 | `tutela apply` against `tutelad`, `tutela apps create`, `tutela keys rotate` | 4 | `tutela apply` calls `POST /v1/models/publish`, per tenant. |
 | Webhooks, SSE `/v1/events` | 3 | |
 | Local hash-chained audit log | 3 | `expire_assignments` returns what it removed, so the sweep can write audit in its transaction. |
-| Token-exchange service | 3 | The trust file is static. Tenants made at runtime need the service's own issuer to trust the directory. |
 | Delegated agent tokens | 3 | Off in the verifier today (`verifier_config`). |
 | `tutela.admin.v1`, org lifecycle events, soft-delete of tenants | 3 | `grant_service` gives no write on `tenant` yet. |
 | Tutela Console and embeddable admin components | 4 | |

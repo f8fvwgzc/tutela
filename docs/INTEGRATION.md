@@ -652,7 +652,8 @@ services:
   #     TUTELA_DATABASE_URL: postgres://tutela_service:dev@postgres/tutela?sslmode=require
   #                                                        # a role that owns nothing; TLS, because
   #                                                        # the database is not on this machine
-  #     TUTELA_TRUST_FILE: /etc/tutela/trust.toml          # issuers and tenants
+  #     TUTELA_TRUST_FILE: /etc/tutela/trust.toml          # issuers, tenants, audiences
+  #     TUTELA_ISSUER: https://tutela.example.test         # tutelad's own issuer (required)
   #     TUTELA_MASTER_KEY: ${TUTELA_MASTER_KEY}            # dev value from .env.example
   #     TUTELA_KEY_PEPPER: ${TUTELA_KEY_PEPPER}            # separate from the master key
   #     TUTELA_KEY_PEPPER_VERSION: "1"
@@ -660,6 +661,16 @@ services:
   #     RUST_LIB_BACKTRACE: "0"
 ```
 
+- **Token exchange with Keycloak (service mode, Phase B).** Give the
+  Keycloak client an audience mapper so its access tokens carry exactly one
+  audience, `tutela-authz` (or your `TUTELA_AUDIENCE`). List the realm in the
+  trust file as an `external` issuer with its one tenant, and create that
+  tenant in `tutelad`'s directory under `TUTELA_ISSUER`. The product's
+  backend posts the person's Keycloak token to `POST /oauth2/token` once, and
+  gets a Tutela token; for another audience it exchanges the Tutela token
+  again ([CONTRACTS.md 4.8](CONTRACTS.md#48-token-exchange-phase-b-built)).
+  Keycloak's `jti` must be present (it is by default). Add an `amr` mapper if
+  you want the methods in the Tutela token; without it `amr` is `["ext"]`.
 - Test users live in seed and fixture files. Never use real credentials.
 - The production settings for `tutelad` are in `deploy/`: `tutelad.env`,
   `compose.yaml` and `trust.example.toml`.

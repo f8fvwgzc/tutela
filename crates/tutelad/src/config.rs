@@ -13,7 +13,7 @@ use crate::cache::Limits;
 use crate::keys::{KeyRing, OwnJwks};
 use anyhow::{Context as _, anyhow, bail, ensure};
 use serde::Deserialize;
-use tutela_contracts::claims::Audience;
+use tutela_contracts::claims::{Audience, MAX_ACCESS_TOKEN_LIFETIME_SECS};
 use tutela_contracts::tenant::{Issuer, TenantId, TrustList};
 use tutela_sdk::{
     Alg, CacheRules, Clock, IssuerConfig, JwksSource, SafenetSource, SystemClock, Verifier,
@@ -75,6 +75,10 @@ pub struct Config {
     /// `TUTELA_KEY_REFRESH_SECS`: how often a replica reads the signing keys
     /// again, so a rotation or a denial elsewhere reaches it.
     pub key_refresh: Duration,
+    /// `TUTELA_TOKEN_TTL_SECS`: the life of an access token from token
+    /// exchange, at most 600 s (CONTRACTS.md 4.2). It never outlives the
+    /// token it was exchanged for.
+    pub token_ttl: Duration,
 }
 
 /// The secrets `tutelad` needs at start-up. `Debug` shows none of them.
@@ -263,10 +267,24 @@ impl Config {
         )?;
         let trust = TrustFile::read(&trust_path, dev_mode)?;
         let issuer = own_issuer(&need("TUTELA_ISSUER")?, dev_mode, &trust)?;
+        let audience: Audience = audience.parse().context("TUTELA_AUDIENCE is not valid")?;
+        ensure!(
+            audience != Audience::TUTELA_ADMIN,
+            "TUTELA_AUDIENCE must not be tutela-admin, which has its own rules"
+        );
+        ensure!(
+            !trust.audience.iter().any(|a| a.name == audience),
+            "the trust file names TUTELA_AUDIENCE as an [[audience]]; it is always served"
+        );
         let jwks_cache = seconds(&get, "TUTELA_JWKS_CACHE_SECS", "300")?;
         ensure!(
             !jwks_cache.is_zero(),
             "TUTELA_JWKS_CACHE_SECS must be at least 1"
+        );
+        let token_ttl = seconds(&get, "TUTELA_TOKEN_TTL_SECS", "300")?;
+        ensure!(
+            (60..=MAX_ACCESS_TOKEN_LIFETIME_SECS).contains(&token_ttl.as_secs()),
+            "TUTELA_TOKEN_TTL_SECS must be from 60 to 600"
         );
         let key_refresh = seconds(&get, "TUTELA_KEY_REFRESH_SECS", "10")?;
         ensure!(
@@ -277,7 +295,7 @@ impl Config {
             database_url: need("TUTELA_DATABASE_URL")?,
             listen: parsed(&get, "TUTELA_LISTEN", "0.0.0.0:8080")?,
             ops_listen: parsed(&get, "TUTELA_OPS_LISTEN", "0.0.0.0:9090")?,
-            audience: audience.parse().context("TUTELA_AUDIENCE is not valid")?,
+            audience,
             trust,
             dev_mode,
             log: get("TUTELA_LOG").unwrap_or_else(|| "info".to_owned()),
@@ -292,6 +310,7 @@ impl Config {
             secrets,
             jwks_cache,
             key_refresh,
+            token_ttl,
         })
     }
 
@@ -323,6 +342,16 @@ impl Config {
     ///
     /// When the JWKS client cannot be set up.
     pub fn verifier(&self, ring: Arc<KeyRing>) -> anyhow::Result<Verifier> {
+        Ok(self.verifier_with(ring, Arc::new(self.jwks_source()?), Arc::new(SystemClock)))
+    }
+
+    /// Where other issuers' JWKS come from: `tutela-safenet`, under this
+    /// config's rules.
+    ///
+    /// # Errors
+    ///
+    /// When the JWKS client cannot be set up.
+    pub fn jwks_source(&self) -> anyhow::Result<SafenetSource> {
         let mut policy = tutela_safenet::Policy::new();
         if self.dev_mode {
             policy = policy.dev_loopback();
@@ -332,8 +361,7 @@ impl Config {
                 .allow_private_host(host)
                 .with_context(|| format!("private host {host:?} in the trust file"))?;
         }
-        let source = SafenetSource::new(policy).context("setting up the JWKS client")?;
-        Ok(self.verifier_with(ring, Arc::new(source), Arc::new(SystemClock)))
+        SafenetSource::new(policy).context("setting up the JWKS client")
     }
 
     /// The token verifier with another JWKS source for the other issuers,
@@ -422,9 +450,20 @@ pub struct IssuerEntry {
     pub allow_typ_jwt: bool,
 }
 
+/// An audience `tutelad` issues tokens for: a service that verifies them.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AudienceEntry {
+    /// The `aud` (CONTRACTS.md 4.2).
+    pub name: Audience,
+    /// It accepts delegated (`agent+jwt`) tokens (CONTRACTS.md 4.5).
+    #[serde(default)]
+    pub delegation_aware: bool,
+}
+
 /// The trust file: which issuers `tutelad` accepts, and for which tenants
-/// (CONTRACTS.md 1.6). A tenant comes only from a token that this list
-/// allows.
+/// (CONTRACTS.md 1.6), and the audiences it issues tokens for. A tenant
+/// comes only from a token that this list allows.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TrustFile {
@@ -435,6 +474,9 @@ pub struct TrustFile {
     /// The issuers.
     #[serde(default)]
     pub issuer: Vec<IssuerEntry>,
+    /// The audiences token exchange issues for, besides the service's own.
+    #[serde(default)]
+    pub audience: Vec<AudienceEntry>,
     #[serde(skip)]
     trust: TrustList,
     #[serde(skip)]
@@ -470,6 +512,18 @@ impl TrustFile {
         } else {
             TrustList::new()
         };
+        let mut names = HashSet::new();
+        for a in &file.audience {
+            ensure!(
+                a.name != Audience::TUTELA_ADMIN,
+                "the audience tutela-admin is the service's own, with its own rules"
+            );
+            ensure!(
+                names.insert(a.name.clone()),
+                "the audience {} is named twice",
+                a.name
+            );
+        }
         file.issuers = Vec::with_capacity(file.issuer.len());
         for entry in &file.issuer {
             let iss = entry.iss.as_str();
@@ -606,6 +660,28 @@ mod tests {
         }
         // Dev mode allows a loopback issuer.
         TrustFile::parse(&file("http://127.0.0.1:8000", ""), true).unwrap();
+        // Audiences: named once, never tutela-admin.
+        let base = file("https://a.example.test", "");
+        for (extra, why) in [
+            ("[[audience]]\nname = \"tutela-admin\"\n", "tutela-admin"),
+            (
+                "[[audience]]\nname = \"crm\"\n[[audience]]\nname = \"crm\"\n",
+                "named twice",
+            ),
+            ("[[audience]]\nname = \"Crm\"\n", "parsing"),
+        ] {
+            let e = format!(
+                "{:#}",
+                TrustFile::parse(&format!("{base}{extra}"), false).unwrap_err()
+            );
+            assert!(e.contains(why), "{e}");
+        }
+        let ok = TrustFile::parse(
+            &format!("{base}[[audience]]\nname = \"crm\"\ndelegation_aware = true\n"),
+            false,
+        )
+        .unwrap();
+        assert!(ok.audience[0].delegation_aware);
     }
 
     fn vars(pairs: &[(&'static str, String)]) -> impl Fn(&str) -> Option<String> {

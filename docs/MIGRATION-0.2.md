@@ -120,3 +120,11 @@ These matter to whoever runs `tutelad`, and to a product that verifies its token
 - **Additive in `tutela-sdk`:** `Verifier::forget_jwks(jwks_uri)`, the forced refetch of an emergency rotation.
 - **New in `tutela-store`:** the signing-key API (`rotate_signing_key`, `deny_signing_key`, `ensure_signing_key`, `rewrap_signing_keys`, `signing_keys`), and a dependency on `tutela-vault`.
 
+## Token exchange (part 3a)
+
+- **Run `tutelad migrate`.** Migration 7 adds `tutela.principal`, `tutela.upstream_account` and `tutela.exchanged_token`, each with forced row-level security.
+- **`POST /oauth2/token`** exchanges a Keycloak token (or any `external` issuer's) for a Tutela token of `TUTELA_ISSUER` ([CONTRACTS.md 4.8](CONTRACTS.md#48-token-exchange-phase-b-built)). The tenant is the one the trust file maps the realm to, and it must be in `tutelad`'s directory under `TUTELA_ISSUER`. The person is a new `user:usr_…` the first time, found by the realm's `(iss, sub)` after that.
+- **The trust file** may list `[[audience]]` entries (`name`, `delegation_aware`): the audiences token exchange issues for, besides `TUTELA_AUDIENCE`. `tutela-admin` is not allowed there.
+- **For attache and texc-symphony, when they bump:** a token from `tutelad` has `iss = TUTELA_ISSUER`. Add that issuer to the `tutela-sdk` trust list with `jwks_uri = <TUTELA_ISSUER>/.well-known/jwks.json` and `algs = ["ES256"]`, with the tenants you serve, and register your audience (`symphony`, ...) in `tutelad`'s trust file. A person's token from Keycloak is exchanged once; for another audience, exchange the Tutela token. Nothing changes in `tutela-sdk`'s verifier for these tokens.
+- **New in `tutela-store`:** `provision_user`, `principal_state`, `revoke_sessions`, `set_disabled`, `register_agent`, `agent_for_workload`, `revocations`, `note_exchange`.
+
