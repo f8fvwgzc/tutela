@@ -256,7 +256,13 @@ The rest of this list is planned.
   `/access/v1/search/subject`; gRPC `tutela.authz.v1`. Built.
 - **UI permission map**: `POST /v1/authz/permissions` (ETag / 304). Built.
 - **Admin API** `tutela.admin.v1`: tenants, orgs, members, groups, roles,
-  bindings, resource types, apps, keys, agent principals.
+  bindings, resource types, apps, keys, agent principals. Built in part 3c
+  over gRPC and HTTP for the tenant and its orgs (soft delete, purge), people,
+  agent principals, resource types (`PutResourceTypes`), the model, boundary
+  rules and webhooks ([ADR-0040](DECISIONS.md#adr-0040-tutelaadminv1-one-code-path-the-admin-token-rule-on-grpc-and-keys-at-every-org),
+  [ADR-0041](DECISIONS.md#adr-0041-the-lifecycle-of-tenants-orgs-and-people-the-operator-makes-a-tenant-soft-delete-with-a-grace-a-purge-that-keeps-the-audit-chain)).
+  Members, groups, bindings, apps and keys: part 4. The operator makes a
+  tenant (`tutelad tenant create`); no route does.
 - Model versioning per tenant, the impact report, explain and simulate,
   optional two-person publish, and `write_check` with moves and links. Built
   (ADR-0025 to ADR-0029).
