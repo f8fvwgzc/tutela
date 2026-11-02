@@ -39,6 +39,15 @@ const MAX_ISSUES: usize = 100;
 const MAX_GRANTS: usize = 10_000;
 const MAX_UI_ENTRIES: usize = 256;
 
+/// `error` and its sources on one line, joined by `: `. A key error's own
+/// text leaves its source out, so a plain `{e}` would drop the reason.
+fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let texts: Vec<String> = std::iter::successors(Some(error), |e| e.source())
+        .map(ToString::to_string)
+        .collect();
+    texts.join(": ")
+}
+
 struct Ctx {
     issues: Vec<Issue>,
     /// Problems beyond [`MAX_ISSUES`]: counted, not kept.
@@ -789,7 +798,7 @@ fn roles(
                         field_levels.insert(fk, lvl);
                     }
                     Ok(_) => ctx.bad(&gat, "not a declared field or feature"),
-                    Err(e) => ctx.bad(&gat, e.to_string()),
+                    Err(e) => ctx.bad(&gat, error_chain(&e)),
                 }
             } else {
                 match ResourceType::parse(&k) {
@@ -934,7 +943,7 @@ fn field_rules(
                 continue;
             }
             Err(e) => {
-                ctx.bad(format!("{at}.field"), e.to_string());
+                ctx.bad(format!("{at}.field"), error_chain(&e));
                 continue;
             }
         };
@@ -1268,7 +1277,7 @@ fn ui(
         let key = match UiKey::parse(&name) {
             Ok(k) => k,
             Err(e) => {
-                ctx.bad(&at, e.to_string());
+                ctx.bad(&at, error_chain(&e));
                 continue;
             }
         };

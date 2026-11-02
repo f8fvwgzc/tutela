@@ -56,3 +56,81 @@ pub struct FixedValueError {
     /// The only valid value.
     pub expected: &'static str,
 }
+
+/// `error` and its sources on one line, joined by `: `. An error's own text
+/// leaves its source out, so a plain `{e}` would drop the reason.
+fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let texts: Vec<String> = std::iter::successors(Some(error), |e| e.source())
+        .map(ToString::to_string)
+        .collect();
+    texts.join(": ")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+
+    use crate::decision::Reason;
+    use crate::error_chain;
+    use crate::events::{EventSource, EventType};
+    use crate::keys::FieldKey;
+    use crate::principal::Principal;
+    use crate::tenant::TenantId;
+
+    const NAME: &str = "a name must start with a lowercase letter a-z";
+    const UUID: &str = "a UUIDv7 must be exactly 36 characters";
+
+    /// Each error says only its own part. The reason sits in `source()`, and
+    /// the chain still reads as one sentence.
+    #[test]
+    fn display_leaves_the_source_to_the_chain() {
+        let check = |e: &(dyn Error + 'static), own: &str, whole: &str| {
+            assert_eq!(e.to_string(), own);
+            assert!(e.source().is_some(), "{own}");
+            assert_eq!(error_chain(e), whole);
+        };
+        check(
+            &FieldKey::parse("project.Name").unwrap_err(),
+            "invalid name",
+            &format!("invalid name: {NAME}"),
+        );
+        check(
+            &Reason::parse("Bad").unwrap_err(),
+            "invalid reason code",
+            &format!("invalid reason code: {NAME}"),
+        );
+        check(
+            &EventType::parse("tutela.Bad.created.v1").unwrap_err(),
+            "invalid entity or verb in the event type",
+            &format!("invalid entity or verb in the event type: {NAME}"),
+        );
+        check(
+            &EventSource::parse("tutela://tutela.example.com/ten_1").unwrap_err(),
+            "invalid tenant id in the event source",
+            &format!("invalid tenant id in the event source: invalid UUIDv7 in the id: {UUID}"),
+        );
+        check(
+            &"ten_1".parse::<TenantId>().unwrap_err(),
+            "invalid UUIDv7 in the id",
+            &format!("invalid UUIDv7 in the id: {UUID}"),
+        );
+        check(
+            &"user:usr_1".parse::<Principal>().unwrap_err(),
+            "invalid principal id",
+            &format!("invalid principal id: invalid UUIDv7 in the id: {UUID}"),
+        );
+        check(
+            &"workload:http://x".parse::<Principal>().unwrap_err(),
+            "invalid workload SPIFFE ID",
+            "invalid workload SPIFFE ID: a SPIFFE ID must start with `spiffe://`",
+        );
+    }
+
+    /// A value that fails to deserialize still says why.
+    #[test]
+    fn a_serde_error_keeps_the_reason() {
+        let err = serde_json::from_str::<Principal>("\"user:usr_1\"").unwrap_err();
+        let want = format!("invalid principal id: invalid UUIDv7 in the id: {UUID}");
+        assert!(err.to_string().contains(&want), "{err}");
+    }
+}

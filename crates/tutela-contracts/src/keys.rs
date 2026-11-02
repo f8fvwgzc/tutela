@@ -77,7 +77,7 @@ pub fn check_name(s: &str) -> Result<(), NameError> {
 #[non_exhaustive]
 pub enum KeyError {
     /// A name inside the key is invalid.
-    #[error("invalid name: {0}")]
+    #[error("invalid name")]
     Name(#[from] NameError),
     /// A field key is not `<type>.<field>` or `<type>.@<feature>`.
     #[error("a field key must be `<type>.<field>` or `<type>.@<feature>`")]

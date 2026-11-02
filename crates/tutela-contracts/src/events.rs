@@ -30,7 +30,7 @@ pub enum EventError {
     #[error("an event type must be `tutela.<entity>.<verb>.v<major>`")]
     TypeShape,
     /// The entity or verb is not a name.
-    #[error("invalid entity or verb in the event type: {0}")]
+    #[error("invalid entity or verb in the event type")]
     TypeName(#[from] NameError),
     /// The major version is not `1`, `2`, ... without a leading zero.
     #[error("the event major version must be 1, 2, ... with no leading zero")]
@@ -48,8 +48,8 @@ pub enum EventError {
     #[error("the event source port must be a number from 1 to 65535")]
     SourcePort,
     /// The source tenant is not a tenant id.
-    #[error("invalid tenant id in the event source: {0}")]
-    SourceTenant(IdError),
+    #[error("invalid tenant id in the event source")]
+    SourceTenant(#[source] IdError),
     /// The subject is empty or not visible ASCII.
     #[error("an event subject must be 1 or more visible ASCII characters")]
     Subject,
