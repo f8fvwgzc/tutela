@@ -136,7 +136,7 @@ fn main() -> ExitCode {
         Ok(code) => code,
         Err(e) => {
             let _ = out.flush();
-            eprintln!("error: {e}");
+            eprintln!("error: {}", e.report());
             ExitCode::from(1)
         }
     }

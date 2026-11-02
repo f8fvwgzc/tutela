@@ -299,3 +299,17 @@ async fn a_dry_run_writes_nothing_and_a_broken_manifest_is_an_error() {
     assert!(matches!(broken, Err(crate::CliError::Compile)));
     db.finish().await;
 }
+
+/// `tokio_postgres::Error` keeps the server's message in `source()`, so the
+/// report must walk the chain to show it. It shows once on either path.
+#[tokio::test]
+async fn a_database_error_shows_the_server_message_once() {
+    let Some(db) = db().await else { return };
+    let failed = || db.client.batch_execute("SELECT * FROM no_such_table");
+    let want = "database error: db error: ERROR: relation \"no_such_table\" does not exist";
+    let direct = crate::CliError::from(failed().await.unwrap_err());
+    assert_eq!(direct.report(), want);
+    let stored = crate::CliError::from(tutela_store::StoreError::from(failed().await.unwrap_err()));
+    assert_eq!(stored.report(), want);
+    db.finish().await;
+}

@@ -343,10 +343,11 @@ async fn tm10_the_sql_lists_exactly_the_rows_check_allows() {
         .unwrap();
     let mut slow = columns();
     slow.table = "slow".into();
-    assert!(matches!(
-        sql::ids(&tx, &f, &slow, 50).await,
-        Err(SqlError::Query(_))
-    ));
+    let err = sql::ids(&tx, &f, &slow, 50).await.unwrap_err();
+    assert!(matches!(err, SqlError::Query(_)));
+    // The text leaves the cause to `source()`, so a chain shows it once.
+    assert_eq!(err.to_string(), "the list query failed");
+    assert!(std::error::Error::source(&err).is_some());
 }
 
 /// ADR-0016: the grouped SQL lists exactly the rows the term-by-term SQL

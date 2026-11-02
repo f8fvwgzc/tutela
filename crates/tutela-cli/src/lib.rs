@@ -33,7 +33,7 @@ pub const DEFAULT_MANIFEST: &str = "tutela.resources.toml";
 #[non_exhaustive]
 pub enum CliError {
     /// Reading or writing a file or the terminal failed.
-    #[error("i/o error: {0}")]
+    #[error("i/o error")]
     Io(#[from] std::io::Error),
     /// The manifest does not compile; its problems were printed.
     #[error("the manifest does not compile")]
@@ -42,16 +42,16 @@ pub enum CliError {
     #[error("{0}")]
     Database(&'static str),
     /// The database connection or a statement failed.
-    #[error("database error: {0}")]
+    #[error("database error")]
     Postgres(#[from] tutela_store::tokio_postgres::Error),
     /// The store refused a call.
-    #[error("{0}")]
+    #[error(transparent)]
     Store(#[from] tutela_store::StoreError),
     /// The diff could not be computed.
-    #[error("{0}")]
+    #[error(transparent)]
     Diff(#[from] tutela_pdp::model::DiffError),
     /// An approval token or a key was refused.
-    #[error("{0}")]
+    #[error(transparent)]
     Approval(#[from] approval::ApprovalError),
     /// Bad command-line input.
     #[error("{0}")]
@@ -59,6 +59,21 @@ pub enum CliError {
     /// A bug in the CLI.
     #[error("internal error: {0}")]
     Internal(&'static str),
+}
+
+impl CliError {
+    /// The text for a person: this error and its sources, joined by `: `.
+    /// `Display` alone leaves the sources out. `{e:#}` would not add them:
+    /// it walks the chain of an `anyhow::Error`, and a `thiserror` type
+    /// ignores it.
+    #[must_use]
+    pub fn report(&self) -> String {
+        let first: &(dyn std::error::Error + 'static) = self;
+        let texts: Vec<String> = std::iter::successors(Some(first), |e| e.source())
+            .map(ToString::to_string)
+            .collect();
+        texts.join(": ")
+    }
 }
 
 /// Prints a manifest's problems, one per line.
@@ -284,6 +299,39 @@ mod tests_pg;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each source shows once: `Display` holds none of them, and a
+    /// transparent variant adds no line of its own.
+    #[test]
+    fn a_report_walks_the_chain_and_repeats_nothing() {
+        let io = CliError::from(std::io::Error::other("the disk is full"));
+        assert_eq!(io.to_string(), "i/o error");
+        assert_eq!(io.report(), "i/o error: the disk is full");
+        let refused = CliError::from(tutela_store::StoreError::Refused(
+            tutela_pdp::LoadError::RevTooLarge,
+        ));
+        assert_eq!(
+            refused.report(),
+            "the change is refused: the revision must be at most 2^53 - 1"
+        );
+        let approval = CliError::from(approval::ApprovalError::Malformed);
+        assert_eq!(approval.report(), "the approval token is malformed");
+    }
+
+    /// The operator sees why the connection failed, and never the password.
+    #[tokio::test]
+    async fn a_failed_connection_says_why_and_holds_no_password() {
+        let url = "host=127.0.0.1 port=1 user=u password=not-for-output dbname=d";
+        let Err(e) = connect(Some(url)).await else {
+            panic!("port 1 took the connection");
+        };
+        let text = e.report();
+        assert!(
+            text.starts_with("database error: error connecting to server: "),
+            "{text}"
+        );
+        assert!(!text.contains("not-for-output"), "{text}");
+    }
 
     #[test]
     fn a_remote_database_needs_tls_and_a_local_one_may_skip_it() {
