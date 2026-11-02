@@ -1,6 +1,6 @@
 //! What `tutelad` writes to the local audit log (ADR-0034, CONTRACTS.md 9).
 //!
-//! Each operation builds its [`Record`]s and writes them with [`write`] in
+//! Each operation builds its [`Record`]s and writes them with [`write()`] in
 //! the transaction of its change, last, just before the commit. An answer
 //! that changes nothing (a refused publish, an explain, a write check) gets
 //! a transaction of its own from [`write_alone`], and leaves only after its
@@ -15,7 +15,7 @@
 //! **To audit a new operation:** build a `Record::new(tenant, actor, action,
 //! (type, id))`, finish it with [`Record::allowed`], [`Record::denied`] or
 //! [`Record::failed`], add what else happened with [`Record::detail`], and
-//! pass it to [`write`] in the change's transaction.
+//! pass it to [`write()`] in the change's transaction.
 
 use serde_json::{Map, Value};
 use tutela_contracts::audit::{
