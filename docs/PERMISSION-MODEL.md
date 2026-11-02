@@ -712,7 +712,18 @@ Phase A ships the diff, the classification, the refusal and approval tokens from
 
 ### 16.1 How long until a revocation takes effect
 
-The real numbers are measured and documented in Phase B, and tested in the nightly suite. The shape:
+**On a `tutelad` replica** (built, [ADR-0021](DECISIONS.md#adr-0021-the-check-api-one-code-path-a-snapshot-per-tenant-and-a-revision-lease)). These are the service's own numbers, with the default settings. `crates/tutelad/tests/ha.rs` runs two real `tutelad` processes on one Postgres, revokes a role through the store, and asks the other replica under steady traffic.
+
+| Situation | How long a revoked role still answers allow |
+|---|---|
+| Normal running (`TUTELA_REVISION_CHECK_MS=1000`) | **Documented: at most 1.5 s.** Measured on 60 rounds: p50 0.61 s, worst 1.010 s. The test fails above 1.5 s. It is the check interval, plus one read and one load. |
+| The caller sends `at_least_revision` after its own write | No delay: the replica reads the revision first. |
+| A tenant with no traffic | No delay: its next request checks first. |
+| A replica cut off from the database | Until the age limit of the action: **60 s** for `read`, **10 s** for other actions, the 1 s check interval for admin keys and owner-only actions. Then 503. |
+
+An assignment's expiry takes effect **at the expiry**, on the database's clock, with no sweep and no new revision. A replica cut off from the database then answers 503 for the whole tenant, because it knows its view stopped being true.
+
+**The planned shape for other PDPs.** The numbers below that depend on bundles are not built ([ADR-0024](DECISIONS.md#adr-0024-signed-bundles-wait-for-part-3)):
 
 | What changed | How it reaches a running service | Worst case |
 |---|---|---|
@@ -946,6 +957,6 @@ These are not decided yet. Each has a proposal so work can start. Final answers 
 | 2 | Where does a library-mode project (no `tutelad`) get an approval token for a widening diff? | **Decided** ([ADR-0015](DECISIONS.md#adr-0015-approval-tokens-for-tutela-apply-in-library-mode)): an Ed25519 token from a registered approver key, bound to the app and the digests of the applied and the new manifest, valid for at most 24 hours ([MANIFEST.md §12](MANIFEST.md#12-applying-tutela-apply-and-approval-tokens)). | Phase A |
 | 3 | How is a reader's clearance per label stored, for labelled output? | Treat each label like a field of that sensitivity in the scope, with the same defaults. | Phase A |
 | 4 | The ancestors column: array, `ltree` or closure table? Maximum path depth? | **Decided** ([ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator)): an array of ancestor ids, nearest first, with a GIN index. Depth cap 32. `bigint[]` was measured; the element type (for example UUID) and the query plan are measured again under ADR-0011 F2. | Week-1 spike |
-| 5 | Default max bundle age per action class. | Reads longer, writes shorter, revocation-sensitive actions online. Numbers measured in Phase B. | Phase B |
+| 5 | Default max bundle age per action class. | Reads longer, writes shorter, revocation-sensitive actions online. **Set for a `tutelad` replica** (section 16.1): 60 s, 10 s and online. The bundle numbers come with bundles. | Phase B |
 | 6 | The list of condition templates in v1. | **Fixed** in [MANIFEST.md §8](MANIFEST.md#8-conditions) ([ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)): `eq`, `in`, `contains`, `is_principal`, `in_group`; `and`, `or`, `not`. | Phase A |
 | 7 | The final names of admin keys and obligation kinds. | Admin keys: **fixed** as in [5.3](#53-owner-only-admin-actions-blueprint) ([MANIFEST.md §6](MANIFEST.md#6-admin-keys), [ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)). Obligation kinds: as in [7.3](#73-the-decision-object), still open. | Phase A, in `tutela-contracts` |

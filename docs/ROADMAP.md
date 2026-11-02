@@ -147,9 +147,9 @@ The service gate:
 | A query with no tenant set returns zero rows | **Passes** on a real Postgres (`crates/tutelad/tests/rls.rs`) |
 | A cross-tenant read fails at RLS, even with an injected code bug | **Passes**, with a control that shows the same request leaks when RLS is off |
 | Group and path closure p99 | **Passes** the 5 ms threshold going up: 1.44 ms, 1.46 ms at 32 levels, 0.67 ms for a path. Going down (`scopes_below`) is 11 ms, not gated ([ADR-0020](DECISIONS.md#adr-0020-the-bindings-store-closures-at-read-time-and-assignment-expiry)) |
-| 2+ replicas | **Not tested.** Two sweeps at once are tested in `tutela-store`, but two `tutelad` processes have not run together |
+| 2+ replicas | **Passes**: two real `tutelad` processes on one Postgres answer together, share a sweep (one expiry, one revision), and one keeps serving when the other stops (`crates/tutelad/tests/ha.rs`) |
 | Bundle expiry | **Not built** |
-| A revoked role takes effect within the documented delay | **Not measured**: it needs bundles |
+| A revoked role takes effect within the documented delay | **Passes on replicas**: documented at most 1.5 s, measured p50 0.61 s, worst 1.010 s over 60 rounds under steady traffic. The test fails above 1.5 s. A replica cut off from the database stops at the age limit of the action, also tested ([PERMISSION-MODEL.md 16.1](PERMISSION-MODEL.md#161-how-long-until-a-revocation-takes-effect)) |
 | Sign-in, the permission map and runtime role editing, end to end | **Not built** |
 
 #### Notes for part 2

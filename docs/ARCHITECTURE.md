@@ -523,7 +523,9 @@ and must never turn into a wrong "allow".
 | The OIDC issuer (Keycloak) is down | Existing access tokens keep working until they expire. New sign-ins and token exchanges fail. |
 | A webhook receiver is down | The outbox retries with backoff. Delivery is at-least-once; receivers dedupe by event id; order is kept per subject. |
 | One `tutelad` replica dies | Other replicas serve. **Run 2 or more replicas** (a Phase B exit condition). |
-| `tutelad`'s Postgres is down | Admin changes fail. PDPs keep answering from cached bundles until the age limits above. |
+| `tutelad`'s Postgres is down | Admin changes fail. PDPs keep answering from cached bundles until the age limits above. A `tutelad` replica does the same from its in-memory snapshots: `read` for 60 s after its last good check, other actions for 10 s, and admin keys and owner-only actions only within the 1 s check interval. Then 503. `/readyz` fails and `/healthz` does not. A replica that has no snapshot answers 503 at once. |
+| A role is revoked, on a healthy deployment | Every `tutelad` replica stops within **1.5 s** (`TUTELA_REVISION_CHECK_MS=1000`; worst measured 1.010 s, two real processes). A caller that sends `at_least_revision` sees it at once. |
+| An assignment reaches its expiry | New answers stop at the expiry, by the database's clock, before the sweep and before the revision moves. A replica that cannot reload answers 503 for that tenant from then on. |
 | Library mode | There is no `tutelad`. The PDP reads `tutela-store` in the product's own database, so Tutela is as available as that database. |
 
 Key rotation (Phase B for exchanged tokens, Phase C for the login server):
