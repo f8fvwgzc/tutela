@@ -65,6 +65,7 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0046](#adr-0046-the-cli-against-tutelad-apply-with-the-impact-report-apps-and-keys-through-the-key-store) | The CLI against `tutelad`: `apply` with the impact report, `apps`, and `keys` through the key store | Accepted |
 | [0047](#adr-0047-the-javascript-sdks-a-pnpm-workspace-under-sdk-checked-by-make) | The JavaScript SDKs: a pnpm workspace under `sdk/`, checked by `make` | Accepted |
 | [0048](#adr-0048-tutela-js-the-browser-token-flow-in-memory-typed-errors-and-a-retry-that-never-makes-twice) | `tutela-js`: the browser token flow in memory, typed errors, and a retry that never makes twice | Accepted |
+| [0049](#adr-0049-tutela-react-embeddable-admin-components-scoped-css-variables-and-the-host-names-the-people) | `tutela-react`: embeddable admin components, scoped CSS variables, and the host names the people | Accepted |
 
 ---
 
@@ -1774,3 +1775,30 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 - **Exchange the upstream token for the admin token first.** An admin token cannot be the subject of another exchange, and without step-up the person would get nothing, not even the check API's token.
 - **Keep tokens in `sessionStorage` to survive a reload.** TM-06 refuses it; a reload signs in again through Keycloak's own session.
 - **Retry every 503.** A lost answer to a create would make two apps or two webhook secrets.
+
+---
+
+## ADR-0049: `tutela-react`: embeddable admin components, scoped CSS variables, and the host names the people
+
+**Status:** Accepted, 2026-11-02. Phase B, part 4b1. It builds `@f8fvwgzc/tutela-react` (React 19) on [ADR-0048](#adr-0048-tutela-js-the-browser-token-flow-in-memory-typed-errors-and-a-retry-that-never-makes-twice): `MembersTable`, `RoleEditor` and `PermissionMatrix`, which the Console of part 4b2 and products embed (INTEGRATION.md step 8).
+
+**Context.** The components run inside someone else's app: they must not force a CSS framework, restyle the host page, or need a Content-Security-Policy exception (the Console sends a strict one, TM-06). Tutela keeps no names or e-mails of people (principals are opaque, ADR-0001). The ROADMAP notes for part 4b say what a page does with each answer. The owner wants dense, full-width pages in the style of Linear, and has reduced motion on.
+
+**Decision.**
+
+1. **One stylesheet, scoped and themed by variables.** `@f8fvwgzc/tutela-react/styles.css` is a plain CSS file the host imports once; no CSS-in-JS, no inline `<style>`, so no CSP exception. Every rule is under the components' root class `.tutela`; nothing styles `html`, `body` or a bare element. Colours, font, sizes and radii are `--tutela-*` variables the host overrides. Light by default, dark from `prefers-color-scheme` or `theme="dark"` (`data-theme` on the root). Dense: 13 px text, 32 px rows, full width, sticky table headers, tabular numbers, one accent. Motion: a 120 ms colour change on buttons, none under `prefers-reduced-motion`.
+2. **The host names the people.** A subject is shown as its principal string unless the host passes `renderSubject(principal)`, so a product shows its own names without giving them to Tutela.
+3. **The host knows the path.** `MembersTable` takes `scope` and its `path` (the `ancestors` of `GET /v1/admin/scopes`): the permission map needs the path, and a scope's path always comes from the scope tree, never from a person's input.
+4. **What a page does with each answer**, as the ROADMAP notes give it: the permission map (`<type>:manage_access`) decides what is shown; a 403 `forbidden` on a change hides the controls; a 403 `forbidden` on the list shows that the person may not see it; `not_held` shows the server's counts-only sentences and, when the host passes `onAskAdmin`, a button that hands the host an access request (Tutela has no route for requests yet); `move_refused` lists the scopes that wait for an owner (`ErrorNotice`, for the scope tree of part 4b2); a 409 loads again; a 503 tries a read again after `Retry-After` (at most 30 s) and shows a countdown, and tries a change again once after it (the changes of the table are safe to repeat: ADR-0048 item 6) or at once on "Try again now"; a step-up refusal offers `onStepUp`.
+5. **A role change is a model change.** `RoleEditor` starts from `GET /v1/models/active`, rewrites the role with `setRoleGrants`, shows `POST /v1/models/impact` as sentences and its class, asks for an approval token when the change widens, and publishes with `expected_version`, or proposes when the tenant has two-person publish on. The `owner` role is shown and never changed. `PermissionMatrix` in `editable` mode edits one role's column and hands the draft to `onReview`, for a `RoleEditor`.
+6. **Accessible.** Tables with column and row headers, labelled inputs, buttons with names that say what they act on, a polite status region for each success and an alert for each refusal, visible focus, and the whole table usable with the keyboard. The tests run axe-core on each component (colour contrast is not checked in jsdom).
+
+**Consequences.**
+- A product embeds the components behind its own Keycloak sign-in with a `BrowserSession` and, until [#135](https://github.com/f8fvwgzc/tutela/issues/135), a same-origin proxy of `tutelad`.
+- Access requests after `not_held` are the host's to send (a ticket, a message to an owner); a Tutela route for them is later work.
+- A host that wants other looks overrides variables, or styles its own wrapper; the components' markup and class names are part of the package's API from v0.2.0.
+
+**Alternatives considered.**
+- **CSS-in-JS or inline styles.** They need `style-src 'unsafe-inline'` or a nonce in the host's CSP.
+- **A component library (shadcn, Radix, MUI).** It would force its styles, versions and size on every host.
+- **Ask Tutela for display names.** Tutela keeps no personal data beyond `(iss, sub)` (CONTRACTS.md 9.5).

@@ -1,0 +1,462 @@
+/*
+ * @f8fvwgzc/tutela-react: small default styles. Every rule is scoped under
+ * the components' root class `.tutela`: nothing here styles the host page.
+ * Override any --tutela-* variable on `.tutela` (or an ancestor) to match
+ * the host's design. Light by default; dark follows prefers-color-scheme,
+ * or `data-theme="dark"` / `"light"` on the root (the `theme` prop).
+ */
+
+.tutela {
+  --tutela-font: inherit;
+  --tutela-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --tutela-size: 13px;
+  --tutela-size-small: 12px;
+  --tutela-row: 32px;
+  --tutela-gap: 8px;
+  --tutela-radius-control: 6px;
+  --tutela-radius-panel: 8px;
+
+  --tutela-bg: oklch(1 0 0);
+  --tutela-bg-subtle: oklch(0.985 0.002 270);
+  --tutela-bg-hover: oklch(0.97 0.003 270);
+  --tutela-fg: oklch(0.21 0.01 270);
+  --tutela-muted: oklch(0.52 0.012 270);
+  --tutela-border: oklch(0.92 0.004 270);
+  --tutela-border-strong: oklch(0.86 0.006 270);
+  --tutela-accent: oklch(0.55 0.15 275);
+  --tutela-accent-fg: oklch(0.99 0 0);
+  --tutela-accent-soft: oklch(0.55 0.15 275 / 0.1);
+  --tutela-focus: oklch(0.55 0.15 275 / 0.55);
+  --tutela-danger: oklch(0.55 0.19 25);
+  --tutela-danger-soft: oklch(0.55 0.19 25 / 0.08);
+  --tutela-warn: oklch(0.6 0.13 75);
+  --tutela-warn-soft: oklch(0.75 0.14 80 / 0.12);
+
+  color-scheme: light;
+  font-family: var(--tutela-font);
+  font-size: var(--tutela-size);
+  line-height: 1.45;
+  color: var(--tutela-fg);
+  background: var(--tutela-bg);
+  width: 100%;
+  box-sizing: border-box;
+}
+
+@media (prefers-color-scheme: dark) {
+  .tutela:not([data-theme="light"]) {
+    --tutela-bg: oklch(0.18 0.006 270);
+    --tutela-bg-subtle: oklch(0.205 0.007 270);
+    --tutela-bg-hover: oklch(0.235 0.008 270);
+    --tutela-fg: oklch(0.93 0.004 270);
+    --tutela-muted: oklch(0.68 0.012 270);
+    --tutela-border: oklch(0.28 0.008 270);
+    --tutela-border-strong: oklch(0.34 0.01 270);
+    --tutela-accent: oklch(0.68 0.14 275);
+    --tutela-accent-fg: oklch(0.16 0.01 270);
+    --tutela-accent-soft: oklch(0.68 0.14 275 / 0.16);
+    --tutela-focus: oklch(0.68 0.14 275 / 0.6);
+    --tutela-danger: oklch(0.7 0.16 25);
+    --tutela-danger-soft: oklch(0.7 0.16 25 / 0.12);
+    --tutela-warn: oklch(0.78 0.13 80);
+    --tutela-warn-soft: oklch(0.78 0.13 80 / 0.12);
+    color-scheme: dark;
+  }
+}
+
+.tutela[data-theme="dark"] {
+  --tutela-bg: oklch(0.18 0.006 270);
+  --tutela-bg-subtle: oklch(0.205 0.007 270);
+  --tutela-bg-hover: oklch(0.235 0.008 270);
+  --tutela-fg: oklch(0.93 0.004 270);
+  --tutela-muted: oklch(0.68 0.012 270);
+  --tutela-border: oklch(0.28 0.008 270);
+  --tutela-border-strong: oklch(0.34 0.01 270);
+  --tutela-accent: oklch(0.68 0.14 275);
+  --tutela-accent-fg: oklch(0.16 0.01 270);
+  --tutela-accent-soft: oklch(0.68 0.14 275 / 0.16);
+  --tutela-focus: oklch(0.68 0.14 275 / 0.6);
+  --tutela-danger: oklch(0.7 0.16 25);
+  --tutela-danger-soft: oklch(0.7 0.16 25 / 0.12);
+  --tutela-warn: oklch(0.78 0.13 80);
+  --tutela-warn-soft: oklch(0.78 0.13 80 / 0.12);
+  color-scheme: dark;
+}
+
+.tutela *,
+.tutela *::before,
+.tutela *::after {
+  box-sizing: inherit;
+}
+
+/* Screen-reader text. */
+.tutela .tutela-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.tutela .tutela-muted {
+  color: var(--tutela-muted);
+}
+
+.tutela .tutela-mono {
+  font-family: var(--tutela-mono);
+  font-size: var(--tutela-size-small);
+}
+
+.tutela .tutela-title {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* ---------- Tables: dense, full width, sticky header ---------- */
+
+.tutela .tutela-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  scrollbar-gutter: stable;
+  border-top: 1px solid var(--tutela-border);
+}
+
+.tutela .tutela-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.tutela .tutela-table th,
+.tutela .tutela-table td {
+  height: var(--tutela-row);
+  padding: 0 12px;
+  text-align: left;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--tutela-border);
+  white-space: nowrap;
+}
+
+.tutela .tutela-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--tutela-bg-subtle);
+  color: var(--tutela-muted);
+  font-weight: 500;
+  font-size: var(--tutela-size-small);
+}
+
+.tutela .tutela-table tbody tr:hover {
+  background: var(--tutela-bg-hover);
+}
+
+.tutela .tutela-table tbody th {
+  font-weight: 400;
+}
+
+.tutela .tutela-row-type {
+  font-weight: 600;
+}
+
+.tutela .tutela-row-sub {
+  padding-left: 28px;
+  color: var(--tutela-fg);
+}
+
+.tutela .tutela-kind {
+  color: var(--tutela-muted);
+  font-size: var(--tutela-size-small);
+}
+
+.tutela .tutela-table td[data-editing],
+.tutela .tutela-table th[data-editing] {
+  background: var(--tutela-accent-soft);
+}
+
+.tutela .tutela-num {
+  font-variant-numeric: tabular-nums;
+}
+
+.tutela .tutela-actions {
+  text-align: right;
+}
+
+.tutela .tutela-actions > * + * {
+  margin-left: 4px;
+}
+
+.tutela .tutela-empty {
+  padding: 16px 12px;
+  color: var(--tutela-muted);
+}
+
+.tutela .tutela-role-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ---------- The level meter: the one signature detail ---------- */
+
+.tutela .tutela-level {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tutela .tutela-level[data-inherited] {
+  color: var(--tutela-muted);
+}
+
+.tutela .tutela-level[data-level="none"] {
+  color: var(--tutela-muted);
+}
+
+.tutela .tutela-meter {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.tutela .tutela-meter > span {
+  width: 3px;
+  height: 10px;
+  border-radius: 1px;
+  background: var(--tutela-border-strong);
+}
+
+.tutela .tutela-meter > span[data-on] {
+  background: var(--tutela-accent);
+}
+
+.tutela .tutela-level[data-inherited] .tutela-meter > span[data-on] {
+  background: var(--tutela-muted);
+}
+
+.tutela .tutela-granted {
+  color: var(--tutela-accent);
+  display: inline-flex;
+}
+
+/* ---------- Toolbar, fields, buttons ---------- */
+
+.tutela .tutela-toolbar,
+.tutela .tutela-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--tutela-gap);
+  padding: 8px 12px;
+}
+
+.tutela .tutela-footer {
+  align-items: center;
+  border-top: 1px solid var(--tutela-border);
+}
+
+.tutela .tutela-field {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tutela .tutela-field > label {
+  color: var(--tutela-muted);
+  font-size: var(--tutela-size-small);
+}
+
+.tutela .tutela-field-error {
+  flex-basis: 100%;
+  color: var(--tutela-danger);
+  font-size: var(--tutela-size-small);
+}
+
+.tutela .tutela-input {
+  height: 28px;
+  min-width: 0;
+  padding: 0 8px;
+  font: inherit;
+  color: var(--tutela-fg);
+  background: var(--tutela-bg);
+  border: 1px solid var(--tutela-border-strong);
+  border-radius: var(--tutela-radius-control);
+}
+
+.tutela textarea.tutela-input {
+  height: auto;
+  padding: 6px 8px;
+  width: 100%;
+}
+
+.tutela .tutela-input[aria-invalid="true"] {
+  border-color: var(--tutela-danger);
+}
+
+.tutela .tutela-select-level {
+  height: 24px;
+}
+
+.tutela .tutela-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 10px;
+  font: inherit;
+  font-weight: 500;
+  color: var(--tutela-fg);
+  background: var(--tutela-bg);
+  border: 1px solid var(--tutela-border-strong);
+  border-radius: var(--tutela-radius-control);
+  cursor: pointer;
+  transition:
+    background-color 120ms ease-out,
+    border-color 120ms ease-out;
+}
+
+.tutela .tutela-button:hover:not(:disabled) {
+  background: var(--tutela-bg-hover);
+}
+
+.tutela .tutela-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.tutela .tutela-primary {
+  color: var(--tutela-accent-fg);
+  background: var(--tutela-accent);
+  border-color: transparent;
+}
+
+.tutela .tutela-primary:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--tutela-accent) 88%, var(--tutela-fg));
+}
+
+.tutela .tutela-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--tutela-muted);
+}
+
+.tutela .tutela-ghost:hover:not(:disabled) {
+  color: var(--tutela-fg);
+}
+
+.tutela .tutela-danger {
+  color: var(--tutela-danger);
+  border-color: var(--tutela-danger);
+  background: var(--tutela-danger-soft);
+}
+
+.tutela .tutela-small {
+  height: 22px;
+  padding: 0 6px;
+  font-size: var(--tutela-size-small);
+}
+
+.tutela .tutela-icon {
+  padding: 0 6px;
+}
+
+.tutela .tutela-check {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--tutela-accent);
+}
+
+.tutela .tutela-inline {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+
+/* Visible focus for keyboard users. */
+.tutela :is(button, input, select, textarea, summary, a):focus-visible {
+  outline: 2px solid var(--tutela-focus);
+  outline-offset: 1px;
+}
+
+/* ---------- Notices ---------- */
+
+.tutela .tutela-notice {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 8px 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--tutela-border);
+  border-radius: var(--tutela-radius-panel);
+  background: var(--tutela-danger-soft);
+}
+
+.tutela .tutela-notice[data-tone="warn"] {
+  background: var(--tutela-warn-soft);
+}
+
+.tutela .tutela-notice-title {
+  font-weight: 600;
+}
+
+.tutela .tutela-notice-list {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
+.tutela .tutela-notice-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* ---------- Role editor ---------- */
+
+.tutela .tutela-impact {
+  margin: 8px 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--tutela-border);
+  border-radius: var(--tutela-radius-panel);
+  background: var(--tutela-bg-subtle);
+}
+
+.tutela .tutela-impact-class {
+  margin: 0 0 4px;
+  font-weight: 600;
+}
+
+.tutela .tutela-impact-class[data-class="widening"] {
+  color: var(--tutela-warn);
+}
+
+.tutela .tutela-impact-lines {
+  margin: 0 0 6px;
+  padding-left: 18px;
+}
+
+.tutela .tutela-diff {
+  max-height: 240px;
+  overflow: auto;
+  margin: 6px 0 0;
+  padding: 8px;
+  font-family: var(--tutela-mono);
+  font-size: var(--tutela-size-small);
+  background: var(--tutela-bg);
+  border: 1px solid var(--tutela-border);
+  border-radius: var(--tutela-radius-control);
+}
+
+.tutela .tutela-approval {
+  display: flex;
+  margin-top: 8px;
+  width: 100%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tutela .tutela-button {
+    transition: none;
+  }
+}
