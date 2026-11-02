@@ -62,6 +62,7 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0043](#adr-0043-scopes-assignments-and-groups-over-the-admin-api-checked-on-the-data-they-change) | Scopes, assignments and groups over the admin API, checked on the data they change | Accepted |
 | [0044](#adr-0044-apps-one-tenant-each-a-hashed-client-secret-and-azp-bound-to-the-client-that-authenticated) | Apps: one tenant each, a hashed client secret, and `azp` bound to the client that authenticated | Accepted |
 | [0045](#adr-0045-the-audit-producer-key-sealed-in-the-database-rotated-with-its-old-keys-kept) | The audit producer key sealed in the database, rotated with its old keys kept | Accepted |
+| [0046](#adr-0046-the-cli-against-tutelad-apply-with-the-impact-report-apps-and-keys-through-the-key-store) | The CLI against `tutelad`: `apply` with the impact report, `apps`, and `keys` through the key store | Accepted |
 
 ---
 
@@ -1682,3 +1683,30 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 - **Keep the seed in the environment.** Every replica holds it, and no rotation keeps old records tied to their key.
 - **Sign records when they are written, not when forwarded.** It would freeze a key into each local record; the local log is hash-chained already (ADR-0034), and signing at forwarding keeps one key to rotate.
 - **Delete retired keys after a while.** A record in attache's ledger could then never be checked again against Tutela's keys.
+
+---
+
+## ADR-0046: The CLI against `tutelad`: `apply` with the impact report, `apps`, and `keys` through the key store
+
+**Status:** Accepted, 2026-11-02. Built in Phase B, part 4a. It builds the CLI items of the Phase B work list (`tutela apply` against `tutelad`, `tutela apps create`, `tutela keys rotate`) on the routes of [ADR-0026](#adr-0026-a-tenant-owns-its-model-versions) to [ADR-0029](#adr-0029-two-person-publish) and [ADR-0044](#adr-0044-apps-one-tenant-each-a-hashed-client-secret-and-azp-bound-to-the-client-that-authenticated), and the key stores of [ADR-0030](#adr-0030-tutelads-own-issuer-signing-keys-the-jwks-and-paths-without-a-token) and [ADR-0045](#adr-0045-the-audit-producer-key-sealed-in-the-database-rotated-with-its-old-keys-kept).
+
+**Decision.**
+
+1. **Library mode is unchanged.** `tutela apply` without `--server` applies to the database of `TUTELA_DATABASE_URL`, as in Phase A (ADR-0015).
+2. **`tutela apply --server <url>`** (or `TUTELA_URL`) with `--token` (or `TUTELA_TOKEN`): a pipeline's service token (an app's `client_credentials` token) or a person's admin token. It compiles the manifest, asks `POST /v1/models/impact`, and prints the tenant, the versions and digests, the class, the diff and the impact report's sentences (counts, never names). Then:
+   - no change: done;
+   - a widening change without `--approval`: refused before anything is sent, with the `tutela approve --app … --from … --to … --tenant …` line an approver runs; exit 3. `tutelad` refuses it too;
+   - `--dry-run`: nothing is written;
+   - two-person publish on (`GET /v1/models/settings`): `POST /v1/models/proposals` with `expected_version` and the approval token; the proposal id is printed;
+   - else `POST /v1/models/publish` with `expected_version` (the version the report was made against, so a publish that raced another is 409) and the approval token.
+3. **The connection.** `https` only, except `http` on a loopback host; no credentials in the URL; no redirects; a token is never printed. A refusal prints the problem's code and detail.
+4. **`tutela apps create | list | rotate | disable`** call the admin routes of 7.13.8 with the caller's token (the tenant's owner); `create` and `rotate` print the client secret once, with a line saying so.
+5. **`tutela keys list | rotate [--audit] | deny <kid> | rewrap`** call the key stores in the database directly, with the vault of `TUTELA_MASTER_KEY` (and `TUTELA_MASTER_KEY_PREVIOUS`), as an operator command, and write each change's record to the deployment's audit chain under `TUTELA_ISSUER`, by `tutelad`'s system actor with `by: operator`, as `tutelad tenant create` does. `rotate` uses `tutelad`'s rotation times (twice `TUTELA_JWKS_CACHE_SECS` ahead; the longest token life and the skew after). Replicas pick a change up within `TUTELA_KEY_REFRESH_SECS` (signing keys) or at their next forwarding tick (the audit key).
+
+**Consequences.**
+- texc-symphony's pipeline publishes a product's manifest to each tenant with its app's token, and gets the same diff, report and refusal it gets in library mode.
+- The CLI needs the database and the master key for `keys`, as `tutelad` does: it runs where the operator runs `tutelad migrate`.
+
+**Alternatives considered.**
+- **`tutela keys` over an admin route.** There is no operator identity on the API (ADR-0041, TM-08), and a tenant's admin must never reach the deployment's keys.
+- **Let `tutelad` refuse a widening change alone.** It does; refusing in the CLI first keeps a refused publish out of the tenant's audit log as an attempt, and prints the approver's command.

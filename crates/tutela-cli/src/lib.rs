@@ -1,8 +1,10 @@
-//! The `tutela` CLI (ROADMAP Phase A item 9), library mode.
+//! The `tutela` CLI (ROADMAP Phase A item 9, Phase B).
 //!
 //! The binary is a thin layer over these functions, so they can be tested.
-//! Commands: `init`, `check`, `codegen`, `migrate`, `apply`, `approve` and
-//! `approvers keygen | add | list | revoke`. The database is
+//! Commands: `init`, `check`, `codegen`, `migrate`, `apply`, `approve`,
+//! `approvers keygen | add | list | revoke`; against `tutelad` (Phase B,
+//! [`service`]): `apply --server`, `apps create | list | rotate | disable`;
+//! and `keys list | rotate | deny | rewrap` ([`keys`]). The database is
 //! `TUTELA_DATABASE_URL` (a key=value or a `postgresql://` connection
 //! string).
 //!
@@ -13,6 +15,8 @@ pub mod apply;
 pub mod approval;
 pub mod codegen;
 pub mod init;
+pub mod keys;
+pub mod service;
 
 use std::io::Write;
 
@@ -59,6 +63,12 @@ pub enum CliError {
     /// A bug in the CLI.
     #[error("internal error: {0}")]
     Internal(&'static str),
+    /// `tutelad` refused the call.
+    #[error("tutelad refused: {} ({}): {}", .0.code, .0.status, .0.detail)]
+    Service(service::Refused),
+    /// `tutelad` could not be reached.
+    #[error("{0}")]
+    Network(String),
 }
 
 impl From<tutela_store::tokio_postgres::Error> for CliError {

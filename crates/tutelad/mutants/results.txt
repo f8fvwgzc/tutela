@@ -287,3 +287,12 @@ V02: caught by 6 test(s) - the audit key's seed is stored in plain text
       tm20_the_audit_key_is_sealed_and_a_rotation_keeps_old_records_verifiable, tm20_a_ledger_outage_loses_nothing_and_blocks_nothing, tm20_a_refused_batch_waits_and_the_deployment_chain_is_forwarded, an_existing_audit_key_is_imported_at_start_and_signs and 2 more
 V03: caught by 1 test(s) - TUTELA_AUDIT_KEY wins over the stored key
       tm20_the_audit_key_is_sealed_and_a_rotation_keeps_old_records_verifiable
+
+P01: caught by 1 test(s) - tutela apply publishes a widening diff without a token
+      tm08_tutela_apply_shows_the_impact_and_refuses_a_widening_change_without_a_token
+P02: caught by 1 test(s) - tutela keys rotate lets the next key sign at once
+      tutela_apps_prints_a_secret_once_and_tutela_keys_rotates_through_the_key_store
+P03: caught by 1 test(s) - tutela apply publishes past two-person publish
+      tm08_tutela_apply_shows_the_impact_and_refuses_a_widening_change_without_a_token
+P04: caught by 1 test(s) - tutela apply --dry-run writes
+      tm08_tutela_apply_shows_the_impact_and_refuses_a_widening_change_without_a_token

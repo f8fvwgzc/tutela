@@ -2639,6 +2639,7 @@ dependencies = [
  "clap",
  "ed25519-dalek",
  "getrandom 0.4.3",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror",
@@ -2648,6 +2649,8 @@ dependencies = [
  "tutela-pdp",
  "tutela-safenet",
  "tutela-store",
+ "tutela-vault",
+ "uuid",
  "zeroize",
 ]
 
@@ -2768,6 +2771,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "tutela-cli",
  "tutela-contracts",
  "tutela-pdp",
  "tutela-safenet",
