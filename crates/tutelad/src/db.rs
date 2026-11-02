@@ -41,8 +41,8 @@ const SESSION_OPTIONS: &str =
 #[derive(Clone, Debug)]
 pub struct Db {
     pool: Pool,
-    /// [`tutela_store::check_isolation`] passed. A query waits for this.
-    isolated: Arc<AtomicBool>,
+    /// The last [`Db::check_ready`] passed. A query waits for this.
+    checked: Arc<AtomicBool>,
 }
 
 /// Why the service is not ready to use the database.
@@ -244,19 +244,18 @@ impl Db {
             .context("building the connection pool")?;
         Ok(Self {
             pool,
-            isolated: Arc::default(),
+            checked: Arc::default(),
         })
     }
 
-    /// A connection, once the role and the schema are known to isolate
-    /// tenants.
+    /// A connection, while [`Db::check_ready`] passes. Until a check has
+    /// passed, this runs one first.
     ///
     /// # Errors
     ///
-    /// [`NotReady`] when there is no connection, or when isolation is not in
-    /// force.
+    /// [`NotReady`] when there is no connection, or when a check fails.
     pub async fn conn(&self) -> Result<Conn, DbError> {
-        if !self.isolated.load(Ordering::Acquire) {
+        if !self.checked.load(Ordering::Acquire) {
             self.check_ready().await?;
         }
         Ok(Conn(self.object().await?))
@@ -297,33 +296,19 @@ impl Db {
         (s.size, s.available)
     }
 
-    /// Checks that a connection works, that the schema is the one this build
-    /// knows, and that the role and the schema isolate tenants. A failed
-    /// isolation check stops every query until a later check passes.
+    /// Checks that a connection works, that the role and the schema isolate
+    /// tenants, that the schema is the one this build knows, and that a
+    /// fresh connection has no tenant set. Queries run only while this
+    /// passes: readiness calls it, so a failure stops them too.
     ///
     /// # Errors
     ///
     /// A [`NotReady`] that says why.
     pub async fn check_ready(&self) -> Result<(), NotReady> {
         let client = self.object().await?;
-        let isolation = tutela_store::check_isolation(&client).await;
-        self.isolated.store(isolation.is_ok(), Ordering::Release);
-        isolation.map_err(|e| match e.kind() {
-            StoreErrorKind::Isolation => NotReady::Isolation(e),
-            _ => NotReady::Schema(e),
-        })?;
-        let have = tutela_store::applied_migration(&client)
-            .await
-            .map_err(NotReady::Schema)?;
-        let need = tutela_store::latest_migration();
-        if have != need {
-            return Err(NotReady::SchemaVersion { have, need });
-        }
-        if let Some(leftover) = leftover(&client).await? {
-            self.isolated.store(false, Ordering::Release);
-            return Err(NotReady::TenantLeft(leftover));
-        }
-        Ok(())
+        let result = checks(&client).await;
+        self.checked.store(result.is_ok(), Ordering::Release);
+        result
     }
 
     /// The tenant set on a connection fresh from the pool. It is always
@@ -335,6 +320,26 @@ impl Db {
     /// [`NotReady`] when there is no connection.
     pub async fn leftover_tenant(&self) -> Result<Option<String>, NotReady> {
         leftover(&*self.object().await?).await
+    }
+}
+
+async fn checks(client: &tokio_postgres::Client) -> Result<(), NotReady> {
+    tutela_store::check_isolation(client)
+        .await
+        .map_err(|e| match e.kind() {
+            StoreErrorKind::Isolation => NotReady::Isolation(e),
+            _ => NotReady::Schema(e),
+        })?;
+    let have = tutela_store::applied_migration(client)
+        .await
+        .map_err(NotReady::Schema)?;
+    let need = tutela_store::latest_migration();
+    if have != need {
+        return Err(NotReady::SchemaVersion { have, need });
+    }
+    match leftover(client).await? {
+        Some(tenant) => Err(NotReady::TenantLeft(tenant)),
+        None => Ok(()),
     }
 }
 
