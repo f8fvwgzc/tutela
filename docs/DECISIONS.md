@@ -67,6 +67,7 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0048](#adr-0048-tutela-js-the-browser-token-flow-in-memory-typed-errors-and-a-retry-that-never-makes-twice) | `tutela-js`: the browser token flow in memory, typed errors, and a retry that never makes twice | Accepted |
 | [0049](#adr-0049-tutela-react-embeddable-admin-components-scoped-css-variables-and-the-host-names-the-people) | `tutela-react`: embeddable admin components, scoped CSS variables, and the host names the people | Accepted |
 | [0050](#adr-0050-the-console-is-served-by-tutelad-under-console-from-files-read-at-start) | The Console is served by `tutelad` under `/console/`, from files read at start | Accepted |
+| [0051](#adr-0051-a-test-openid-provider-shaped-like-keycloak-a-dev-only-crate-on-loopback) | A test OpenID provider shaped like Keycloak: a dev-only crate on loopback | Accepted |
 
 ---
 
@@ -1834,4 +1835,32 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 - **A separate static server or a CDN.** Another origin needs CORS and another CSP to keep right; part 4c may still put a CDN in front, the headers stay the same.
 - **A page fallback for every unknown path.** An API path would answer 200 with HTML and say something without a token.
 - **Hash routing (`/console/#/scopes`).** It needs no fallback, but every link to a page carries a fragment and the callback of the sign-in would need one; the fallback is narrow enough.
+
+---
+
+## ADR-0051: A test OpenID provider shaped like Keycloak: a dev-only crate on loopback
+
+**Status:** Accepted, 2026-11-03. Phase B, part 4b2. It answers the ROADMAP notes for part 4b2: the end-to-end exit check needs a sign-in with an authorization endpoint, and the repo had none.
+
+**Context.** The exit check "sign-in, the UI permission map and runtime role editing pass end to end" needs a person to sign in in a real browser. `crates/tutelad/tests/exchange.rs` and `js_client.rs` sign Keycloak-shaped tokens locally, with no authorization endpoint. A real Keycloak is [#87](https://github.com/f8fvwgzc/tutela/issues/87): no image can be pulled on the owner's Mac. The provider must never ship in `tutelad`.
+
+**Decision.**
+
+1. **A crate of its own, `crates/tutela-test-idp`**, with a library (the tests start it in-process) and a small binary `tutela-test-idp` (a local demo of the Console). `publish = false`. Only tests depend on it (`[dev-dependencies]`), so `tutelad` never links it.
+2. **Loopback only.** `start` refuses an address that is not loopback; the binary too. Its issuer is `http://127.0.0.1:<port>/realms/<realm>`, which `tutelad` trusts only in dev mode (ADR-0018).
+3. **Keycloak's paths and shapes.** One realm under `/realms/<realm>`: discovery, `protocol/openid-connect/auth`, `/token`, `/certs`, `/logout`. Access tokens are RS256 with `typ: JWT` (Keycloak 26's default), `aud` the configured audience (`TUTELA_AUDIENCE`, as Keycloak's audience mapper gives), `azp` the client, `jti`, `sid`, `acr`, `typ: Bearer`, `scope`, `allowed-origins` and profile claims; an ID token with `nonce`; an opaque refresh token. CORS on the token endpoint and discovery for the client's web origins (the origins of its redirect URIs), as Keycloak answers them.
+4. **The authorization endpoint is a small form**: pick a test person, tick "Use MFA" or not. With MFA the token's `acr` is the step-up value (`mfa`), else `"1"`. `acr_values` naming the step-up value ticks the box. No password: it is a test provider.
+5. **The rules of a careful provider (TM-07)**: the client id and the exact redirect URI are checked first, and a bad one gets a page, never a redirect; `state` is required; PKCE S256 is required (`plain` and none are refused); a code lasts 60 s and is used once (taken out before it is checked); the verifier is checked; a refresh token is used once and rotated; the redirect carries `iss` (RFC 9207). `logout` redirects only to a registered URI.
+6. **Tested on its own** (`crates/tutela-test-idp/tests/flow.rs`): the code flow, the token shapes and signature against the JWKS, a code used twice, a wrong verifier, a foreign redirect URI, `plain` PKCE, refresh rotation, CORS and loopback only. The end-to-end check of part 4b2 runs it with a real `tutelad` and a real browser.
+
+**Consequences.**
+- The exit check runs in `make` without Docker or a network.
+- A deployment never uses this provider: it has no passwords and accepts any listed person. A real Keycloak test stays [#87](https://github.com/f8fvwgzc/tutela/issues/87).
+- The Console can be run locally against it (JS-SDK.md, "The Console").
+
+**Alternatives considered.**
+- **A test binary inside `tutelad`'s tests.** A local demo could not start it.
+- **A feature flag of `tutelad`.** The provider could reach a shipped build by mistake.
+- **Keycloak in a container.** Image pulls hang on the owner's Mac; it stays the goal of #87.
+- **ES256 tokens.** Keycloak signs RS256 by default; RS256 also tests that path of `tutelad`'s verifier.
 

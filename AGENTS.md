@@ -52,6 +52,8 @@ tutela/
 │   ├── tutela-safenet/      SSRF-safe outbound HTTP                                       now
 │   ├── tutela-cli/          the `tutela` CLI: init, check, codegen, migrate, apply,       now
 │   │                        approvals, apps, keys (Phase B: against tutelad)
+│   ├── tutela-test-idp/     a test OpenID provider shaped like Keycloak, loopback only,   now
+│   │                        for tests and a local demo; never shipped (ADR-0051)
 │   └── tutelad/             the service: config, ports, health, metrics, logs, shutdown,  now
 │                            the check API, the permission map, the admin API (Console: B)
 ├── deploy/                  production settings for tutelad                               now

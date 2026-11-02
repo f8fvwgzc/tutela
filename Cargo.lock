@@ -2731,6 +2731,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "tutela-test-idp"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "aws-lc-rs",
+ "axum",
+ "base64 0.23.1",
+ "clap",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "tutela-vault"
 version = "0.0.0"
 dependencies = [
