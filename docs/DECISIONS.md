@@ -37,6 +37,7 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0018](#adr-0018-tutelad-the-stack-the-two-ports-and-the-config) | `tutelad`: the stack, the two ports and the config | Accepted |
 | [0019](#adr-0019-tenants-in-tutelad-the-tenant-comes-from-the-token-and-rls-is-checked) | Tenants in `tutelad`: the tenant comes from the token, and RLS is checked | Accepted |
 | [0020](#adr-0020-the-bindings-store-closures-at-read-time-and-assignment-expiry) | The bindings store: closures at read time, and assignment expiry | Accepted |
+| [0021](#adr-0021-the-check-api-one-code-path-a-snapshot-per-tenant-and-a-revision-lease) | The check API: one code path, a snapshot per tenant, and a revision lease | Accepted |
 
 ---
 
@@ -845,3 +846,39 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 - **Sweep inside `load`.** A read would have to take a write lock and bump a revision.
 - **Keep expired rows, marked.** The unique rule on (subject, scope) would block a new assignment, and every read would have to skip them. The audit log is the right place for history.
 - **A list of what is due, outside row-level security.** It would be faster with many tenants, but it is a table with tenant data and no policy.
+
+---
+
+## ADR-0021: The check API: one code path, a snapshot per tenant, and a revision lease
+
+**Status:** Accepted, 2026-11-02. Built in Phase B, part 2a.
+
+**Context.** `tutelad` must answer "may this principal do this?" from `tutela-pdp`, at a known revision, over HTTP and gRPC, on 2+ replicas. A whole-tenant load is about 84 ms at the benchmark's size (ADR-0020), so it cannot run per request. The docs leave open how a replica holds a tenant's data, how it learns that a revision moved, who may ask, and how a batch reports a bad item. Two rules from part 1 shape the answer: two loads at one revision can differ when an assignment expires, and a service with no database must never turn stale data into an allow.
+
+**Decision.**
+
+1. **One code path.** `tutelad::authz` holds the logic, on the types of `authz::wire`. HTTP deserializes those types, gRPC builds them, and neither adapter decides anything. A test asks both the same questions and compares every field.
+2. **One immutable snapshot per tenant** (`tutelad::cache`): a `Pdp` holding that tenant only, the scope paths, the model and its digest. A new revision builds a new snapshot and swaps it in. A `Pdp` per tenant, not one shared `Pdp`, means one tenant's bad data or a lookup bug cannot reach another, and a load takes no lock that other tenants wait on.
+3. **A replica learns of a change through a lease.** A snapshot is trusted for `TUTELA_REVISION_CHECK_MS` (default 1000) after it was last proved current. The first request after that reads `tenant_rev` while the other requests for that tenant wait, and a moved revision loads a new snapshot. The lease starts **before** the read, so a change that commits during the read is not counted as absent. `0` reads the revision on every request. An idle tenant costs nothing, and the load on Postgres does not grow with the request rate.
+4. **`at_least_revision` and the token's `rev`** go past the lease: a snapshot below them forces the read. The read comes first, so a caller who sends a huge number costs one small query, never a whole-tenant load. If the database is behind that revision the answer is 503 `stale`.
+5. **Failing closed.** While the database gives no answer, a snapshot may serve until the max age of the action's class: `TUTELA_MAX_AGE_READ_SECS` (default 60) for `read`, `TUTELA_MAX_AGE_WRITE_SECS` (default 10) for every other action, and no staleness at all for admin keys and owner-only actions, which are revocation-sensitive (PERMISSION-MODEL.md 16). The age counts from before the last good read. Past it, 503. A batch uses the strictest class among its items. After a failed read, requests do not try the database for 1 s, so an outage answers at once instead of queueing behind a timeout. No snapshot and no database is 503.
+6. **A snapshot stops at `next_expiry`**, also when the revision has not moved. The deadline is measured from the database's clock (`TenantBundle::read_at`), counted on this process's monotonic clock from before the read, so a replica whose clock is behind cannot keep an expired assignment. Past the deadline the snapshot is never used: it reloads, or the answer is 503.
+7. **No going back.** A revision below the one in hand is refused and logged. A database restored from an old backup needs a restart of the replicas, on purpose (TM-13).
+8. **The model.** A schema holds one app (ADR-0014 item 7), so `tutela_store::applied_manifest` reads the one manifest and refuses a schema with two. It is read after the revision's share lock, in one transaction, so a view never pairs a new revision with an old model. A compiled model is kept by digest, because a large manifest takes seconds to compile.
+9. **Who may ask.** A service (`sa`, `key`) asks about its whole tenant. A person or an agent asks about itself only, or any token could read anyone's permissions. A delegated token asks about its own person and its own full chain. An external token cannot ask until token exchange gives it a principal.
+10. **A subject of another tenant is `no_role`, not `tenant_mismatch`.** This changes CONTRACTS.md 7.1, which said `tenant_mismatch`. Tutela has no table of principals per tenant to say so from, and it should not: a different answer would tell one tenant that a subject exists in another. A test compares the two answers.
+11. **A bad batch item gets its own error** with `decision: false`, as AuthZEN says, not a failed batch. `Pdp::batch` fails the whole batch, so the service runs `check` per item on one snapshot. Limits and permissions are checked before any item runs.
+12. **gRPC messages are generated at build time by `protox`**, a protobuf compiler written in Rust, so a build needs no `protoc` on the machine or in CI. The `.proto` file lives in `tutela-contracts`.
+
+**Consequences.**
+- In normal running, a revoked role stops within `TUTELA_REVISION_CHECK_MS` plus one read, on every replica. A replica cut off from the database can serve an old answer up to the max age of the class. PERMISSION-MODEL.md 16.1 has the measured numbers.
+- A snapshot per tenant stays in memory while the process runs. The trust file bounds the tenants that can reach it today. When token exchange adds tenants at runtime, this needs an eviction rule.
+- Each replica reads each active tenant's revision once per second: four round trips. Thousands of active tenants would feel this; the interval is a setting, and a push is the next step (below).
+- Part 2b: `write_check` over the network goes through `authz` as a new operation, with `ActionClass::Write` or stricter. A model publish needs no hook in the cache: `publish_manifest` bumps every revision, so the next check loads the new manifest.
+
+**Alternatives considered.**
+- **Read the revision on every request.** Simple and has no delay, but it puts a query on every check, and during an outage nothing can answer. `TUTELA_REVISION_CHECK_MS=0` gives this to whoever wants it.
+- **`LISTEN`/`NOTIFY`.** Delay of milliseconds, but it needs a trigger, a connection outside the pool with its own reconnect and TLS, does not pass through a transaction-mode PgBouncer, and a lost notification goes unseen, so the lease would still be needed as the safety net. It can be added on top later without changing this contract.
+- **Serve the stale snapshot while a background read runs.** A tenant with little traffic would then get its first answer from data up to the max age old, in normal running. A request waits for the read instead, and uses stale data only when the read fails.
+- **One shared `Pdp`.** It has org claims across tenants and one lock for all of them.
+- **`protoc` at build time.** One more tool on every machine, in CI and in the image build.

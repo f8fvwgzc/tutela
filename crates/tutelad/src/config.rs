@@ -9,6 +9,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::cache::Limits;
 use anyhow::{Context as _, anyhow, bail, ensure};
 use serde::Deserialize;
 use tutela_contracts::claims::Audience;
@@ -51,6 +52,9 @@ pub struct Config {
     /// and the revision bumped. This is the worst case for a cache that does
     /// not honour `next_expiry` (ADR-0020).
     pub expiry_sweep: Duration,
+    /// `TUTELA_REVISION_CHECK_MS`, `TUTELA_MAX_AGE_READ_SECS` and
+    /// `TUTELA_MAX_AGE_WRITE_SECS`: how current an answer must be.
+    pub limits: Limits,
 }
 
 impl std::fmt::Debug for Config {
@@ -62,6 +66,7 @@ impl std::fmt::Debug for Config {
             .field("dev_mode", &self.dev_mode)
             .field("log", &self.log)
             .field("pool_size", &self.pool_size)
+            .field("limits", &self.limits)
             .finish_non_exhaustive()
     }
 }
@@ -97,6 +102,20 @@ impl Config {
             !expiry_sweep.is_zero(),
             "TUTELA_EXPIRY_SWEEP_SECS must be at least 1"
         );
+        let limits = Limits {
+            check_every: Duration::from_millis(parsed(&get, "TUTELA_REVISION_CHECK_MS", "1000")?),
+            max_age_read: seconds(&get, "TUTELA_MAX_AGE_READ_SECS", "60")?,
+            max_age_write: seconds(&get, "TUTELA_MAX_AGE_WRITE_SECS", "10")?,
+        };
+        ensure!(
+            limits.check_every <= limits.max_age_write,
+            "TUTELA_REVISION_CHECK_MS must not be above TUTELA_MAX_AGE_WRITE_SECS"
+        );
+        ensure!(
+            limits.max_age_write <= limits.max_age_read,
+            "writes fail closed sooner than reads: TUTELA_MAX_AGE_WRITE_SECS must not be above \
+             TUTELA_MAX_AGE_READ_SECS"
+        );
         Ok(Self {
             database_url: need("TUTELA_DATABASE_URL")?,
             listen: parsed(&get, "TUTELA_LISTEN", "0.0.0.0:8080")?,
@@ -110,6 +129,7 @@ impl Config {
             shutdown_drain: seconds(&get, "TUTELA_SHUTDOWN_DRAIN_SECS", "5")?,
             shutdown_timeout: seconds(&get, "TUTELA_SHUTDOWN_TIMEOUT_SECS", "30")?,
             expiry_sweep,
+            limits,
         })
     }
 
@@ -287,6 +307,33 @@ mod tests {
             "[[issuer]]\niss = \"{iss}\"\njwks_uri = \"{iss}/jwks\"\nalgs = [\"ES256\"]\n\
              tenants = [\"{TID}\"]\n{extra}"
         )
+    }
+
+    fn with_limits(check_ms: &str, read: &str, write: &str) -> anyhow::Result<Config> {
+        let path =
+            std::env::temp_dir().join(format!("tutelad-limits-{}.toml", uuid::Uuid::now_v7()));
+        std::fs::write(&path, file("https://auth.example.test", "")).unwrap();
+        let trust = path.display().to_string();
+        let config = Config::from_vars(|name| match name {
+            "TUTELA_DATABASE_URL" => Some("host=127.0.0.1".to_owned()),
+            "TUTELA_TRUST_FILE" => Some(trust.clone()),
+            "TUTELA_REVISION_CHECK_MS" => Some(check_ms.to_owned()),
+            "TUTELA_MAX_AGE_READ_SECS" => Some(read.to_owned()),
+            "TUTELA_MAX_AGE_WRITE_SECS" => Some(write.to_owned()),
+            _ => None,
+        });
+        std::fs::remove_file(&path).unwrap();
+        config
+    }
+
+    #[test]
+    fn writes_must_fail_closed_no_later_than_reads() {
+        let c = with_limits("1000", "60", "10").unwrap();
+        assert_eq!(c.limits, Limits::default());
+        assert!(with_limits("0", "60", "10").is_ok());
+        assert!(with_limits("1000", "5", "10").is_err(), "write above read");
+        assert!(with_limits("20000", "60", "10").is_err(), "check above age");
+        assert!(with_limits("soon", "60", "10").is_err());
     }
 
     #[test]

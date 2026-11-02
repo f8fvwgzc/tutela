@@ -4,7 +4,7 @@ Tutela is a self-hostable identity and permissions core, like Clerk or Auth0, fo
 
 **The name.** Tutela was the Roman goddess of protection and guardianship. In Roman law, *tutela* is a guardian's legal power to act for someone else, which is exactly what delegation is when an AI agent acts for a person.
 
-> **Status: pre-alpha.** `v0.1.0` is a pre-release of the Rust crates in library mode. The `tutelad` service exists, but serves no permission API yet. Nothing here is usable in production yet. See [Status](#status).
+> **Status: pre-alpha.** `v0.1.0` is a pre-release of the Rust crates in library mode. The `tutelad` service exists and answers permission checks over HTTP and gRPC. Nothing here is usable in production yet. See [Status](#status).
 
 ## Is Tutela required?
 
@@ -147,7 +147,7 @@ Dependencies point down only: products → onto-intelli / texc-symphony → atta
 
 Phase A, Rust side: built, and tagged as the pre-release `v0.1.0` (items 1–9). Phase A is **not done**: fuzzing, the JS and Python SDKs and the template product are open. The list-query latency gate passes ([ADR-0016](docs/DECISIONS.md#adr-0016-the-list-query-grouped-terms-hashed-scope-tests-and-lower-filter-limits)). Details: [ROADMAP.md, Phase A](docs/ROADMAP.md#phase-a-packages-library-mode).
 
-Phase B: part 1 of 4 is merged. Phase B is **not done**: there is no check API, permission map, token exchange, audit log, Console or Helm chart yet, and the service gate does not pass yet. GitHub Actions has not run (account billing), so every merge was gated by local `make`. Details: [ROADMAP.md, Phase B status](docs/ROADMAP.md#phase-b-status).
+Phase B: part 1 of 4 and the evaluation API of part 2 are merged. Phase B is **not done**: there is no search API, permission map, token exchange, audit log, Console or Helm chart yet, and the service gate does not pass yet. GitHub Actions has not run (account billing), so every merge was gated by local `make`. Details: [ROADMAP.md, Phase B status](docs/ROADMAP.md#phase-b-status).
 
 | Item | State |
 |------|-------|

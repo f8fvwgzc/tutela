@@ -40,7 +40,7 @@ Only the left column exists in `tutela-contracts` after the first commit. Everyt
 | 4 | Tokens | Claim structs for access tokens and delegated tokens, and their claim checks (no size, header, signature or `epoch` check) | Full verification in `tutela-sdk` (A); token exchange in `tutelad` (B); own OIDC provider (C, optional) |
 | 5 | API keys | Parse, format check, display prefix | Hashing, storage, verification, rotation (A, B) |
 | 6 | Decision | The Decision object: effect, level, field mask, rule ids, reason, rev, obligations | `Pdp::check`, `Pdp::batch`, `Pdp::list_filter`, `Pdp::write_check` (A; built in `tutela-pdp`, [ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)) |
-| 7 | Remote check API | — | AuthZEN-shaped API, permission map, gRPC (B) |
+| 7 | Remote check API | — | Built in `tutelad`: evaluation and gRPC (B). Search and permission map planned (B). |
 | 8 | Events | CloudEvents envelope, event type grammar and names | Outbox, webhooks, SSE (B) |
 | 9 | audit.v1 | The audit.v1 record | Producer signatures, sequence numbers, local hash chain, forwarding to attache's evidence ledger (B) |
 | 10 | Versioning | The rules apply from the first commit | Deprecation headers on live endpoints (B) |
@@ -897,27 +897,32 @@ pub enum PdpError {
 
 ## 7. Remote check API
 
-**Status: Phase B, planned**, except 7.7 and 7.8, which are built. `tutelad` serves it. The shapes follow the OpenID AuthZEN Authorization API 1.0. Where AuthZEN leaves room (`properties`, `context`), Tutela fixes the fields below.
+**Status: Phase B.** Built: 7.1, 7.2, 7.3, the same calls in 7.6, and 7.7 and 7.8. Planned: 7.4 and 7.5. `tutelad` serves it. The shapes follow the OpenID AuthZEN Authorization API 1.0, checked against the published text. Where AuthZEN leaves room (`properties`, `context`), Tutela fixes the fields below. The design is in [ADR-0021](DECISIONS.md#adr-0021-the-check-api-one-code-path-a-snapshot-per-tenant-and-a-revision-lease).
 
 ### 7.1 Common rules
 
 - HTTPS only. Request and response bodies are JSON (`application/json`).
 - Auth: `Authorization: Bearer <token>`, with `aud = tutela-authz` (name planned). Usually a service-account token of the product backend.
-- The tenant comes from the caller's verified token (iss, tid). A request never names a tenant. A subject or resource of another tenant gets a deny with `tenant_mismatch`.
+- The tenant comes from the caller's verified token (iss, tid). A request never names a tenant.
+- A resource whose path ends at an org of another tenant gets a deny with `tenant_mismatch`, the same answer as an org that does not exist.
+- Tutela keeps no list of principals per tenant, and an answer must not tell whether a principal exists elsewhere. So a subject of another tenant is a subject with no role here: a deny with `no_role`, the same answer as a subject that exists nowhere. The answer is never an error.
+- **Who may ask** ([ADR-0021](DECISIONS.md#adr-0021-the-check-api-one-code-path-a-snapshot-per-tenant-and-a-revision-lease)). A token of a service (`sa` or `key`) asks about any subject of its tenant. A token of a person or an agent asks about itself only, with no actors. A delegated token asks about its own `sub` and its full `act` chain, so the chain cannot be dropped to get the person's own answer. A token of an external issuer (4.6) has no principal until token exchange exists, so it cannot ask. Anything else is 403 `forbidden`. In a batch, one such question fails the whole call.
+- `path` and `attrs` come from the calling service, which loaded them server-side by id (6.5). A person who asks about itself sends its own path, so that answer is a UI hint, never enforcement.
+- No decision is older than `context.at_least_revision`, or than the token's `rev` (4.2). If the database is behind that revision: 503 `stale`.
 - `traceparent` (W3C) is read and passed on. Tokens and personal data never go into URLs.
-- Errors use `application/problem+json` (RFC 9457) with `type` (`urn:tutela:problem:<code>`), `title`, `status` and `detail`. The detail never holds secrets or personal data.
+- Errors use `application/problem+json` (RFC 9457) with `type` (`urn:tutela:problem:<code>`), `title`, `status` and, when there is more to say, `detail`. The detail never holds secrets or personal data, and it never quotes the request body.
 
 | Status | When |
 |---|---|
 | 200 | A decision (allow **or** deny). |
 | 304 | Permission map not changed (7.5). |
-| 400 | Invalid request, too many items, unknown type or action. |
-| 401 | Bad or missing token. |
-| 403 | The caller may not ask this question. |
-| 429 | Rate limited. |
-| 503 | Stale, expired or missing bundle. Has `Retry-After`. **Never a hidden allow: callers fail closed.** |
+| 400 | Invalid request (`invalid_request`), too many items (`too_many_items`), unknown type or action (`unknown_key`). |
+| 401 | Bad or missing token (`invalid_token`). |
+| 403 | The caller may not ask this question (`forbidden`), or a tenant that is not in the directory (`unknown_tenant`). |
+| 429 | Rate limited. (Not built: Phase D.) |
+| 503 | No data (`no_data`), data past its age limit or its expiry (`expired`), a revision the database has not reached (`stale`), or a database failure (`unavailable`). Has `Retry-After`. **Never a hidden allow: callers fail closed.** |
 
-Discovery: `GET /.well-known/authzen-configuration` (AuthZEN metadata).
+Discovery: `GET /.well-known/authzen-configuration` (AuthZEN metadata). It needs a token, like the rest of the API port. It names the endpoints that are built; an endpoint it leaves out is not supported, so `search_action_endpoint` is never there. `policy_decision_point` is the address the caller used.
 
 How AuthZEN fields map to Tutela:
 
@@ -988,8 +993,12 @@ Response:
 Many evaluations in one call. **At most 200 items**; more gives 400 (`urn:tutela:problem:too_many_items`).
 
 - Top-level `subject`, `action`, `resource` and `context` are defaults. Each item in `evaluations` may override any of them.
-- `options.evaluations_semantic`: `execute_all` (default), `deny_on_first_deny` or `permit_on_first_permit`.
-- The response `evaluations` array has one result per item, **in the same order**. Each result has the 7.2 response shape.
+- An item that sets a key replaces that default as a whole.
+- With `evaluations` missing or empty, the request is one evaluation, and the answer has the 7.2 shape.
+- `options.evaluations_semantic`: `execute_all` (default), `deny_on_first_deny` or `permit_on_first_permit`. The last two stop at that result, and the response ends there. In `deny_on_first_deny`, an item with an error counts as a deny.
+- The response `evaluations` array has one result per item that ran, **in the same order**. Each result has the 7.2 response shape.
+- One data view answers the whole batch, so its results share one `rev`. It is at least the highest `at_least_revision` of the items, and fit for the strictest action among them.
+- An item that cannot be evaluated (a bad field, an unknown action) gets `{"decision": false, "context": {"error": {"status": 400, "message": "…"}}}`. It never gets an allow, and the other items still run. Only a problem with the whole call fails the whole call: 401, 403, too many items, and every 503.
 
 ```json
 {
@@ -1102,7 +1111,7 @@ The map is a **UI hint only**. Every server route checks again.
 
 ### 7.6 gRPC `tutela.authz.v1`
 
-The same operations over gRPC (Phase B): `Evaluate`, `Evaluations`, `SearchResource`, `SearchSubject`, `Permissions`. Messages carry the same fields with the same names and meanings as the JSON above. The `.proto` files live in this repo and are published with each release (section 10).
+The same operations over gRPC: `Evaluate` and `Evaluations` are built; `SearchResource`, `SearchSubject` and `Permissions` are planned (Phase B). Service `tutela.authz.v1.Authz`, on the API port, behind the same token check. The handlers call the same code as HTTP. Messages carry the same fields with the same names and meanings as the JSON above, with these differences: `properties` is flat (`subject.act`, `resource.path`, `resource.attrs`), and with no items `Evaluations` answers with one item. The errors of 7.1 become gRPC codes: 400 `INVALID_ARGUMENT`, 401 `UNAUTHENTICATED`, 403 `PERMISSION_DENIED`, 503 `UNAVAILABLE`. The message starts with the problem code. The `.proto` file is `crates/tutela-contracts/proto/tutela/authz/v1/authz.proto`, and it is published with each release (section 10).
 
 ---
 
@@ -1148,7 +1157,9 @@ A verified token for a tenant that is not in the directory gets 403 `unknown_ten
 
 gRPC health (`grpc.health.v1.Health`) is on the API port, behind the same token check. It says `NOT_SERVING` as soon as a shutdown starts.
 
-Every answer on the API port has `x-request-id`. `traceparent` is read and its trace id logged; a malformed one is ignored.
+Every answer on the API port has `x-request-id`: the one the caller sent (AuthZEN 1.0 section 10.1.3), when it is 1 to 128 visible ASCII characters, else a new one. `traceparent` is read and its trace id logged; a malformed one is ignored.
+
+`GET /metrics` counts every question in `tutelad_decisions_total`, labelled `operation` and `outcome` (`allow`, `deny`, `error`). Logs of a decision hold no subject and no resource, at any level.
 
 ## 8. Events
 

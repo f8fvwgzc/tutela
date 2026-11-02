@@ -1,0 +1,130 @@
+// The remote check API over gRPC (CONTRACTS.md 7.6). The messages carry the
+// same fields, with the same names and meanings, as the JSON of section 7.
+// This file grows only by adding fields and services (CONTRACTS.md 10).
+syntax = "proto3";
+
+package tutela.authz.v1;
+
+service Authz {
+  // POST /access/v1/evaluation.
+  rpc Evaluate(EvaluationRequest) returns (Evaluation);
+  // POST /access/v1/evaluations.
+  rpc Evaluations(EvaluationsRequest) returns (EvaluationsResponse);
+}
+
+// One link of the `act` chain: subject.properties.act in JSON.
+message Actor {
+  string sub = 1;
+  Actor act = 2;
+}
+
+message Subject {
+  string type = 1;
+  string id = 2;
+  // subject.properties.act in JSON.
+  Actor act = 3;
+}
+
+message Action {
+  string name = 1;
+}
+
+message PathEntry {
+  string type = 1;
+  string id = 2;
+}
+
+message StringList {
+  repeated string values = 1;
+}
+
+// A field value that conditions read. `null_value` is the JSON null.
+message AttrValue {
+  oneof value {
+    bool null_value = 1;
+    string string_value = 2;
+    int64 integer_value = 3;
+    bool boolean_value = 4;
+    StringList strings_value = 5;
+  }
+}
+
+message Resource {
+  string type = 1;
+  string id = 2;
+  // resource.properties.path in JSON.
+  repeated PathEntry path = 3;
+  // resource.properties.attrs in JSON.
+  map<string, AttrValue> attrs = 4;
+}
+
+// `fields` is a message so that "no list" and "an empty list" differ.
+message Context {
+  StringList fields = 1;
+  optional uint64 at_least_revision = 2;
+}
+
+message EvaluationRequest {
+  Subject subject = 1;
+  Action action = 2;
+  Resource resource = 3;
+  Context context = 4;
+}
+
+message FieldMask {
+  repeated string read = 1;
+  repeated string write = 2;
+}
+
+// CONTRACTS.md 6.3. Only the fields of its `kind` are set.
+message Obligation {
+  string kind = 1;
+  string value = 2;
+  string on_behalf_of = 3;
+  bool reason_required = 4;
+  repeated string fields = 5;
+}
+
+// The Decision object (CONTRACTS.md 6.1).
+message Decision {
+  string effect = 1;
+  string level = 2;
+  FieldMask field_mask = 3;
+  repeated string rule_ids = 4;
+  string reason = 5;
+  uint64 rev = 6;
+  repeated Obligation obligations = 7;
+}
+
+// One item of a batch that could not be evaluated.
+message ItemError {
+  uint32 status = 1;
+  string message = 2;
+}
+
+message EvaluationContext {
+  Decision tutela = 1;
+  ItemError error = 2;
+}
+
+message Evaluation {
+  bool decision = 1;
+  EvaluationContext context = 2;
+}
+
+message EvaluationsOptions {
+  string evaluations_semantic = 1;
+}
+
+message EvaluationsRequest {
+  Subject subject = 1;
+  Action action = 2;
+  Resource resource = 3;
+  Context context = 4;
+  repeated EvaluationRequest evaluations = 5;
+  EvaluationsOptions options = 6;
+}
+
+message EvaluationsResponse {
+  repeated Evaluation evaluations = 1;
+}

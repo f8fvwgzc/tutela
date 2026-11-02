@@ -29,6 +29,9 @@ pub struct TenantBundle {
     /// good until then: a cache must load again at this time, because the
     /// revision goes up only when a sweep runs (ADR-0020).
     pub next_expiry: Option<SystemTime>,
+    /// The database's clock when this view was read. Measure `next_expiry`
+    /// from here, not from a local clock that may disagree with it.
+    pub read_at: SystemTime,
 }
 
 /// The registered scope paths of one tenant at one revision. It answers
@@ -41,6 +44,16 @@ pub struct ScopePathSnapshot {
 }
 
 impl ScopePathSnapshot {
+    /// A snapshot of `tenant` with no scope. It answers
+    /// [`ScopePathError::NotFound`] for everything.
+    #[must_use]
+    pub fn empty(tenant: TenantKey) -> Self {
+        Self {
+            tenant,
+            paths: HashMap::new(),
+        }
+    }
+
     /// The number of registered scopes.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -113,11 +126,18 @@ pub async fn load(tx: &Transaction<'_>, tenant: &TenantKey) -> Result<TenantBund
     let rev = read_rev(tx, tenant, true).await?;
     let (data, next_expiry) = tenant_view(tx, tenant).await?;
     let paths = scope_paths(tx, tenant).await?;
+    let read_at = tx
+        .query_one("SELECT clock_timestamp()", &[])
+        .await
+        .db()?
+        .try_get(0)
+        .db()?;
     Ok(TenantBundle {
         rev,
         data,
         paths,
         next_expiry,
+        read_at,
     })
 }
 

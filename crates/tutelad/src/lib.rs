@@ -7,6 +7,9 @@
 //! - [`api`]: the API port (HTTP and gRPC on one listener, every request
 //!   behind [`tutela_sdk::http::AuthLayer`]) and the ops port (`/healthz`,
 //!   `/readyz`, `/metrics`).
+//! - [`authz`]: the permission decision APIs, one code path for HTTP and gRPC.
+//! - [`cache`]: the tenant data decisions are made from, and how it stays
+//!   current.
 //! - [`tenant`]: how a request gets its tenant, from the verified token only.
 //! - [`db`]: the connection pool, and [`db::Conn::begin`], the one way to
 //!   run a query as a tenant.
@@ -16,6 +19,8 @@
 //! - [`server`]: the two listeners and the graceful shutdown.
 
 pub mod api;
+pub mod authz;
+pub mod cache;
 pub mod config;
 pub mod db;
 pub mod expiry;

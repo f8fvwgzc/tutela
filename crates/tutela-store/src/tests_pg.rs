@@ -787,6 +787,35 @@ async fn group_rules_are_checked_on_every_write() {
 }
 
 #[tokio::test]
+async fn a_schema_with_two_apps_has_no_applied_manifest_to_guess() {
+    let Some(mut db) = db().await else { return };
+    let tx = db.client.transaction().await.unwrap();
+    for app in ["one", "two"] {
+        let app = tutela_pdp::model::AppName::parse(app).unwrap();
+        crate::publish_manifest(
+            &tx,
+            &crate::Publish {
+                app: &app,
+                source: MANIFEST,
+                expected: None,
+                class: Class::Neutral,
+                diff: "",
+                author: None,
+                approvers: &[],
+            },
+        )
+        .await
+        .unwrap();
+    }
+    assert_eq!(
+        kind(crate::applied_manifest(&tx).await),
+        Some(StoreErrorKind::Invalid)
+    );
+    drop(tx);
+    db.finish().await;
+}
+
+#[tokio::test]
 async fn publishing_a_manifest_bumps_every_tenant_and_records_the_change() {
     let Some(mut db) = db().await else { return };
     let (a, _) = tenant(&mut db.client).await;
@@ -803,7 +832,12 @@ async fn publishing_a_manifest_bumps_every_tenant_and_records_the_change() {
     };
     let tx = db.client.transaction().await.unwrap();
     assert_eq!(crate::manifest(&tx, &app).await.unwrap(), None);
+    assert_eq!(crate::applied_manifest(&tx).await.unwrap(), None);
     let out = crate::publish_manifest(&tx, &publish(None)).await.unwrap();
+    assert_eq!(
+        crate::applied_manifest(&tx).await.unwrap(),
+        crate::manifest(&tx, &app).await.unwrap()
+    );
     tx.commit().await.unwrap();
     assert_eq!(out.len(), 2);
     assert!(out.iter().all(|(_, rev)| *rev == 2));

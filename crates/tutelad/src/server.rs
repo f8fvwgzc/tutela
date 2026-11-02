@@ -15,6 +15,8 @@ use tonic_health::ServingStatus;
 use tonic_health::server::HealthReporter;
 
 use crate::api::{self, AppState};
+use crate::authz::grpc::AuthzService;
+use crate::cache::TenantCache;
 use crate::config::Config;
 use crate::db::Db;
 use crate::expiry;
@@ -49,6 +51,7 @@ impl Server {
             .with_context(|| format!("binding the ops port {}", config.ops_listen))?;
         let (health, health_service) = tonic_health::server::health_reporter();
         let grpc = tonic::service::Routes::new(health_service)
+            .add_service(AuthzService::server(state.clone()))
             .prepare()
             .into_axum_router();
         Ok(Self {
@@ -185,11 +188,19 @@ fn stopped_by_itself(
 ///
 /// A bad database URL, or a failed JWKS client setup.
 pub fn state(config: &Config) -> anyhow::Result<AppState> {
+    let db = Db::connect(&config.database_url, config.pool_size)?;
+    let metrics = Arc::new(Metrics::new());
     Ok(AppState {
         verifier: Arc::new(config.verifier()?),
-        db: Db::connect(&config.database_url, config.pool_size)?,
-        metrics: Arc::new(Metrics::new()),
+        cache: Arc::new(TenantCache::new(
+            db.clone(),
+            config.limits,
+            Arc::clone(&metrics),
+        )),
+        db,
+        metrics,
         stopping: Arc::default(),
+        dev_mode: config.dev_mode,
     })
 }
 
