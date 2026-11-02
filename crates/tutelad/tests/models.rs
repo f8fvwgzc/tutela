@@ -644,3 +644,85 @@ async fn tm06_a_person_steps_up_and_a_pipeline_keeps_its_service_token() {
     }
     w.finish().await;
 }
+
+/// `GET /v1/models/active` gives the text a change made in a UI starts from:
+/// the app's manifest while the tenant has no version of its own (0, `own:
+/// false`), then the tenant's own. It needs what looking at the model needs,
+/// and gRPC's `GetActiveModel` answers the same JSON.
+#[tokio::test]
+async fn the_active_model_comes_with_its_text() {
+    use tutelad::admin::grpc::pb;
+    use tutelad::admin::grpc::pb::admin_client::AdminClient;
+
+    let Some(mut w) = world().await else { return };
+    admins(&mut w).await;
+    let t = w.issuer.console(ADMIN, &w.a.tid, 0);
+
+    let first: Value = get(&w, "/v1/models/active", &t).await.json().await.unwrap();
+    assert_eq!(first["version"], 0, "{first}");
+    assert_eq!(first["own"], false);
+    assert_eq!(first["source"], MANIFEST);
+    assert_eq!(first["digest"], active(&w, &w.a).await["digest"]);
+
+    // A change built from that text and its version publishes.
+    let narrower = with_reader("none");
+    let r = publish(
+        &w,
+        &w.a,
+        &json!({"source": narrower, "expected_version": first["version"]}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let published: Value = r.json().await.unwrap();
+    let now: Value = get(&w, "/v1/models/active", &t).await.json().await.unwrap();
+    assert_eq!(now["version"], published["version"]);
+    assert_eq!(now["own"], true);
+    assert_eq!(now["source"], narrower);
+    assert_eq!(now["digest"], published["digest"]);
+    // Tenant B still runs on the app's manifest.
+    let tb = w.issuer.console(ADMIN, &w.b.tid, 0);
+    let b: Value = get(&w, "/v1/models/active", &tb)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(b["source"], MANIFEST);
+
+    // A person without read_audit at every org, a person's plain token and
+    // no token are refused.
+    let reader = w.issuer.console(USER, &w.a.tid, 0);
+    let r = get(&w, "/v1/models/active", &reader).await;
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    assert_eq!(problem(&r.json().await.unwrap()), "forbidden");
+    let plain = w.issuer.token(ADMIN, &w.a.tid, 0);
+    assert_eq!(
+        get(&w, "/v1/models/active", &plain).await.status(),
+        StatusCode::FORBIDDEN
+    );
+    let none = http()
+        .get(w.s.api_url("/v1/models/active"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(none.status(), StatusCode::UNAUTHORIZED);
+
+    // gRPC.
+    let channel = tonic::transport::Endpoint::from_shared(w.s.api_url(""))
+        .unwrap()
+        .connect()
+        .await
+        .unwrap();
+    let mut g = AdminClient::new(channel);
+    let mut req = tonic::Request::new(pb::GetActiveModelRequest {});
+    req.metadata_mut()
+        .insert("authorization", format!("Bearer {t}").parse().unwrap());
+    let out = g.get_active_model(req).await.unwrap().into_inner();
+    let v: Value = serde_json::from_str(&out.result_json).unwrap();
+    assert_eq!(v, now);
+    let mut req = tonic::Request::new(pb::GetActiveModelRequest {});
+    req.metadata_mut()
+        .insert("authorization", format!("Bearer {reader}").parse().unwrap());
+    let e = g.get_active_model(req).await.unwrap_err();
+    assert_eq!(e.code(), tonic::Code::PermissionDenied);
+    w.finish().await;
+}

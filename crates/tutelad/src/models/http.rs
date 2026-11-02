@@ -7,8 +7,8 @@ use tutela_sdk::Identity;
 
 use super::observed;
 use super::wire::{
-    ApproveBody, ChangeOut, ProposalOut, PublishBody, PublishResult, SettingsBody, SettingsOut,
-    VersionOut, VersionsOut,
+    ActiveSourceOut, ApproveBody, ChangeOut, ProposalOut, PublishBody, PublishResult, SettingsBody,
+    SettingsOut, VersionOut, VersionsOut,
 };
 use crate::api::{AppState, Problem};
 use crate::authz::http::Body;
@@ -66,6 +66,14 @@ pub async fn version(
         super::version(&state, &id, version).await,
     )
     .map(Json)
+}
+
+/// `GET /v1/models/active`.
+pub async fn active(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+) -> Result<Json<ActiveSourceOut>, Problem> {
+    observed(&state, "active", super::active(&state, &id).await).map(Json)
 }
 
 /// `GET /v1/models/settings`.

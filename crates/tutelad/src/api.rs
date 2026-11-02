@@ -285,6 +285,7 @@ pub fn api_router(state: &AppState, grpc: Router, request_timeout: Duration) -> 
                 .layer(DefaultBodyLimit::max(models::http::MODEL_BODY_LIMIT)),
         )
         .route("/v1/models", get(models::http::versions))
+        .route("/v1/models/active", get(models::http::active))
         .route("/v1/models/{version}", get(models::http::version))
         .route(
             "/v1/models/settings",

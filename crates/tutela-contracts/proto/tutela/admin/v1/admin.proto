@@ -31,6 +31,8 @@ service Admin {
   rpc ListModelVersions(ListModelVersionsRequest) returns (JsonResult);
   // GET /v1/models/{version}.
   rpc GetModelVersion(GetModelVersionRequest) returns (JsonResult);
+  // GET /v1/models/active: the model the tenant runs on, with its text.
+  rpc GetActiveModel(GetActiveModelRequest) returns (JsonResult);
   // POST /v1/models/impact.
   rpc ModelImpact(ModelChangeRequest) returns (JsonResult);
   // POST /v1/models/publish.
@@ -220,6 +222,8 @@ message ModelChangeRequest {
   optional int64 expected_version = 3;
   optional string approval = 4;
 }
+
+message GetActiveModelRequest {}
 
 message GetModelSettingsRequest {}
 

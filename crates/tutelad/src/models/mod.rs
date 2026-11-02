@@ -37,8 +37,8 @@ use crate::authz::floor;
 use crate::cache::ActionClass;
 use crate::tenant::Tenant;
 use wire::{
-    ActiveOut, ApproveBody, ChangeOut, ImpactOut, ProposalOut, PublishBody, PublishResult,
-    SettingsBody, SettingsOut, VersionOut, VersionsOut,
+    ActiveOut, ActiveSourceOut, ApproveBody, ChangeOut, ImpactOut, ProposalOut, PublishBody,
+    PublishResult, SettingsBody, SettingsOut, VersionOut, VersionsOut,
 };
 
 /// What looking at a tenant's model needs, at every org.
@@ -603,6 +603,32 @@ pub async fn versions(
         },
         versions: page.into_iter().map(VersionOut::of).collect(),
         next_before,
+    })
+}
+
+/// `GET /v1/models/active`: the model the tenant runs on now, with its text,
+/// also while it follows the app's manifest and has no version of its own
+/// (version 0). A change made in a UI (the Console's role editor) starts
+/// from it and names its `version` as `expected_version`.
+///
+/// # Errors
+///
+/// A [`Problem`]: what looking at the model needs (`read_audit` at every
+/// org), 503 `no_data` for a tenant with no model.
+pub async fn active(state: &AppState, id: &Identity) -> Result<ActiveSourceOut, Problem> {
+    let tenant = Tenant::of(id);
+    admin(state, id, &tenant, &READ_KEYS).await?;
+    let mut conn = state.db.conn().await?;
+    let tx = conn.begin(&tenant).await?;
+    let active = tutela_store::active_model(&tx, tenant.key())
+        .await?
+        .ok_or_else(|| Problem::stale("no_data"))?;
+    tx.commit().await?;
+    Ok(ActiveSourceOut {
+        version: active.version,
+        digest: active.digest,
+        own: active.own,
+        source: active.source,
     })
 }
 
