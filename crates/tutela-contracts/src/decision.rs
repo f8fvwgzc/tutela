@@ -382,7 +382,7 @@ pub enum ReasonError {
     #[error("a reason is at most 512 characters")]
     TooLong,
     /// The code is not a name.
-    #[error("invalid reason code: {0}")]
+    #[error("invalid reason code")]
     Code(#[from] NameError),
     /// The `:` after the code is not followed by one space.
     #[error("a reason must be `<code>` or `<code>: <detail>`")]

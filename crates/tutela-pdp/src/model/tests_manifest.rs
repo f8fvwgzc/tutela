@@ -443,6 +443,33 @@ fn field_rules_follow_the_rules() {
     );
 }
 
+/// A bad key reaches the manifest's author with its reason. A key error's
+/// own text leaves the reason in its source.
+#[test]
+fn a_bad_key_says_why() {
+    let want = "invalid name: a name must start with a lowercase letter a-z";
+    let base =
+        format!("{PROJECT}[types.project.fields]\nname = {{ sensitivity = \"internal\" }}\n");
+    refused(
+        &with(&format!(
+            "{base}[roles.r]\ngrants = {{ \"project.Name\" = \"read\" }}\n"
+        )),
+        want,
+    );
+    refused(
+        &with(&format!(
+            "{base}[[field_rules]]\nfield = \"project.Name\"\nmax = \"read\"\n"
+        )),
+        want,
+    );
+    refused(
+        &with(&format!(
+            "{base}[ui.\"a.B\"]\nactions = [\"project:read\"]\nroutes = [\"GET /x\"]\nwhen_denied = \"hide\"\n"
+        )),
+        want,
+    );
+}
+
 #[test]
 fn conditions_use_only_vetted_templates() {
     let base = format!(

@@ -42,7 +42,7 @@ pub enum IdError {
         expected: &'static str,
     },
     /// The part after the prefix is not a valid UUIDv7.
-    #[error("invalid UUIDv7 in the id: {0}")]
+    #[error("invalid UUIDv7 in the id")]
     Uuid(#[from] UuidError),
 }
 

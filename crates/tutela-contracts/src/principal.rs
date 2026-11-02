@@ -247,10 +247,10 @@ pub enum PrincipalError {
     #[error("unknown principal kind; expected user, sa, key, agent or workload")]
     UnknownKind,
     /// The id does not fit the kind (wrong prefix or bad UUIDv7).
-    #[error("invalid principal id: {0}")]
+    #[error("invalid principal id")]
     Id(#[from] IdError),
     /// The workload id is not a valid SPIFFE ID.
-    #[error("invalid workload SPIFFE ID: {0}")]
+    #[error("invalid workload SPIFFE ID")]
     Workload(#[from] SpiffeError),
 }
 

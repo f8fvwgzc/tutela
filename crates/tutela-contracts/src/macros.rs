@@ -34,7 +34,8 @@ macro_rules! string_serde {
                     where
                         E: ::serde::de::Error,
                     {
-                        v.parse::<$ty>().map_err(E::custom)
+                        v.parse::<$ty>()
+                            .map_err(|e| E::custom($crate::error_chain(&e)))
                     }
                 }
 
