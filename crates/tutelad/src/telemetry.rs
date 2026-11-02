@@ -146,6 +146,7 @@ pub struct Metrics {
     webhook_deliveries: Family<SweepLabels, Counter>,
     streams: Family<SweepLabels, Counter>,
     open_streams: Gauge,
+    bundles: Family<SweepLabels, Counter>,
 }
 
 impl Default for Metrics {
@@ -264,6 +265,12 @@ impl Metrics {
             "Event streams open on this replica",
             open_streams.clone(),
         );
+        let bundles = Family::<SweepLabels, Counter>::default();
+        registry.register(
+            "bundles",
+            "Signed bundles asked for, by result: issued, forbidden, unavailable",
+            bundles.clone(),
+        );
         Self {
             registry,
             requests,
@@ -284,7 +291,17 @@ impl Metrics {
             webhook_deliveries,
             streams,
             open_streams,
+            bundles,
         }
+    }
+
+    /// Counts one bundle asked for: `issued`, `forbidden` or `unavailable`.
+    pub fn count_bundle(&self, result: &'static str) {
+        self.bundles
+            .get_or_create(&SweepLabels {
+                result: result.to_owned(),
+            })
+            .inc();
     }
 
     /// Counts one request for an event stream: `opened`, `forbidden`,

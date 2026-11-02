@@ -54,6 +54,12 @@ impl ScopePathSnapshot {
         }
     }
 
+    /// Every registered scope and its ancestors, nearest first, in no
+    /// order: what a signed bundle carries (ADR-0038).
+    pub fn entries(&self) -> impl Iterator<Item = (&PathEntry, &Vec<PathEntry>)> {
+        self.paths.iter()
+    }
+
     /// The number of registered scopes.
     #[must_use]
     pub fn len(&self) -> usize {

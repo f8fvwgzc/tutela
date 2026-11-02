@@ -172,3 +172,11 @@ These matter to whoever runs `tutelad`, and to a product that verifies its token
 - **New settings:** `TUTELA_EVENTS_POLL_MS` (default 500), `TUTELA_SSE_MAX_STREAMS` (1000), `TUTELA_SSE_MAX_SECS` (900), `TUTELA_SSE_BUFFER` (256).
 - **`tutela-sdk`:** new module `events`.
 
+## Signed bundles (part 3b)
+
+- **`GET /v1/authz/bundle`** ([ADR-0038](DECISIONS.md#adr-0038-signed-bundles-a-service-with-read_audit-everywhere-its-own-typ-and-no-skew-at-exp), CONTRACTS.md 7.12): a Rust product that wants to check offline gives its service account `read_audit` at every org of its tenant, pulls a bundle below its `exp` (or when SSE says `rev` moved), verifies it with `Verifier::verify_bundle` and loads it into a `tutela_sdk::bundle::OfflinePdp`. Its trust list must allow `TUTELA_ISSUER` for its tenant id.
+- **New setting:** `TUTELA_BUNDLE_TTL_SECS` (default 300, 1 to 3600).
+- **`tutela-pdp`:** `TenantData`, `Binding`, `Group`, `Member`, `Subject`, `ScopeFieldRule`, `BoundaryRule`, `MoveRule`, `OnLooser`, `LinksFrom`, `PathEntry`, `RoleKey`, `GroupKey` and `AppName` implement `Serialize` and `Deserialize`.
+- **`tutela-store`:** `ScopePathSnapshot::entries`.
+- **`tutela-sdk`:** new module `bundle`, and `Verifier::verify_bundle`.
+

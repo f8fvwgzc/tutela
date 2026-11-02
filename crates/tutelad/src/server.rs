@@ -270,6 +270,7 @@ pub fn state(config: &Config) -> anyhow::Result<AppState> {
         stopping: Arc::default(),
         dev_mode: config.dev_mode,
         impact_work: config.impact_work,
+        bundle_ttl: config.bundle_ttl,
     })
 }
 

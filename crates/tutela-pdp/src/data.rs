@@ -7,6 +7,8 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
 use tutela_contracts::decision::RuleId;
 use tutela_contracts::keys::{FieldKey, ResourceType};
 use tutela_contracts::level::Level;
@@ -33,7 +35,8 @@ pub const MAX_GROUP_CLOSURE: usize = 1_000_000;
 /// can cause (ADR-0013).
 pub const MAX_GROUP_WORK: usize = 4 * MAX_GROUP_CLOSURE;
 
-/// Who a role assignment is for.
+/// Who a role assignment is for. In JSON (a signed bundle, ADR-0038): a
+/// principal string, or `group:<key>`.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum Subject {
     /// One principal.
@@ -44,7 +47,8 @@ pub enum Subject {
 
 /// A role assignment: one subject, one role, one scope
 /// (PERMISSION-MODEL.md 6.3).
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Binding {
     /// The stored id, for `rule_ids`.
     pub id: RuleId,
@@ -57,7 +61,7 @@ pub struct Binding {
     pub scope: PathEntry,
 }
 
-/// A member of a group.
+/// A member of a group. In JSON: a principal string, or `group:<key>`.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum Member {
     /// A principal.
@@ -68,7 +72,8 @@ pub enum Member {
 
 /// A group (PERMISSION-MODEL.md 6.4). In Phase A, group keys are unique in
 /// the tenant (ADR-0013).
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Group {
     /// The key that bindings and the `in_group` template name.
     pub key: GroupKey,
@@ -78,7 +83,8 @@ pub struct Group {
 
 /// A field rule at one scope (PERMISSION-MODEL.md 7.1 step 5). Rules at the
 /// org root come from the manifest, not from here.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ScopeFieldRule {
     /// The stored id, for `rule_ids`.
     pub id: RuleId,
@@ -93,7 +99,8 @@ pub struct ScopeFieldRule {
 }
 
 /// Who may move items across a scope's boundary (PERMISSION-MODEL.md 10).
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MoveRule {
     /// Whoever may write in the scope.
     Members,
@@ -105,7 +112,8 @@ pub enum MoveRule {
 
 /// What happens to a move that would give someone more access
 /// (PERMISSION-MODEL.md 10).
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum OnLooser {
     /// It waits for the source owner's approval.
     Approve,
@@ -114,7 +122,8 @@ pub enum OnLooser {
 }
 
 /// Where a link into a scope may come from (PERMISSION-MODEL.md 9).
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LinksFrom {
     /// Any scope of the org.
     Any,
@@ -126,7 +135,8 @@ pub enum LinksFrom {
 
 /// The move and link rules of one scope. `None` is the default of
 /// PERMISSION-MODEL.md 8.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BoundaryRule {
     /// Who may move items out.
     pub moves_out: Option<MoveRule>,
@@ -139,7 +149,12 @@ pub struct BoundaryRule {
 }
 
 /// Everything the evaluator reads about one tenant besides the model.
-#[derive(Clone, PartialEq, Eq, Debug, Default)]
+///
+/// It has a JSON form for signed bundles (ADR-0038): `boundaries` is a list
+/// of `{"scope", "rule"}`. A value read from JSON is only parsed; it goes
+/// through [`crate::Pdp::load`]'s checks like any other.
+#[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TenantData {
     /// The tenant's orgs. A resource whose path ends at another org belongs
     /// to another tenant: every check on it is denied.
@@ -156,7 +171,105 @@ pub struct TenantData {
     pub field_rules: Vec<ScopeFieldRule>,
     /// The move and link rules of single scopes. A scope not listed has the
     /// defaults.
+    #[serde(with = "boundary_list")]
     pub boundaries: BTreeMap<PathEntry, BoundaryRule>,
+}
+
+/// `boundaries` as a JSON list: a JSON object's keys are strings only.
+mod boundary_list {
+    use std::collections::BTreeMap;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+
+    use super::BoundaryRule;
+    use crate::api::PathEntry;
+
+    #[derive(Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Item {
+        scope: PathEntry,
+        rule: BoundaryRule,
+    }
+
+    pub(super) fn serialize<S: Serializer>(
+        m: &BTreeMap<PathEntry, BoundaryRule>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        m.iter()
+            .map(|(scope, rule)| Item {
+                scope: scope.clone(),
+                rule: *rule,
+            })
+            .collect::<Vec<_>>()
+            .serialize(s)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<BTreeMap<PathEntry, BoundaryRule>, D::Error> {
+        let items = Vec::<Item>::deserialize(d)?;
+        let n = items.len();
+        let m: BTreeMap<_, _> = items.into_iter().map(|i| (i.scope, i.rule)).collect();
+        if m.len() == n {
+            Ok(m)
+        } else {
+            Err(de::Error::custom("a scope has two boundary rules"))
+        }
+    }
+}
+
+/// The JSON text of a subject or a member: a principal, or `group:<key>`.
+fn party_text(principal: Option<&Principal>, group: Option<&GroupKey>) -> String {
+    match (principal, group) {
+        (Some(p), _) => p.to_string(),
+        (None, Some(g)) => format!("group:{g}"),
+        (None, None) => String::new(),
+    }
+}
+
+fn parse_party<E: serde::de::Error>(s: &str) -> Result<Result<Principal, GroupKey>, E> {
+    match s.strip_prefix("group:") {
+        Some(g) => GroupKey::parse(g).map(Err).map_err(E::custom),
+        None => s.parse::<Principal>().map(Ok).map_err(E::custom),
+    }
+}
+
+impl Serialize for Subject {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Principal(p) => s.serialize_str(&party_text(Some(p), None)),
+            Self::Group(g) => s.serialize_str(&party_text(None, Some(g))),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Subject {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Ok(match parse_party(&s)? {
+            Ok(p) => Self::Principal(p),
+            Err(g) => Self::Group(g),
+        })
+    }
+}
+
+impl Serialize for Member {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Principal(p) => s.serialize_str(&party_text(Some(p), None)),
+            Self::Group(g) => s.serialize_str(&party_text(None, Some(g))),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Member {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Ok(match parse_party(&s)? {
+            Ok(p) => Self::Principal(p),
+            Err(g) => Self::Group(g),
+        })
+    }
 }
 
 /// Why [`crate::Pdp::load`] refused a bundle.
@@ -581,4 +694,91 @@ fn too_deep(inside: &[Vec<usize>], order: &[usize]) -> Option<usize> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn entry(t: &str, id: &str) -> PathEntry {
+        PathEntry::new(t.parse().unwrap(), id.parse().unwrap())
+    }
+
+    /// The JSON form of a signed bundle's data reads back as it was, and a
+    /// value that breaks a type's grammar is refused while it is read.
+    #[test]
+    fn tenant_data_reads_back_from_json() {
+        let org = entry("org", "org_0193a1b2-c3d4-7f00-9a00-000000000002");
+        let project = entry("project", "p-1");
+        let mut data = TenantData::default();
+        data.orgs
+            .insert("org_0193a1b2-c3d4-7f00-9a00-000000000002".parse().unwrap());
+        data.bindings.push(Binding {
+            id: "ra_1".parse().unwrap(),
+            subject: Subject::Principal(
+                "user:usr_0193a1b2-c3d4-7a11-8b22-3c4d5e6f7081"
+                    .parse()
+                    .unwrap(),
+            ),
+            role: RoleKey::parse("reader").unwrap(),
+            scope: project.clone(),
+        });
+        data.bindings.push(Binding {
+            id: "ra_2".parse().unwrap(),
+            subject: Subject::Group(GroupKey::parse("staff").unwrap()),
+            role: RoleKey::parse("reader").unwrap(),
+            scope: org.clone(),
+        });
+        data.groups.push(Group {
+            key: GroupKey::parse("staff").unwrap(),
+            members: vec![
+                Member::Principal(
+                    "agent:agt_0193a1b2-c3d4-7b33-9c44-5d6e7f809102"
+                        .parse()
+                        .unwrap(),
+                ),
+                Member::Group(GroupKey::parse("inner").unwrap()),
+            ],
+        });
+        data.private_scopes.insert(project.clone());
+        data.field_rules.push(ScopeFieldRule {
+            id: "fr_1".parse().unwrap(),
+            scope: project.clone(),
+            field: "invoice.amount".parse().unwrap(),
+            role: None,
+            max: Level::Read,
+        });
+        data.boundaries.insert(
+            project.clone(),
+            BoundaryRule {
+                moves_out: Some(MoveRule::Owners),
+                moves_in: None,
+                on_looser: Some(OnLooser::Block),
+                links_from: Some(LinksFrom::Team),
+            },
+        );
+        let v = serde_json::to_value(&data).unwrap();
+        assert_eq!(v["bindings"][1]["subject"], "group:staff");
+        assert_eq!(v["boundaries"][0]["rule"]["moves_out"], "owners");
+        let back: TenantData = serde_json::from_value(v.clone()).unwrap();
+        assert_eq!(back, data);
+        for (path, bad) in [
+            ("/bindings/0/subject", json!("person:x")),
+            ("/bindings/0/role", json!("Reader")),
+            ("/groups/0/members/1", json!("group:")),
+            ("/boundaries/0/rule/moves_out", json!("everyone")),
+        ] {
+            let mut w = v.clone();
+            *w.pointer_mut(path).unwrap() = bad;
+            assert!(serde_json::from_value::<TenantData>(w).is_err(), "{path}");
+        }
+        let mut twice = v.clone();
+        let item = twice["boundaries"][0].clone();
+        twice["boundaries"].as_array_mut().unwrap().push(item);
+        assert!(serde_json::from_value::<TenantData>(twice).is_err());
+        let mut extra = v;
+        extra["admin"] = json!(true);
+        assert!(serde_json::from_value::<TenantData>(extra).is_err());
+    }
 }

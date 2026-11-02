@@ -58,6 +58,8 @@ pub struct AppState {
     pub impact_work: usize,
     /// The event streams of this replica (`GET /v1/events`).
     pub events: Arc<crate::stream::Hub>,
+    /// `TUTELA_BUNDLE_TTL_SECS`: the longest a signed bundle lasts.
+    pub bundle_ttl: Duration,
 }
 
 /// An error answer: `application/problem+json` (RFC 9457, CONTRACTS.md 7.1).
@@ -306,6 +308,7 @@ pub fn api_router(state: &AppState, grpc: Router, request_timeout: Duration) -> 
         .route("/v1/authz/permissions", post(authz::http::permissions))
         .route("/v1/authz/write-check", post(authz::http::write_check))
         .route("/v1/events", get(crate::stream::events))
+        .route(crate::bundle::BUNDLE_PATH, get(crate::bundle::bundle))
         .route(
             "/.well-known/authzen-configuration",
             get(authz::http::metadata),

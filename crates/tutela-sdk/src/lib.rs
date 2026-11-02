@@ -21,6 +21,7 @@
 //! about the step. [`AuthError::step`] names the step for the log. Errors
 //! never hold the token.
 
+pub mod bundle;
 pub mod cache;
 pub mod events;
 pub mod http;
