@@ -174,6 +174,17 @@ impl Record {
             i64::try_from(id.unix_millis()).map_err(|_| BuildError("time"))?,
         )
         .map_err(|_| BuildError("time"))?;
+        // A request's own ids (CONTRACTS.md 9.1); a background job has none.
+        // `ip` stays empty: the docs have not decided how to record it.
+        let context = crate::telemetry::request_context();
+        let (trace_id, span_id, request_id) = match &context {
+            Some(c) => (
+                c.trace_id.as_deref().and_then(|t| t.parse().ok()),
+                c.span_id.as_deref().and_then(|s| s.parse().ok()),
+                c.request_id.parse().ok(),
+            ),
+            None => (None, None, None),
+        };
         let reason = Reason::parse(&self.reason)
             .or_else(|_| Reason::parse(self.reason.split(':').next().unwrap_or("not_allowed")))
             .map_err(|_| BuildError("reason"))?;
@@ -199,10 +210,10 @@ impl Record {
             },
             outcome: self.outcome,
             reason,
-            trace_id: None,
-            span_id: None,
+            trace_id,
+            span_id,
             service: ServiceName::parse(SERVICE).map_err(|_| BuildError("service"))?,
-            request_id: None,
+            request_id,
             ip: None,
             payload_digest: None,
             labels: Vec::new(),
@@ -339,6 +350,87 @@ pub async fn write_alone_now(
         state.metrics.count_audit("write", "error");
         Problem::from(e)
     })
+}
+
+/// What one pass of the chain check found (ADR-0034, CONTRACTS.md 9.4).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ChainCheck {
+    /// Chains walked: every tenant of the directory, and the deployment's.
+    pub chains: usize,
+    /// Chains with a broken link.
+    pub broken: usize,
+    /// Chains that could not be read. The others still ran.
+    pub failed: usize,
+}
+
+/// Walks every tenant's audit chain and the deployment's own, and reports
+/// each broken link as an error log (the tenant, the `seq` and what is
+/// wrong there; never a body) and in `tutelad_audit_chain_checks_total`;
+/// `tutelad_audit_chains_broken` is the count after the pass. A chain that
+/// is fine says nothing.
+///
+/// # Errors
+///
+/// When no connection can be had, or the tenants cannot be listed.
+pub async fn check_chains(
+    db: &crate::db::Db,
+    metrics: &crate::telemetry::Metrics,
+) -> Result<ChainCheck, DbError> {
+    let mut conn = db.conn().await?;
+    let tenants = conn.tenants().await?;
+    let mut out = ChainCheck::default();
+    let mut seen = |tid: &str, r: Result<tutela_store::ChainReport, DbError>| {
+        out.chains += 1;
+        match r {
+            Ok(report) => match report.broken {
+                None => metrics.count_chain_check("intact"),
+                Some(link) => {
+                    out.broken += 1;
+                    metrics.count_chain_check("broken");
+                    tracing::error!(
+                        tid,
+                        seq = link.seq,
+                        problem = ?link.problem,
+                        checked = report.checked,
+                        head = report.head,
+                        "an audit chain is broken"
+                    );
+                }
+            },
+            Err(e) => {
+                out.failed += 1;
+                metrics.count_chain_check("failed");
+                tracing::warn!(tid, error = %e, "an audit chain could not be read");
+            }
+        }
+    };
+    for key in &tenants {
+        let r = conn.verify_chain(key).await;
+        seen(&key.tid.to_string(), r);
+    }
+    let r = conn.verify_deployment_chain().await;
+    seen(tutela_store::audit::DEPLOYMENT_TENANT, r);
+    metrics.set_broken_chains(out.broken);
+    Ok(out)
+}
+
+/// Checks every chain every `every` until `stop` turns true. The first pass
+/// runs after one interval.
+pub async fn run_chain_checks(
+    db: crate::db::Db,
+    metrics: std::sync::Arc<crate::telemetry::Metrics>,
+    every: std::time::Duration,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+) {
+    loop {
+        tokio::select! {
+            () = tokio::time::sleep(every) => {}
+            _ = stop.wait_for(|stopped| *stopped) => return,
+        }
+        if let Err(e) = check_chains(&db, &metrics).await {
+            tracing::warn!(error = %e, "the audit chains could not be checked");
+        }
+    }
 }
 
 #[cfg(test)]

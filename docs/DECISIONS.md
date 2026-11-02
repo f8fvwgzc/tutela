@@ -58,6 +58,7 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0039](#adr-0039-forwarding-to-attaches-evidence-ledger-signed-acknowledged-resumable) | Forwarding to attache's evidence ledger: signed, acknowledged, resumable | Accepted |
 | [0040](#adr-0040-tutelaadminv1-one-code-path-the-admin-token-rule-on-grpc-and-keys-at-every-org) | `tutela.admin.v1`: one code path, the admin token rule on gRPC, and keys at every org | Accepted |
 | [0041](#adr-0041-the-lifecycle-of-tenants-orgs-and-people-the-operator-makes-a-tenant-soft-delete-with-a-grace-a-purge-that-keeps-the-audit-chain) | The lifecycle of tenants, orgs and people: the operator makes a tenant, soft-delete with a grace, a purge that keeps the audit chain | Accepted |
+| [0042](#adr-0042-the-audit-logs-leftovers-a-chain-check-on-a-timer-the-callers-trace-in-each-record) | The audit log's leftovers: a chain check on a timer, the caller's trace in each record | Accepted |
 
 ---
 
@@ -1562,3 +1563,27 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 - **Delete a tenant's rows at once and keep a backup.** No grace, and a mistake is final.
 - **Keep relaying a deleted tenant's events until the purge.** Its receivers would hear of changes nobody can act on, and the relay would need a second notion of "in the directory".
 - **Erase personal data from audit bodies at purge.** It breaks the chain that TM-20 relies on, and the ledger copy keeps the original anyway.
+
+---
+
+## ADR-0042: The audit log's leftovers: a chain check on a timer, the caller's trace in each record
+
+**Status:** Accepted, 2026-11-02. Built in Phase B, part 3c ([#113](https://github.com/f8fvwgzc/tutela/issues/113)). It closes what the ROADMAP notes for part 3c left open from part 3b, and the two-process test [ADR-0024](#adr-0024-signed-bundles-wait-for-part-3) asked for.
+
+**Context.** [ADR-0034](#adr-0034-the-local-audit-log-one-chain-per-tenant-written-with-the-change) built the verifier, but nothing ran it: a chain rewritten behind the service's back stayed unseen until someone looked. CONTRACTS.md 9.1 has `trace_id`, `span_id`, `request_id` and `ip`, and part 3b left them empty. `tutelad` logs the `traceparent` trace id and a request id per request (ADR-0018 item 8), and exports no spans of its own (OTLP is open). ADR-0038's offline test stopped the in-process service, not a separate process.
+
+**Decision.**
+
+1. **A chain check on a timer.** Every replica walks every chain every `TUTELA_AUDIT_VERIFY_SECS` (default 3600; `0` off): each tenant of the directory and the deployment's own chain, with `verify_audit_chain`. A broken link is an error log (the tenant id, the `seq`, what is wrong there; never a body) and counts in `tutelad_audit_chain_checks_total{result}` (`intact`, `broken`, `failed`); `tutelad_audit_chains_broken` is the number found by the last pass, so an alert is "above 0". A soft-deleted tenant's chain is not walked: no request can enter it, and the deployment's chain records its deletion and purge (ADR-0041). Replicas check on their own; the check only reads.
+2. **The ids of the request in each record.** `telemetry::observe` keeps the request's context for the handler's task: the request id (the caller's `x-request-id`, else a new one), and the trace id and parent span id of a well-formed `traceparent`. `audit::Record::build` fills `request_id`, `trace_id` and `span_id` from it, over HTTP and gRPC. `span_id` is **the caller's span**, the one that made the request: `tutelad` has no span id of its own until it exports traces. A background job (the sweep, the purge, key work) has no request, so its records have none.
+3. **`ip` stays empty.** The docs call it personal data (CONTRACTS.md 9.5) and decide neither how to read it behind a proxy nor how long to keep it; recording it waits for that decision.
+4. **The two-process bundle test.** `tests/ha.rs` runs the shipped binary, pulls a signed bundle over HTTP, stops the process (its port answers nothing), and a product's `OfflinePdp` on the wall clock answers from the bundle until `exp`, then `ExpiredBundle`. This is what ADR-0024 asked for.
+
+**Consequences.**
+- Walking a chain reads it whole: a tenant with millions of records makes each pass long. An incremental check (from the last verified `seq` and hash) is later work.
+- A record of a request names the caller's trace, so it can be found from the caller's trace view.
+
+**Alternatives considered.**
+- **Check only the newest records.** Cheaper, but a rewrite of an old record is the attack the chain exists to show.
+- **A span id of `tutelad`'s own, made up per request.** It would name a span nobody can see until OTLP export exists.
+

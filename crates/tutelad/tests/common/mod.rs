@@ -323,6 +323,7 @@ pub fn config(database_url: &str, trust: TrustFile) -> Config {
         },
         bundle_ttl: Duration::from_secs(300),
         purge_grace: Duration::from_secs(30 * 24 * 3600),
+        audit_verify: Duration::ZERO,
         ledger: None,
     }
 }

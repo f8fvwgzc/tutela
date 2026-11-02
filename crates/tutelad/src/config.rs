@@ -108,6 +108,9 @@ pub struct Config {
     /// keeps its data before the purge (ADR-0041), at least one hour;
     /// default 30 days.
     pub purge_grace: Duration,
+    /// `TUTELA_AUDIT_VERIFY_SECS`: how often every audit chain is walked
+    /// and a broken link reported (ADR-0034); default one hour, `0` off.
+    pub audit_verify: Duration,
     /// `TUTELA_LEDGER_URL`, `TUTELA_LEDGER_TOKEN` and `TUTELA_AUDIT_KEY`:
     /// forwarding of audit records to attache's evidence ledger (ADR-0039).
     /// `None`: off.
@@ -382,6 +385,7 @@ impl Config {
             purge_grace >= Duration::from_secs(3600),
             "TUTELA_PURGE_GRACE_SECS must be at least 3600 (one hour)"
         );
+        let audit_verify = seconds(&get, "TUTELA_AUDIT_VERIFY_SECS", "3600")?;
         let streams = crate::stream::StreamSettings {
             poll: Duration::from_millis(parsed(&get, "TUTELA_EVENTS_POLL_MS", "500")?),
             max_streams: parsed(&get, "TUTELA_SSE_MAX_STREAMS", "1000")?,
@@ -424,6 +428,7 @@ impl Config {
             streams,
             bundle_ttl,
             purge_grace,
+            audit_verify,
             ledger,
         })
     }

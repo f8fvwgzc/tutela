@@ -70,6 +70,11 @@ LIFECYCLE_SQL = "crates/tutela-store/migrations/0012_lifecycle.sql"
 LIFECYCLE = ["-p", "tutelad", "--test", "lifecycle"]
 ADMIN_HOOKS = "crates/tutelad/src/admin/webhooks.rs"
 ADMIN_WEBHOOKS = ["-p", "tutelad", "--test", "admin_webhooks"]
+AUDIT_SRC = "crates/tutelad/src/audit.rs"
+TELEMETRY_SRC = "crates/tutelad/src/telemetry.rs"
+SERVER_SRC = "crates/tutelad/src/server.rs"
+AUDIT_CHECKS = ["-p", "tutelad", "--test", "audit_checks"]
+HA_BUNDLE = ["-p", "tutelad", "--test", "ha", "tm13_an_offline"]
 
 # (id, file, what it breaks, old text, new text, cargo test arguments).
 # `old` must occur once.
@@ -513,6 +518,28 @@ MUTANTS = [
      "    tutela_store::webhooks::disable_webhook(&tx, tenant.key(), wid)\n",
      "    tutela_store::webhooks::redeliver(&tx, tenant.key(), wid, 0)\n",
      ADMIN_WEBHOOKS),
+    # The audit log's leftovers from part 3b, and the two-process bundle
+    # test (ADR-0034, ADR-0038).
+    ("K01", AUDIT_SRC, "the chain check does not report a broken link",
+     "                    out.broken += 1;\n                    metrics.count_chain_check(\"broken\");\n",
+     "                    out.broken += 0;\n                    metrics.count_chain_check(\"intact\");\n",
+     AUDIT_CHECKS),
+    ("K02", AUDIT_SRC, "a record leaves out its request id",
+     "                c.request_id.parse().ok(),\n",
+     "                None,\n",
+     AUDIT_CHECKS),
+    ("K03", TELEMETRY_SRC, "a request's ids never reach its records",
+     "    let mut res = REQUEST\n        .scope(context, next.run(req).instrument(span.clone()))\n        .await;\n",
+     "    drop(context);\n    let mut res = next.run(req).instrument(span.clone()).await;\n",
+     AUDIT_CHECKS),
+    ("K04", SERVER_SRC, "the chain check never runs",
+     "        let chain_job = (!audit_verify.is_zero()).then(|| {\n",
+     "        let chain_job = (false && !audit_verify.is_zero()).then(|| {\n",
+     AUDIT_CHECKS),
+    ("K05", BUNDLE_SDK, "an offline PDP answers past exp after tutelad stopped",
+     "        if self.clock.now() >= self.exp {\n",
+     "        if false && self.clock.now() >= self.exp {\n",
+     HA_BUNDLE),
 ]
 
 

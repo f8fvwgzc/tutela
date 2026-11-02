@@ -41,6 +41,7 @@ pub struct Server {
     relay: Option<(crate::webhooks::Relay, Duration)>,
     forwarder: Option<crate::ledger::Forwarder>,
     own: tutela_contracts::tenant::Issuer,
+    audit_verify: Duration,
 }
 
 impl Server {
@@ -128,6 +129,7 @@ impl Server {
             sweep_every: config.expiry_sweep,
             key_refresh: config.key_refresh,
             own: config.issuer.clone(),
+            audit_verify: config.audit_verify,
         })
     }
 
@@ -177,6 +179,7 @@ impl Server {
             relay,
             forwarder,
             own,
+            audit_verify,
         } = self;
         let (stop_api, api_stopped) = watch::channel(false);
         let (stop_ops, ops_stopped) = watch::channel(false);
@@ -194,6 +197,14 @@ impl Server {
             tokio::spawn(crate::ledger::run(
                 fwd,
                 Duration::from_secs(2),
+                jobs_stopped.clone(),
+            ))
+        });
+        let chain_job = (!audit_verify.is_zero()).then(|| {
+            tokio::spawn(crate::audit::run_chain_checks(
+                state.db.clone(),
+                Arc::clone(&state.metrics),
+                audit_verify,
                 jobs_stopped.clone(),
             ))
         });
@@ -231,6 +242,11 @@ impl Server {
             && tokio::time::timeout(stop_timeout, job).await.is_err()
         {
             tracing::warn!("webhook delivery did not stop in time");
+        }
+        if let Some(job) = chain_job
+            && tokio::time::timeout(stop_timeout, job).await.is_err()
+        {
+            tracing::warn!("the audit chain check did not stop in time");
         }
         if let Some(job) = forward_job
             && tokio::time::timeout(stop_timeout, job).await.is_err()

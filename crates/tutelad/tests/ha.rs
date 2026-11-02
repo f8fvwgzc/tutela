@@ -672,3 +672,134 @@ async fn tm17_the_log_holds_no_token_subject_or_resource() {
     }
     c.finish().await;
 }
+
+/// A JWKS fetched once from a running replica and kept, as a product's
+/// verifier holds the keys it fetched. The replica can then go.
+struct HeldJwks(Vec<u8>);
+
+impl tutela_sdk::JwksSource for HeldJwks {
+    fn fetch(
+        &self,
+        _url: String,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<Vec<u8>>> + Send>> {
+        let body = self.0.clone();
+        Box::pin(async move { Some(body) })
+    }
+}
+
+/// The service gate's bundle expiry with `tutelad` as a real separate
+/// process (ADR-0024, ADR-0038, TM-13, TM-23): a product pulls a signed
+/// bundle from the running binary, the process is stopped, and the product's
+/// `OfflinePdp` keeps answering from the bundle until its `exp`, on the wall
+/// clock, then answers nothing.
+#[tokio::test]
+async fn tm13_an_offline_pdp_outlives_a_stopped_tutelad_process_until_exp() {
+    use tutela_contracts::keys::ActionKey;
+    use tutela_pdp::{Attrs, CheckRequest, PdpError, ResourceRef};
+    use tutela_sdk::bundle::OfflinePdp;
+
+    const TTL: u64 = 6;
+    let Some(mut c) = Cluster::new().await else {
+        return;
+    };
+    // A service that may pull the whole tenant: read_audit at every org.
+    let tx = c.writer.transaction().await.unwrap();
+    tutela_store::assign(
+        &tx,
+        &c.a.key,
+        &Subject::Principal(SA.parse().unwrap()),
+        &RoleKey::parse("owner").unwrap(),
+        &c.a.org,
+        None,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let replica = Replica::start(
+        "bundle",
+        &c.trust,
+        &c.d.service_url,
+        &[("TUTELA_BUNDLE_TTL_SECS", "6")],
+    )
+    .await;
+    let base = format!("http://{}", replica.api);
+    let res = http()
+        .get(format!("{base}/v1/authz/bundle"))
+        .bearer_auth(c.token(SA))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let jws = res.text().await.unwrap();
+    let jwks = http()
+        .get(format!("{base}/.well-known/jwks.json"))
+        .send()
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap()
+        .to_vec();
+
+    let own: tutela_contracts::tenant::Issuer = common::OWN_ISS.parse().unwrap();
+    let product = tutela_sdk::Verifier::with(
+        tutela_sdk::VerifierConfig {
+            audience: "crm-api".parse().unwrap(),
+            trust: tutela_contracts::tenant::TrustList::new()
+                .with(own.clone(), c.a.key.tid)
+                .unwrap(),
+            issuers: vec![tutela_sdk::IssuerConfig {
+                jwks_uri: tutelad::keys::jwks_url(&own),
+                iss: own,
+                algs: vec![tutela_sdk::Alg::Es256],
+                external: false,
+                allow_typ_jwt: false,
+            }],
+            delegation: false,
+            delegation_aware: false,
+            denied_kids: std::collections::HashSet::new(),
+            cache: tutela_sdk::CacheRules::default(),
+        },
+        Arc::new(HeldJwks(jwks)),
+        Arc::new(tutela_sdk::SystemClock),
+    );
+    let bundle = product.verify_bundle(&jws).await.unwrap();
+    let mut pdp = OfflinePdp::new(Arc::new(tutela_sdk::SystemClock));
+    pdp.load(bundle).unwrap();
+    let a = &c.a;
+    let read = |pdp: &OfflinePdp| {
+        pdp.check(&CheckRequest {
+            tenant: a.key.clone(),
+            subject: USER.parse().unwrap(),
+            actors: Vec::new(),
+            action: ActionKey::parse("invoice:read").unwrap(),
+            resource: ResourceRef {
+                type_name: "invoice".parse().unwrap(),
+                id: "inv-1".parse().unwrap(),
+                path: vec![a.project.clone(), a.org.clone()],
+                attrs: Attrs::new(),
+            },
+            fields: Some(Vec::new()),
+            at_least_revision: None,
+        })
+        .map(|d| d.is_allowed())
+    };
+    let pulled = SystemTime::now();
+    assert_eq!(read(&pdp), Ok(true));
+
+    // The process stops; its port answers nothing.
+    replica.stop().await;
+    assert!(http().get(format!("{base}/healthz")).send().await.is_err());
+    // Before `exp`, the PDP still answers from its bundle.
+    assert!(
+        pulled.elapsed().unwrap() < Duration::from_secs(TTL - 1),
+        "the stop took too long to test"
+    );
+    assert_eq!(read(&pdp), Ok(true));
+    // From `exp` on, nothing: never an allow from an expired bundle.
+    tokio::time::sleep(Duration::from_secs(TTL + 1).saturating_sub(pulled.elapsed().unwrap()))
+        .await;
+    assert_eq!(read(&pdp), Err(PdpError::ExpiredBundle));
+    assert!(product.verify_bundle(&jws).await.is_err());
+    c.finish().await;
+}
