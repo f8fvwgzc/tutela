@@ -8,8 +8,9 @@ use tonic::{Request, Response, Status};
 
 use super::observed;
 use super::wire::{
-    AgentsQuery, BoundaryBody, NameBody, OrgOut, PrincipalBody, PrincipalOut, RegisterAgentBody,
-    ResourceTypesBody, ScopeRef, SetDisabledBody, TenantOut,
+    AgentsQuery, BoundaryBody, DeliveriesQuery, DeliveryOut, NameBody, OrgOut, PrincipalBody,
+    PrincipalOut, RegisterAgentBody, RegisterWebhookBody, ResourceTypesBody, RotateBody, ScopeRef,
+    SetDisabledBody, TenantOut, WebhookOut, WebhookSecretOut,
 };
 use crate::api::AppState;
 use crate::authz::grpc::identity;
@@ -87,6 +88,34 @@ fn org_state(o: OrgOut) -> pb::OrgState {
         purge_after: o.purge_after.unwrap_or_default(),
         purged_at: o.purged_at.unwrap_or_default(),
         rev: o.rev.unwrap_or(0),
+    }
+}
+
+fn webhook(w: WebhookOut) -> pb::Webhook {
+    pb::Webhook {
+        id: w.id,
+        url: w.url,
+        types: w.types,
+        disabled: w.disabled,
+        created_by: w.created_by,
+    }
+}
+
+fn with_secret(w: WebhookSecretOut) -> pb::WebhookSecret {
+    pb::WebhookSecret {
+        webhook: Some(webhook(w.webhook)),
+        secret: w.secret,
+    }
+}
+
+fn delivery(d: DeliveryOut) -> pb::Delivery {
+    pb::Delivery {
+        webhook: d.webhook,
+        seq: d.seq,
+        state: d.state,
+        attempts: d.attempts,
+        last_status: d.last_status.map_or(0, u32::from),
+        last_error: d.last_error.unwrap_or_default(),
     }
 }
 
@@ -470,6 +499,106 @@ impl Admin for AdminService {
         Ok(Response::new(state_of(observed(
             &self.state,
             "delete_user",
+            out,
+        )?)))
+    }
+
+    async fn register_webhook(
+        &self,
+        req: Request<pb::RegisterWebhookRequest>,
+    ) -> Result<Response<pb::WebhookSecret>, Status> {
+        let id = identity(&req)?;
+        let r = req.into_inner();
+        let body = RegisterWebhookBody {
+            url: some(r.url),
+            types: Some(r.types),
+        };
+        let out = super::webhooks::register(&self.state, &id, body).await;
+        Ok(Response::new(with_secret(observed(
+            &self.state,
+            "register_webhook",
+            out,
+        )?)))
+    }
+
+    async fn list_webhooks(
+        &self,
+        req: Request<pb::ListWebhooksRequest>,
+    ) -> Result<Response<pb::ListWebhooksResponse>, Status> {
+        let id = identity(&req)?;
+        let out = observed(
+            &self.state,
+            "list_webhooks",
+            super::webhooks::list(&self.state, &id).await,
+        )?;
+        Ok(Response::new(pb::ListWebhooksResponse {
+            webhooks: out.webhooks.into_iter().map(webhook).collect(),
+        }))
+    }
+
+    async fn rotate_webhook_secret(
+        &self,
+        req: Request<pb::RotateWebhookSecretRequest>,
+    ) -> Result<Response<pb::WebhookSecret>, Status> {
+        let id = identity(&req)?;
+        let r = req.into_inner();
+        let body = RotateBody {
+            overlap_secs: r.overlap_secs,
+        };
+        let out = super::webhooks::rotate(&self.state, &id, &r.id, body).await;
+        Ok(Response::new(with_secret(observed(
+            &self.state,
+            "rotate_webhook",
+            out,
+        )?)))
+    }
+
+    async fn disable_webhook(
+        &self,
+        req: Request<pb::WebhookRequest>,
+    ) -> Result<Response<pb::Webhook>, Status> {
+        let id = identity(&req)?;
+        let wid = req.into_inner().id;
+        let out = super::webhooks::disable(&self.state, &id, &wid).await;
+        Ok(Response::new(webhook(observed(
+            &self.state,
+            "disable_webhook",
+            out,
+        )?)))
+    }
+
+    async fn list_deliveries(
+        &self,
+        req: Request<pb::ListDeliveriesRequest>,
+    ) -> Result<Response<pb::ListDeliveriesResponse>, Status> {
+        let id = identity(&req)?;
+        let r = req.into_inner();
+        let q = DeliveriesQuery {
+            state: r.dead_only.then(|| "dead".to_owned()),
+            after: Some(r.after),
+            limit: (r.limit > 0).then(|| usize::try_from(r.limit).unwrap_or(usize::MAX)),
+        };
+        let out = observed(
+            &self.state,
+            "list_deliveries",
+            super::webhooks::deliveries(&self.state, &id, &r.id, q).await,
+        )?;
+        Ok(Response::new(pb::ListDeliveriesResponse {
+            deliveries: out.deliveries.into_iter().map(delivery).collect(),
+            next_after: out.next_after.unwrap_or(0),
+        }))
+    }
+
+    async fn redeliver(
+        &self,
+        req: Request<pb::RedeliverRequest>,
+    ) -> Result<Response<pb::Delivery>, Status> {
+        let id = identity(&req)?;
+        let r = req.into_inner();
+        let out = super::webhooks::redeliver(&self.state, &id, &r.id, r.seq).await;
+        Ok(Response::new(delivery(observed(
+            &self.state,
+            "redeliver",
             out,
         )?)))
     }

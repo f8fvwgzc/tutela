@@ -284,6 +284,13 @@ fn stopped_by_itself(
 /// A bad database URL, or a failed JWKS client setup.
 pub fn state(config: &Config) -> anyhow::Result<AppState> {
     let db = Db::connect(&config.database_url, config.pool_size)?;
+    let policy = if config.dev_mode {
+        tutela_safenet::Policy::new().dev_loopback()
+    } else {
+        tutela_safenet::Policy::new()
+    };
+    let safenet =
+        Arc::new(tutela_safenet::Client::new(policy).context("setting up the webhook URL check")?);
     let metrics = Arc::new(Metrics::new());
     let keys = Arc::new(config.key_ring()?);
     let events_keys = Arc::clone(&keys);
@@ -316,6 +323,8 @@ pub fn state(config: &Config) -> anyhow::Result<AppState> {
         bundle_ttl: config.bundle_ttl,
         purge_grace: config.purge_grace,
         own: config.issuer.clone(),
+        vault: Arc::new(config.secrets.vault()?),
+        safenet,
     })
 }
 

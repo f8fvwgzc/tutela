@@ -203,3 +203,107 @@ pub struct OrgsOut {
     /// Oldest first, the deleted ones too.
     pub orgs: Vec<OrgOut>,
 }
+
+/// `POST /v1/admin/webhooks`.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegisterWebhookBody {
+    /// The endpoint: `https`, a public address.
+    pub url: Option<String>,
+    /// The event types it gets; missing or empty: every type.
+    pub types: Option<Vec<String>>,
+}
+
+/// `POST /v1/admin/webhooks/{id}/rotate`.
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RotateBody {
+    /// How long the old secret keeps signing; default 3600, at most 604800.
+    pub overlap_secs: Option<u64>,
+}
+
+/// One webhook. Never its secret.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WebhookOut {
+    /// `whk_<uuidv7>`.
+    pub id: String,
+    /// The endpoint.
+    pub url: String,
+    /// The event types it gets; empty: every type.
+    pub types: Vec<String>,
+    /// `true` once it is disabled.
+    pub disabled: bool,
+    /// Who registered it.
+    pub created_by: String,
+}
+
+/// A webhook and its new secret: the one answer that shows it.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WebhookSecretOut {
+    /// The webhook.
+    pub webhook: WebhookOut,
+    /// `whsec_<base64 of 32 random bytes>`. Shown this once.
+    pub secret: String,
+}
+
+/// The tenant's webhooks.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WebhooksOut {
+    /// Oldest first.
+    pub webhooks: Vec<WebhookOut>,
+}
+
+/// The query of `GET /v1/admin/webhooks/{id}/deliveries`.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct DeliveriesQuery {
+    /// `dead`: only the dead ones.
+    pub state: Option<String>,
+    /// The `next_after` of the page before.
+    pub after: Option<u64>,
+    /// How many. At most 1000; 100 when missing.
+    pub limit: Option<usize>,
+}
+
+/// One delivery.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeliveryOut {
+    /// The webhook.
+    pub webhook: String,
+    /// The event's number in the tenant.
+    pub seq: u64,
+    /// `pending`, `delivered` or `dead`.
+    pub state: String,
+    /// Attempts made.
+    pub attempts: u32,
+    /// The last answer's status.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_status: Option<u16>,
+    /// The last error code (`status`, `timeout`, `not_public`, ...).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+impl DeliveryOut {
+    /// The answer for a stored delivery.
+    #[must_use]
+    pub fn of(d: tutela_store::webhooks::Delivery) -> Self {
+        Self {
+            webhook: d.webhook_id,
+            seq: d.seq,
+            state: d.state,
+            attempts: d.attempts,
+            last_status: d.last_status,
+            last_error: d.last_error,
+        }
+    }
+}
+
+/// A page of deliveries.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeliveriesOut {
+    /// By event number.
+    pub deliveries: Vec<DeliveryOut>,
+    /// Where the next page starts; missing at the end.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_after: Option<u64>,
+}

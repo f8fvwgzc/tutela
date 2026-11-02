@@ -6,8 +6,10 @@ use tutela_sdk::Identity;
 
 use super::observed;
 use super::wire::{
-    AgentsOut, AgentsQuery, BoundaryBody, NameBody, OrgOut, OrgsOut, PrincipalBody, PrincipalOut,
-    RegisterAgentBody, ResourceTypesBody, RevOut, SetDisabledBody, TenantOut,
+    AgentsOut, AgentsQuery, BoundaryBody, DeliveriesOut, DeliveriesQuery, DeliveryOut, NameBody,
+    OrgOut, OrgsOut, PrincipalBody, PrincipalOut, RegisterAgentBody, RegisterWebhookBody,
+    ResourceTypesBody, RevOut, RotateBody, SetDisabledBody, TenantOut, WebhookOut,
+    WebhookSecretOut, WebhooksOut,
 };
 use crate::api::{AppState, Problem};
 use crate::authz::http::Body;
@@ -169,4 +171,65 @@ pub async fn delete_user(
 ) -> Result<Json<PrincipalOut>, Problem> {
     let out = super::lifecycle::delete_user(&state, &id, body).await;
     observed(&state, "delete_user", out).map(Json)
+}
+
+/// `POST /v1/admin/webhooks`.
+pub async fn register_webhook(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Body(body): Body<RegisterWebhookBody>,
+) -> Result<Json<WebhookSecretOut>, Problem> {
+    let out = super::webhooks::register(&state, &id, body).await;
+    observed(&state, "register_webhook", out).map(Json)
+}
+
+/// `GET /v1/admin/webhooks`.
+pub async fn webhooks(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+) -> Result<Json<WebhooksOut>, Problem> {
+    let out = super::webhooks::list(&state, &id).await;
+    observed(&state, "list_webhooks", out).map(Json)
+}
+
+/// `POST /v1/admin/webhooks/{id}/rotate`.
+pub async fn rotate_webhook(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(wid): Path<String>,
+    Body(body): Body<RotateBody>,
+) -> Result<Json<WebhookSecretOut>, Problem> {
+    let out = super::webhooks::rotate(&state, &id, &wid, body).await;
+    observed(&state, "rotate_webhook", out).map(Json)
+}
+
+/// `POST /v1/admin/webhooks/{id}/disable`.
+pub async fn disable_webhook(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(wid): Path<String>,
+) -> Result<Json<WebhookOut>, Problem> {
+    let out = super::webhooks::disable(&state, &id, &wid).await;
+    observed(&state, "disable_webhook", out).map(Json)
+}
+
+/// `GET /v1/admin/webhooks/{id}/deliveries`.
+pub async fn deliveries(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(wid): Path<String>,
+    Query(q): Query<DeliveriesQuery>,
+) -> Result<Json<DeliveriesOut>, Problem> {
+    let out = super::webhooks::deliveries(&state, &id, &wid, q).await;
+    observed(&state, "list_deliveries", out).map(Json)
+}
+
+/// `POST /v1/admin/webhooks/{id}/deliveries/{seq}/redeliver`.
+pub async fn redeliver(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path((wid, seq)): Path<(String, u64)>,
+) -> Result<Json<DeliveryOut>, Problem> {
+    let out = super::webhooks::redeliver(&state, &id, &wid, seq).await;
+    observed(&state, "redeliver", out).map(Json)
 }

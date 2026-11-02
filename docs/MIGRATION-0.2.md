@@ -161,9 +161,10 @@ These matter to whoever runs `tutelad`, and to a product that verifies its token
 
 - **Migration 10** adds `tutela.webhook` and `tutela.webhook_delivery` ([ADR-0036](DECISIONS.md#adr-0036-webhooks-delivered-from-the-outbox-registered-by-part-3c)). Run `grant_service` again.
 - **New settings:** `TUTELA_WEBHOOK_POLL_MS` (default 1000; `0` turns delivery off on a replica) and `TUTELA_EVENT_RETENTION_SECS` (default 604800, at least 172800). `deploy/tutelad.env` has both.
-- **Registering a webhook** has no route yet: part 3c adds it to `tutela.admin.v1`. Until then an operator can call `tutelad::webhooks::register` (it checks the URL with `tutela-safenet` first).
+- **Registering a webhook** is `POST /v1/admin/webhooks` (`RegisterWebhook`) since part 3c (CONTRACTS.md 7.13.6), with a token that holds `read_audit` and `manage_access` at every org. Keep the `secret` of the answer: it is never shown again. Rotate it with `POST /v1/admin/webhooks/{id}/rotate`; both secrets sign during the overlap.
 - **A receiver** (attache, texc-symphony, a product) checks `webhook-signature` in constant time over `<webhook-id>.<webhook-timestamp>.<body>` with the decoded `whsec_` secret, refuses a timestamp more than 5 minutes off, dedupes by `webhook-id`, and answers 2xx at once. During a rotation the header holds two signatures; accept either.
 - **`tutela-safenet`:** `Client::check(url)` checks a URL and its DNS answer without a request.
+- **`tutela-store`** (part 3c): `webhooks::webhook` (one webhook), `webhooks::delivery_page` (a page of deliveries, the dead ones only if asked) and `webhooks::MAX_DELIVERY_PAGE`.
 
 ## Event stream (part 3b)
 

@@ -27,6 +27,7 @@ pub mod http;
 pub mod lifecycle;
 pub mod principals;
 pub mod types;
+pub mod webhooks;
 pub mod wire;
 
 use axum::http::StatusCode;

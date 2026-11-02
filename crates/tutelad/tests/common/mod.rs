@@ -401,6 +401,15 @@ pub fn state_with(config: &Config, issuer: &Issuer, delegation: bool) -> AppStat
         bundle_ttl: config.bundle_ttl,
         purge_grace: config.purge_grace,
         own: config.issuer.clone(),
+        vault: Arc::new(config.secrets.vault().unwrap()),
+        safenet: Arc::new(
+            tutela_safenet::Client::new(if config.dev_mode {
+                tutela_safenet::Policy::new().dev_loopback()
+            } else {
+                tutela_safenet::Policy::new()
+            })
+            .unwrap(),
+        ),
         stopping: Arc::new(AtomicBool::new(false)),
         dev_mode: config.dev_mode,
         impact_work: config.impact_work,

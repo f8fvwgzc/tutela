@@ -212,3 +212,14 @@ G08: caught by 1 test(s) - an org is renamed without manage_access on it
       orgs_are_made_renamed_deleted_restored_and_purged
 G09: caught by 1 test(s) - the service role updates any tenant of the directory
       tm14_the_service_role_changes_only_the_directory_row_of_its_tenant
+
+H01: caught by 1 test(s) - read_audit alone registers a webhook
+      tm18_only_an_admin_with_both_keys_registers_and_only_a_public_url
+H02: caught by 1 test(s) - a webhook secret is shown twice: in the audit log
+      tm19_a_secret_is_shown_once_and_signs_what_the_relay_sends
+H03: caught by 1 test(s) - an audit record holds the whole URL, query and all
+      tm19_a_secret_is_shown_once_and_signs_what_the_relay_sends
+H04: caught by 1 test(s) - a webhook's URL is not checked when it is registered
+      tm18_only_an_admin_with_both_keys_registers_and_only_a_public_url
+H05: caught by 1 test(s) - a disabled webhook keeps getting events
+      tm19_a_secret_is_shown_once_and_signs_what_the_relay_sends
