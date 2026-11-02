@@ -115,6 +115,10 @@ pub struct Config {
     /// forwarding of audit records to attache's evidence ledger (ADR-0039).
     /// `None`: off.
     pub ledger: Option<crate::ledger::LedgerConfig>,
+    /// `TUTELA_CONSOLE_DIR`, `TUTELA_CONSOLE_ISSUER` and
+    /// `TUTELA_CONSOLE_CLIENT_ID`: the Tutela Console, served under
+    /// `/console/` (ADR-0050). `None`: not served.
+    pub console: Option<crate::console::ConsoleConfig>,
 }
 
 /// The secrets `tutelad` needs at start-up. `Debug` shows none of them.
@@ -406,6 +410,25 @@ impl Config {
             event_retention >= Duration::from_secs(2 * 24 * 3600),
             "TUTELA_EVENT_RETENTION_SECS must be at least 172800 (two days)"
         );
+        let console = match get("TUTELA_CONSOLE_DIR") {
+            None => None,
+            Some(dir) => {
+                let external: Vec<Issuer> = trust
+                    .issuer
+                    .iter()
+                    .filter(|e| e.external && !e.workloads)
+                    .map(|e| e.iss.clone())
+                    .collect();
+                Some(crate::console::ConsoleConfig::from_values(
+                    &dir,
+                    get("TUTELA_CONSOLE_ISSUER").as_deref(),
+                    get("TUTELA_CONSOLE_CLIENT_ID").as_deref(),
+                    &admin_acr,
+                    audience.as_str(),
+                    &external,
+                )?)
+            }
+        };
         Ok(Self {
             database_url: need("TUTELA_DATABASE_URL")?,
             listen: parsed(&get, "TUTELA_LISTEN", "0.0.0.0:8080")?,
@@ -435,6 +458,7 @@ impl Config {
             purge_grace,
             audit_verify,
             ledger,
+            console,
         })
     }
 
@@ -750,6 +774,79 @@ mod tests {
         });
         std::fs::remove_file(&path).unwrap();
         config
+    }
+
+    /// A config with the Console's settings `console`, over a trust file
+    /// with an external realm and a plain issuer.
+    fn with_console(console: &[(&str, &str)]) -> anyhow::Result<Config> {
+        let path =
+            std::env::temp_dir().join(format!("tutelad-console-{}.toml", uuid::Uuid::now_v7()));
+        std::fs::write(
+            &path,
+            format!(
+                "{}{}",
+                file("https://auth.example.test", ""),
+                "[[issuer]]\niss = \"https://kc.example.test/realms/acme\"\n\
+                 jwks_uri = \"https://kc.example.test/realms/acme/certs\"\nalgs = [\"RS256\"]\n\
+                 tenants = [\"ten_0193a1b2-c3d4-7e5f-8a6b-7c8d9e0f1a2c\"]\nexternal = true\n"
+            ),
+        )
+        .unwrap();
+        let trust = path.display().to_string();
+        let config = Config::from_vars(|name| {
+            if let Some((_, v)) = console.iter().find(|(k, _)| *k == name) {
+                return Some((*v).to_owned());
+            }
+            match name {
+                "TUTELA_DATABASE_URL" => Some("host=127.0.0.1".to_owned()),
+                "TUTELA_TRUST_FILE" => Some(trust.clone()),
+                other => required(other),
+            }
+        });
+        std::fs::remove_file(&path).unwrap();
+        config
+    }
+
+    #[test]
+    fn the_console_is_off_unless_its_directory_is_set() {
+        assert!(with_console(&[]).unwrap().console.is_none());
+        let c = with_console(&[
+            ("TUTELA_CONSOLE_DIR", "/srv/console"),
+            (
+                "TUTELA_CONSOLE_ISSUER",
+                "https://kc.example.test/realms/acme",
+            ),
+            ("TUTELA_CONSOLE_CLIENT_ID", "tutela-console"),
+            ("TUTELA_ADMIN_ACR", "mfa, gold"),
+        ])
+        .unwrap()
+        .console
+        .unwrap();
+        assert_eq!(c.dir, PathBuf::from("/srv/console"));
+        assert_eq!(c.issuer.as_str(), "https://kc.example.test/realms/acme");
+        assert_eq!(c.client_id, "tutela-console");
+        assert_eq!(c.step_up_acr, "mfa");
+        assert_eq!(c.audience, DEFAULT_AUDIENCE);
+        // The realm must be an external issuer of the trust file.
+        let e = with_console(&[
+            ("TUTELA_CONSOLE_DIR", "/srv/console"),
+            ("TUTELA_CONSOLE_ISSUER", "https://auth.example.test"),
+            ("TUTELA_CONSOLE_CLIENT_ID", "tutela-console"),
+            ("TUTELA_ADMIN_ACR", "mfa"),
+        ])
+        .unwrap_err();
+        assert!(e.to_string().contains("external issuer"), "{e}");
+        // No admin token could ever be issued without TUTELA_ADMIN_ACR.
+        let e = with_console(&[
+            ("TUTELA_CONSOLE_DIR", "/srv/console"),
+            (
+                "TUTELA_CONSOLE_ISSUER",
+                "https://kc.example.test/realms/acme",
+            ),
+            ("TUTELA_CONSOLE_CLIENT_ID", "tutela-console"),
+        ])
+        .unwrap_err();
+        assert!(e.to_string().contains("TUTELA_ADMIN_ACR"), "{e}");
     }
 
     #[test]

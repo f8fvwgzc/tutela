@@ -4,6 +4,7 @@
 //! production. See `docs/ARCHITECTURE.md` and ADR-0018.
 //!
 //! - [`config`]: `TUTELA_*` variables and the trust file.
+//! - [`console`]: the Tutela Console's files, under `/console/` (ADR-0050).
 //! - [`api`]: the API port (HTTP and gRPC on one listener, every request
 //!   behind [`tutela_sdk::http::AuthLayer`]) and the ops port (`/healthz`,
 //!   `/readyz`, `/metrics`).
@@ -40,6 +41,7 @@ pub mod authz;
 pub mod bundle;
 pub mod cache;
 pub mod config;
+pub mod console;
 pub mod db;
 pub mod events;
 pub mod exchange;

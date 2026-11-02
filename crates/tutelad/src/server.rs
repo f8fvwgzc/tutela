@@ -136,10 +136,22 @@ impl Server {
                 Some(fwd)
             }
         };
+        // The Console's files, read once (ADR-0050).
+        let console = match &config.console {
+            None => None,
+            Some(c) => {
+                let console = crate::console::Console::load(c)?;
+                tracing::info!(
+                    files = console.len(),
+                    "the Tutela Console is served at /console/"
+                );
+                Some(Arc::new(console))
+            }
+        };
         Ok(Self {
             forwarder,
             relay,
-            api_router: api::api_router(&state, grpc, config.request_timeout),
+            api_router: api::api_router(&state, grpc, config.request_timeout, console),
             ops_router: api::ops_router(&state),
             api,
             ops,

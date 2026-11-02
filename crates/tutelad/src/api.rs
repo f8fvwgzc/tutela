@@ -273,7 +273,14 @@ async fn problem_for_401(res: Response) -> Response {
 /// The API port: HTTP and gRPC on one listener. Every request, also to an
 /// unknown path, goes through the token check first, so this port says
 /// nothing to a caller without a token. `grpc` holds the gRPC services.
-pub fn api_router(state: &AppState, grpc: Router, request_timeout: Duration) -> Router {
+/// The exceptions are [`PUBLIC_PATHS`] and, when `console` is set, the
+/// Console's paths under `/console/` (ADR-0050), which hold no data.
+pub fn api_router(
+    state: &AppState,
+    grpc: Router,
+    request_timeout: Duration,
+    console: Option<Arc<crate::console::Console>>,
+) -> Router {
     let timeout = TimeoutLayer::with_status_code(StatusCode::SERVICE_UNAVAILABLE, request_timeout);
     // The admin routes take a `tutela-admin` token from a person, or a
     // `tutela-authz` token from a service (ADR-0032).
@@ -464,8 +471,19 @@ pub fn api_router(state: &AppState, grpc: Router, request_timeout: Duration) -> 
             observe,
         ));
     let public = public_router(state, request_timeout);
+    let console = console.map(|c| {
+        c.router().layer(middleware::from_fn_with_state(
+            Arc::clone(&state.metrics),
+            observe,
+        ))
+    });
     Router::new().fallback(move |req: Request| {
-        let target = if is_public(&req) {
+        let target = if let Some(console) = console
+            .as_ref()
+            .filter(|_| crate::console::owns(req.uri().path()))
+        {
+            console
+        } else if is_public(&req) {
             &public
         } else if is_grpc(&req) && req.uri().path().starts_with(admin::grpc::PATH_PREFIX) {
             &admin_grpc

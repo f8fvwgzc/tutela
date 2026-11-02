@@ -66,6 +66,7 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0047](#adr-0047-the-javascript-sdks-a-pnpm-workspace-under-sdk-checked-by-make) | The JavaScript SDKs: a pnpm workspace under `sdk/`, checked by `make` | Accepted |
 | [0048](#adr-0048-tutela-js-the-browser-token-flow-in-memory-typed-errors-and-a-retry-that-never-makes-twice) | `tutela-js`: the browser token flow in memory, typed errors, and a retry that never makes twice | Accepted |
 | [0049](#adr-0049-tutela-react-embeddable-admin-components-scoped-css-variables-and-the-host-names-the-people) | `tutela-react`: embeddable admin components, scoped CSS variables, and the host names the people | Accepted |
+| [0050](#adr-0050-the-console-is-served-by-tutelad-under-console-from-files-read-at-start) | The Console is served by `tutelad` under `/console/`, from files read at start | Accepted |
 
 ---
 
@@ -1802,3 +1803,35 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 - **CSS-in-JS or inline styles.** They need `style-src 'unsafe-inline'` or a nonce in the host's CSP.
 - **A component library (shadcn, Radix, MUI).** It would force its styles, versions and size on every host.
 - **Ask Tutela for display names.** Tutela keeps no personal data beyond `(iss, sub)` (CONTRACTS.md 9.5).
+
+---
+
+## ADR-0050: The Console is served by `tutelad` under `/console/`, from files read at start
+
+**Status:** Accepted, 2026-11-02. Phase B, part 4b2. It decides the plan of the ROADMAP notes for part 4b2 on how the Console is served, and **changes [ADR-0030](#adr-0030-tutelads-own-issuer-signing-keys-the-jwks-and-paths-without-a-token) item 9**: besides the exact paths of `api::PUBLIC_PATHS`, the paths under `/console/` need no token when the Console is on.
+
+**Context.** The Tutela Console is a single-page app (part 4b2, `console/`). It runs in a browser as a public client (ADR-0044 item 7) with tokens in memory only (ADR-0048, TM-06). It must reach `tutelad`'s token endpoint and admin API; `tutelad` sends no CORS headers ([#135](https://github.com/f8fvwgzc/tutela/issues/135)). TM-06 wants the Console to send a strict Content-Security-Policy and `frame-ancestors`. Plain `cargo build` must not need node (ADR-0047). The OCI image of part 4c must be able to ship the Console with `tutelad`.
+
+**Decision.**
+
+1. **Same origin, one prefix.** `tutelad` serves the Console on the API port under `/console/`. The page and the API share an origin: no CORS, and the client keeps `credentials: "omit"`. The prefix is fixed.
+2. **From a directory set by configuration.** `TUTELA_CONSOLE_DIR` names the built Console (`console/dist`). Unset: nothing is served, and `/console/` is a path like any other, behind the token check. Set: every plain file in it is read into memory once at start (at most 2,048 files and 64 MiB, eight levels deep), and start-up fails when it cannot be read or has no `index.html`. The Rust build never runs node; the image copies the built files.
+3. **Exact paths only, no token.** `GET` and `HEAD` only (else 405). A request is answered by looking its path up in the list read at start, never by joining it to the directory, so `..`, encoded separators and links reach nothing. Symbolic links, hidden files and names outside a plain character set are not served. `/console` redirects to `/console/`; `/console/` is `index.html`.
+4. **Page paths get `index.html`; nothing else does.** A path of one to six segments of `a-z`, `0-9`, `-` and `_`, with no dot, is a page of the Console's own router and gets `index.html`. Any other path under `/console/` is 404. The fallback never reaches beyond `/console/`: `/v1/...`, `/consoles` and every other path still need a token and say nothing without one (ADR-0030 item 9).
+5. **Headers on every answer under `/console/`:** `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self' <the realm's origin>; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` (the authorization code in the callback URL never leaves in a referrer), `X-Frame-Options: DENY`, `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Resource-Policy: same-origin`. The components and the Console use no inline script or style, so the policy has no exception. Files under `assets/` (named by their content hash) are `immutable` for a year; everything else is `no-cache`.
+6. **Where people sign in comes from `tutelad`, never from the person.** `GET /console/config.json` answers `{issuer, client_id, step_up_acr, audience}` with `Cache-Control: no-store`: `TUTELA_CONSOLE_ISSUER` (the realm), `TUTELA_CONSOLE_CLIENT_ID` (the Console's public client there), the first value of `TUTELA_ADMIN_ACR` (what the Console asks for at sign-in) and `TUTELA_AUDIENCE`. `TUTELA_CONSOLE_ISSUER` must be an external issuer of the trust file, written as there: `tutelad` exchanges that realm's tokens, and its tenant comes from the trust list as always (ADR-0031). `TUTELA_ADMIN_ACR` must be set, or no admin token could ever be issued. With one realm per deployment (ARCHITECTURE.md) one value is enough.
+7. **Counted, not logged per file.** Console answers go through the request metrics (`route="unmatched"`) and get an `x-request-id`; they read no database and no token.
+
+**Consequences.**
+- A deployment turns the Console on with three settings (`deploy/tutelad.env`). The OCI image of part 4c copies `console/dist` to the directory it names (the example is `/srv/tutela/console`).
+- A rebuilt Console needs a restart of `tutelad` (the files are read once).
+- The realm's origin is in `connect-src`, for OIDC discovery and its token endpoint. A realm whose token endpoint is on another origin is not supported.
+- Products that embed the components on their own origin still need a proxy or CORS ([#135](https://github.com/f8fvwgzc/tutela/issues/135)).
+
+**Alternatives considered.**
+- **Serve from disk on each request.** A file changed or linked after start could be served, and every request would touch the disk; the Console is a few hundred kilobytes.
+- **Embed the Console in the binary.** `cargo build` would need node, or a built copy in the repo.
+- **A separate static server or a CDN.** Another origin needs CORS and another CSP to keep right; part 4c may still put a CDN in front, the headers stay the same.
+- **A page fallback for every unknown path.** An API path would answer 200 with HTML and say something without a token.
+- **Hash routing (`/console/#/scopes`).** It needs no fallback, but every link to a page carries a fragment and the callback of the sign-in would need one; the fallback is narrow enough.
+
