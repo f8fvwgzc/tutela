@@ -38,6 +38,38 @@ pub fn init_logs(filter: &str) -> anyhow::Result<()> {
         .map_err(|e| anyhow!("installing the log writer: {e}"))
 }
 
+/// What a request's audit records name (CONTRACTS.md 9.1): its request id
+/// and the trace and span of the caller's `traceparent`. It lives for one
+/// request, set by [`observe`] around the handler.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RequestContext {
+    /// The request id, the caller's or a new one (`x-request-id`).
+    pub request_id: String,
+    /// The W3C trace id of the caller's `traceparent`.
+    pub trace_id: Option<String>,
+    /// The caller's span: the parent id of its `traceparent`. `tutelad`
+    /// exports no spans of its own yet (OTLP is open).
+    pub span_id: Option<String>,
+}
+
+tokio::task_local! {
+    static REQUEST: RequestContext;
+}
+
+/// The context of the request this task serves, if it serves one: a
+/// background job has none.
+#[must_use]
+pub fn request_context() -> Option<RequestContext> {
+    REQUEST.try_with(Clone::clone).ok()
+}
+
+/// The span (parent) id of a W3C `traceparent` header, if it is well
+/// formed.
+fn span_id(traceparent: &HeaderValue) -> Option<&str> {
+    trace_id(traceparent)?;
+    traceparent.to_str().ok()?.split('-').nth(2)
+}
+
 /// The trace id of a W3C `traceparent` header, if it is well formed.
 fn trace_id(traceparent: &HeaderValue) -> Option<&str> {
     let text = traceparent.to_str().ok()?;
@@ -139,6 +171,8 @@ pub struct Metrics {
     model_operations: Family<DecisionLabels, Counter>,
     admin_operations: Family<DecisionLabels, Counter>,
     purges: Family<DecisionLabels, Counter>,
+    chain_checks: Family<SweepLabels, Counter>,
+    broken_chains: Gauge,
     revision_checks: Family<SweepLabels, Counter>,
     tenant_loads: Family<SweepLabels, Counter>,
     key_refreshes: Family<SweepLabels, Counter>,
@@ -219,6 +253,18 @@ impl Metrics {
             "purges",
             "Purges of soft-deleted tenants and orgs after their grace, by kind and outcome",
             purges.clone(),
+        );
+        let chain_checks = Family::<SweepLabels, Counter>::default();
+        registry.register(
+            "audit_chain_checks",
+            "Audit chains walked by the chain check, by result: intact, broken, failed",
+            chain_checks.clone(),
+        );
+        let broken_chains = Gauge::default();
+        registry.register(
+            "audit_chains_broken",
+            "Audit chains with a broken link at the last check: alert on anything above 0",
+            broken_chains.clone(),
         );
         let decisions = Family::<DecisionLabels, Counter>::default();
         registry.register(
@@ -305,6 +351,8 @@ impl Metrics {
             model_operations,
             admin_operations,
             purges,
+            chain_checks,
+            broken_chains,
             revision_checks,
             tenant_loads,
             key_refreshes,
@@ -453,6 +501,20 @@ impl Metrics {
             .inc();
     }
 
+    /// Counts one audit chain walked: `intact`, `broken` or `failed`.
+    pub fn count_chain_check(&self, result: &'static str) {
+        self.chain_checks
+            .get_or_create(&SweepLabels {
+                result: result.to_owned(),
+            })
+            .inc();
+    }
+
+    /// Records how many chains the last check found broken.
+    pub fn set_broken_chains(&self, n: usize) {
+        self.broken_chains.set(i64::try_from(n).unwrap_or(i64::MAX));
+    }
+
     /// Counts one tenant load.
     pub fn count_tenant_load(&self, ok: bool) {
         count_result(&self.tenant_loads, ok);
@@ -508,6 +570,15 @@ pub async fn observe(State(metrics): State<Arc<Metrics>>, req: Request, next: Ne
         .to_owned();
     let request_id = request_id(req.headers().get("x-request-id"));
     let trace = req.headers().get("traceparent").and_then(trace_id);
+    let context = RequestContext {
+        request_id: request_id.clone(),
+        trace_id: trace.map(str::to_owned),
+        span_id: req
+            .headers()
+            .get("traceparent")
+            .and_then(span_id)
+            .map(str::to_owned),
+    };
     let span = tracing::info_span!(
         "request",
         request_id = %request_id,
@@ -516,7 +587,9 @@ pub async fn observe(State(metrics): State<Arc<Metrics>>, req: Request, next: Ne
         route = %route,
         tid = tracing::field::Empty,
     );
-    let mut res = next.run(req).instrument(span.clone()).await;
+    let mut res = REQUEST
+        .scope(context, next.run(req).instrument(span.clone()))
+        .await;
 
     let status = res.status();
     let step = (status == StatusCode::UNAUTHORIZED).then(|| {
@@ -584,6 +657,15 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn the_span_is_the_parent_of_a_well_formed_traceparent() {
+        let v = HeaderValue::from_static("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
+        assert_eq!(span_id(&v), Some("00f067aa0ba902b7"));
+        let bad =
+            HeaderValue::from_static("00-00000000000000000000000000000000-00f067aa0ba902b7-01");
+        assert_eq!(span_id(&bad), None);
     }
 
     #[test]

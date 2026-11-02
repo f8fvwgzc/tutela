@@ -210,3 +210,8 @@ These matter to whoever runs `tutelad`, and to a product that verifies its token
   - New module `lifecycle`: `tenant_info`, `set_tenant_name`, `delete_tenant`, `restore_tenant`, `due_tenant_purges`, `purge_tenant`, `orgs`, `org`, `set_org_name`, `delete_org`, `restore_org`, `due_org_purges`, `purge_org`, `delete_user`, `TenantInfo`, `OrgInfo`.
 - **For attache and texc-symphony, when they bump:** listen for `tutela.org.deleted.v1` (remove your container for the org at `purge_after`, or hide it at once) and `tutela.user.deleted.v1` (delete or pseudonymise your copies of the person). A soft-deleted tenant answers 403 `unknown_tenant` and sends no more events.
 
+## The audit log's leftovers (part 3c)
+
+- **New setting:** `TUTELA_AUDIT_VERIFY_SECS` (default 3600; `0` off): every replica walks every audit chain this often ([ADR-0042](DECISIONS.md#adr-0042-the-audit-logs-leftovers-a-chain-check-on-a-timer-the-callers-trace-in-each-record)). Alert on `tutelad_audit_chains_broken` above 0.
+- **Audit records** of a request now carry `request_id`, and `trace_id` and `span_id` when the caller sent a `traceparent`. attache's ledger and any reader of audit.v1 already accept these fields; `ip` stays empty.
+

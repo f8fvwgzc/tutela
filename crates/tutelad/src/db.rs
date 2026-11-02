@@ -219,6 +219,28 @@ impl Conn {
         Ok(done)
     }
 
+    /// Walks one tenant's audit chain (ADR-0034), in a read transaction of
+    /// its own, and reports the first broken link.
+    pub(crate) async fn verify_chain(
+        &mut self,
+        key: &TenantKey,
+    ) -> Result<tutela_store::ChainReport, DbError> {
+        let tx = self.0.transaction().await?;
+        let report = tutela_store::verify_audit_chain(&tx, key).await?;
+        tx.commit().await?;
+        Ok(report)
+    }
+
+    /// [`Conn::verify_chain`] of the deployment's own chain.
+    pub(crate) async fn verify_deployment_chain(
+        &mut self,
+    ) -> Result<tutela_store::ChainReport, DbError> {
+        let tx = self.0.transaction().await?;
+        let report = tutela_store::verify_deployment_audit_chain(&tx).await?;
+        tx.commit().await?;
+        Ok(report)
+    }
+
     /// Writes `records` to the deployment's own chain, in a transaction of
     /// their own.
     pub(crate) async fn deployment_records(

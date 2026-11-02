@@ -223,3 +223,14 @@ H04: caught by 1 test(s) - a webhook's URL is not checked when it is registered
       tm18_only_an_admin_with_both_keys_registers_and_only_a_public_url
 H05: caught by 1 test(s) - a disabled webhook keeps getting events
       tm19_a_secret_is_shown_once_and_signs_what_the_relay_sends
+
+K01: caught by 1 test(s) - the chain check does not report a broken link
+      tm20_the_chain_check_finds_a_broken_link_and_reports_it
+K02: caught by 1 test(s) - a record leaves out its request id
+      a_record_carries_the_request_and_trace_ids
+K03: caught by 1 test(s) - a request's ids never reach its records
+      a_record_carries_the_request_and_trace_ids
+K04: caught by 1 test(s) - the chain check never runs
+      tm20_the_chain_check_finds_a_broken_link_and_reports_it
+K05: caught by 1 test(s) - an offline PDP answers past exp after tutelad stopped
+      tm13_an_offline_pdp_outlives_a_stopped_tutelad_process_until_exp
