@@ -42,18 +42,18 @@ tutela/
 ├── docs/                    the contract source of truth                                  now
 ├── crates/
 │   ├── tutela-contracts/    wire types: ids, claims, Decision, audit.v1, event envelope   now (wire types)
-│   │                        (protos tutela.authz.v1, tutela.admin.v1: B)
+│   │                        proto tutela.authz.v1: now (tutela.admin.v1: B)
 │   ├── tutela-pdp/          model compiler for tutela.resources.toml                      now (compiler)
 │   │                        embedded decision engine: check, batch, list_filter,          now (evaluator)
-│   │                        write_check
+│   │                        write_check, search
 │   ├── tutela-store/        Postgres schema and migrations: bindings, field rules, groups now
 │   ├── tutela-sdk/          token verifier, axum and tonic layers, decision cache, SQL   now
 │   ├── tutela-vault/        envelope encryption with a KMS trait                          now
 │   ├── tutela-safenet/      SSRF-safe outbound HTTP                                       now
 │   ├── tutela-cli/          the `tutela` CLI: init, check, codegen, migrate, apply,       now
 │   │                        approvals (apps, keys: B)
-│   └── tutelad/             the service: config, ports, health, metrics, logs, shutdown   now
-│                            (check API, admin API, Console: B)
+│   └── tutelad/             the service: config, ports, health, metrics, logs, shutdown,  now
+│                            the check API and the permission map (admin API, Console: B)
 ├── deploy/                  production settings for tutelad                               now
 ├── sdk/
 │   ├── react/               @f8fvwgzc/tutela-react                                        A

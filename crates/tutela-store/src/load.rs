@@ -1,6 +1,6 @@
 //! Reading a tenant: its revision, [`TenantData`] and scope paths.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::SystemTime;
 
 use tokio_postgres::Transaction;
@@ -92,6 +92,9 @@ impl ScopePaths for ScopePathSnapshot {
         if *tenant != self.tenant {
             return Some(Err(ScopePathError::NotFound));
         }
+        // A filter can name thousands of scopes, and this runs over every
+        // registered path.
+        let scopes: HashSet<&PathEntry> = scopes.iter().collect();
         Some(Ok(self
             .paths
             .iter()
