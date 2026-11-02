@@ -17,8 +17,8 @@
   "dependencies": {
     "@f8fvwgzc/tutela-js": "workspace:*",
     "@f8fvwgzc/tutela-react": "workspace:*",
-    "react": "19.1.10",
-    "react-dom": "19.1.10"
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
   },
   "devDependencies": {
     "@testing-library/dom": "10.4.2",
