@@ -323,9 +323,16 @@ pub async fn expire_assignments(
         .ok_or(StoreError::corrupt("tenant revision row"))?
         .try_get(0)
         .db()?;
+    let rev = to_rev(rev)?;
+    crate::events::insert(
+        tx,
+        &tenant.tid,
+        &crate::events::OutboxEvent::PermissionsChanged { rev },
+    )
+    .await?;
     Ok(Some(Expired {
         assignments: gone.iter().map(assignment_row).collect::<Result<_, _>>()?,
-        rev: to_rev(rev)?,
+        rev,
     }))
 }
 

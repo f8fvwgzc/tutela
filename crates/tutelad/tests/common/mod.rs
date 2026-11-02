@@ -768,3 +768,16 @@ pub async fn audited(
         .filter(|r| r["action"] == action)
         .collect()
 }
+
+// ---------- The outbox (ADR-0035) ----------
+
+/// Every event of `key` in the outbox, oldest first.
+pub async fn events_of(
+    owner: &mut Client,
+    key: &tutela_contracts::tenant::TenantKey,
+) -> Vec<tutela_store::StoredEvent> {
+    let tx = owner.transaction().await.unwrap();
+    let e = tutela_store::events_after(&tx, key, 0, 1000).await.unwrap();
+    tx.commit().await.unwrap();
+    e
+}

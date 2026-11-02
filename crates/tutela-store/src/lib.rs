@@ -34,6 +34,7 @@ mod approvers;
 pub mod audit;
 mod bindings;
 mod connect;
+pub mod events;
 mod isolation;
 mod load;
 mod manifest;
@@ -65,6 +66,10 @@ pub use bindings::{
     assignments_for, group_members, groups, groups_of, members_of, scopes_below, tenants,
 };
 pub use connect::{Transport, database_config};
+pub use events::{
+    Cursor, MAX_EVENT_PAGE, OutboxEvent, StoredEvent, emit, event_cursor, events_after, events_now,
+    prune_events,
+};
 pub use isolation::{check_isolation, grant_service};
 pub use load::{ScopePathSnapshot, TenantBundle, load, rev};
 pub use manifest::{Publish, StoredManifest, applied_manifest, digest, manifest, publish_manifest};
@@ -342,7 +347,8 @@ async fn begin_write(tx: &Transaction<'_>, tenant: &TenantKey) -> Result<u64, St
 }
 
 /// Ends a write: the whole tenant data must pass the evaluator's load
-/// checks.
+/// checks, and `tutela.permissions.changed.v1` with the new revision goes
+/// into the outbox in the same transaction (ADR-0035).
 async fn finish_write(
     tx: &Transaction<'_>,
     tenant: &TenantKey,
@@ -350,6 +356,12 @@ async fn finish_write(
 ) -> Result<u64, StoreError> {
     let data = load::tenant_data(tx, tenant).await?;
     check(tenant, rev, data)?;
+    events::insert(
+        tx,
+        &tenant.tid,
+        &events::OutboxEvent::PermissionsChanged { rev },
+    )
+    .await?;
     Ok(rev)
 }
 

@@ -884,3 +884,36 @@ async fn tm20_every_token_issued_and_refused_has_its_record() {
     assert!(common::audit_of(&mut w.d.owner, &w.b.key).await.is_empty());
     w.finish().await;
 }
+
+/// Just-in-time provisioning emits `tutela.user.created.v1` in the
+/// exchange's transaction: an exchange refused after the person was made
+/// rolls the person and the event back together (ADR-0035).
+#[tokio::test]
+async fn provisioning_emits_its_event_only_when_the_exchange_commits() {
+    let Some(mut w) = x().await else { return };
+    let before = common::events_of(&mut w.d.owner, &w.a.key).await.len();
+    // Step-up is checked after the person is made: an admin token without
+    // it is refused, and the person and its event roll back.
+    assert_eq!(
+        w.refused(&w.kc(KC, "kc-new-1"), "tutela-admin").await,
+        "invalid_grant"
+    );
+    assert_eq!(
+        common::events_of(&mut w.d.owner, &w.a.key).await.len(),
+        before
+    );
+    let t = w.token(&w.kc(KC, "kc-new-1"), AUD).await;
+    let after = common::events_of(&mut w.d.owner, &w.a.key).await;
+    assert_eq!(after.len(), before + 1);
+    let created = after.last().unwrap();
+    assert_eq!(created.event_type.to_string(), "tutela.user.created.v1");
+    assert_eq!(created.data["user"], principal(&t).to_string());
+    assert_eq!(created.subject.as_str(), principal(&t).to_string());
+    // A second exchange of the same person makes nobody new.
+    w.token(&w.kc(KC, "kc-new-1"), AUD).await;
+    assert_eq!(
+        common::events_of(&mut w.d.owner, &w.a.key).await.len(),
+        before + 1
+    );
+    w.finish().await;
+}

@@ -125,6 +125,16 @@ pub async fn provision_user(
         .db()?;
     let found = state(&r)?;
     let created = found.principal.to_string() == user;
+    if created {
+        crate::events::insert(
+            tx,
+            &tenant.tid,
+            &crate::events::OutboxEvent::UserCreated {
+                user: found.principal.clone(),
+            },
+        )
+        .await?;
+    }
     Ok((found, created))
 }
 
@@ -189,7 +199,23 @@ pub async fn revoke_sessions(
         .await
         .db()?;
     let epoch: i64 = r.try_get(0).db()?;
-    u64::try_from(epoch).map_err(|_| StoreError::corrupt("epoch"))
+    let epoch = u64::try_from(epoch).map_err(|_| StoreError::corrupt("epoch"))?;
+    // Only a person has sessions (CONTRACTS.md 8.3). An agent's raised
+    // epoch refuses its own tokens at the next exchange; to stop its
+    // delegated tokens at once, disable it.
+    if principal.kind() == PrincipalKind::User {
+        crate::events::insert(
+            tx,
+            &tenant.tid,
+            &crate::events::OutboxEvent::SessionRevoked {
+                principal: principal.clone(),
+                epoch,
+                sid: None,
+            },
+        )
+        .await?;
+    }
+    Ok(epoch)
 }
 
 /// Disables `principal`, or enables it again. Disabling raises the epoch
@@ -224,7 +250,29 @@ pub async fn set_disabled(
         .await
         .db()?;
     let epoch: i64 = r.try_get(0).db()?;
-    u64::try_from(epoch).map_err(|_| StoreError::corrupt("epoch"))
+    let epoch = u64::try_from(epoch).map_err(|_| StoreError::corrupt("epoch"))?;
+    let mut out = Vec::new();
+    if disabled {
+        out.push(crate::events::OutboxEvent::PrincipalDisabled {
+            principal: principal.clone(),
+            epoch,
+        });
+        if principal.kind() == PrincipalKind::User {
+            out.push(crate::events::OutboxEvent::UserDisabled {
+                user: principal.clone(),
+                epoch,
+            });
+        }
+    } else {
+        out.push(crate::events::OutboxEvent::PrincipalEnabled {
+            principal: principal.clone(),
+            epoch,
+        });
+    }
+    for e in &out {
+        crate::events::insert(tx, &tenant.tid, e).await?;
+    }
+    Ok(epoch)
 }
 
 /// Registers an agent of the tenant, with the workload it runs as when it

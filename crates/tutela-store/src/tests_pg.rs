@@ -2532,3 +2532,238 @@ async fn tm20_a_chain_is_its_tenants_alone() {
     drop(tx);
     db.finish().await;
 }
+
+// ---------------------------------------------------------------------------
+// The transactional outbox (ADR-0035, CONTRACTS.md 8.5).
+
+async fn events(c: &mut Client, t: &TenantKey) -> Vec<crate::StoredEvent> {
+    let tx = c.transaction().await.unwrap();
+    let e = crate::events_after(&tx, t, 0, 1000).await.unwrap();
+    tx.commit().await.unwrap();
+    e
+}
+
+async fn read_after(
+    c: &mut Client,
+    t: &TenantKey,
+    after: crate::Cursor,
+) -> Vec<crate::StoredEvent> {
+    let tx = c.transaction().await.unwrap();
+    let e = crate::events_after(&tx, t, after, 100).await.unwrap();
+    tx.commit().await.unwrap();
+    e
+}
+
+fn types(e: &[crate::StoredEvent]) -> Vec<String> {
+    e.iter().map(|e| e.event_type.to_string()).collect()
+}
+
+/// Every write emits its event in its own transaction: a data change
+/// `permissions.changed` with the new revision, a publish
+/// `model.published`, a revocation and a disabling theirs with the new
+/// epoch, provisioning `user.created`.
+#[tokio::test]
+async fn every_change_emits_its_event_in_its_transaction() {
+    let Some(mut db) = db().await else { return };
+    let (t, o) = tenant(&mut db.client).await;
+    let tx = db.client.transaction().await.unwrap();
+    let (_, rev) = crate::assign(
+        &tx,
+        &t,
+        &Subject::Principal(user(1)),
+        &role("reader"),
+        &org(&o),
+        None,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let kc: Issuer = "https://kc.example.test/realms/a".parse().unwrap();
+    let tx = db.client.transaction().await.unwrap();
+    let (p, made) = crate::provision_user(&tx, &t, &kc, "u1").await.unwrap();
+    assert!(made);
+    let e1 = crate::revoke_sessions(&tx, &t, &p.principal).await.unwrap();
+    let e2 = crate::set_disabled(&tx, &t, &p.principal, true)
+        .await
+        .unwrap();
+    let e3 = crate::set_disabled(&tx, &t, &p.principal, false)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let got = events(&mut db.client, &t).await;
+    assert_eq!(
+        types(&got),
+        [
+            // add_org in tenant()
+            "tutela.permissions.changed.v1",
+            "tutela.permissions.changed.v1",
+            "tutela.user.created.v1",
+            "tutela.session.revoked.v1",
+            "tutela.principal.disabled.v1",
+            "tutela.user.disabled.v1",
+            "tutela.principal.enabled.v1",
+        ]
+    );
+    assert_eq!(got[1].data["rev"], rev);
+    assert_eq!(got[1].subject.as_str(), t.tid.to_string());
+    assert_eq!(got[2].data["user"], p.principal.to_string());
+    assert_eq!(got[3].data["epoch"], e1);
+    assert!(got[3].data.get("sid").is_none());
+    assert_eq!(got[4].data["epoch"], e2);
+    assert_eq!(got[5].data["epoch"], e2);
+    assert_eq!(got[6].data["epoch"], e3);
+    assert_eq!(got[4].subject.as_str(), p.principal.to_string());
+    // The ids are stable: read again, the same events.
+    let again = events(&mut db.client, &t).await;
+    assert_eq!(
+        got.iter().map(|e| e.id).collect::<Vec<_>>(),
+        again.iter().map(|e| e.id).collect::<Vec<_>>()
+    );
+    // A CloudEvents envelope that checks, from its source.
+    let source =
+        tutela_contracts::events::EventSource::new("tutela.example.test", None, t.tid).unwrap();
+    let ce = serde_json::to_value(got[1].cloud(source)).unwrap();
+    assert_eq!(ce["type"], "tutela.permissions.changed.v1");
+    assert_eq!(ce["data"], serde_json::json!({ "rev": rev }));
+    assert_eq!(ce["id"], got[1].id.to_string());
+    db.finish().await;
+}
+
+/// A rolled-back change emits nothing; a refused one neither.
+#[tokio::test]
+async fn a_rolled_back_change_emits_nothing() {
+    let Some(mut db) = db().await else { return };
+    let (t, o) = tenant(&mut db.client).await;
+    let before = events(&mut db.client, &t).await.len();
+    let tx = db.client.transaction().await.unwrap();
+    crate::assign(
+        &tx,
+        &t,
+        &Subject::Principal(user(1)),
+        &role("reader"),
+        &org(&o),
+        None,
+    )
+    .await
+    .unwrap();
+    crate::emit(&tx, &t, crate::OutboxEvent::ModelPublished { rev: 99 })
+        .await
+        .unwrap();
+    tx.rollback().await.unwrap();
+    // A refused change rolls back with nothing: one scope placed under an
+    // org of another tenant is refused by the store.
+    let tx = db.client.transaction().await.unwrap();
+    let bad = crate::put_scope(
+        &tx,
+        &t,
+        &entry("department", "d"),
+        &[entry("org", "org_0193a1b2-c3d4-7f00-9a00-000000000099")],
+        false,
+    )
+    .await;
+    assert!(bad.is_err());
+    drop(tx);
+    assert_eq!(events(&mut db.client, &t).await.len(), before);
+    db.finish().await;
+}
+
+/// A reader never skips an event that commits late: a second writer waits
+/// for the first one's number, so numbers follow commit order, and a reader
+/// sees nothing of either until the first commits.
+#[tokio::test]
+async fn a_late_commit_is_never_skipped() {
+    let Some(mut db) = db().await else { return };
+    let (t, _) = tenant(&mut db.client).await;
+    let url = with(&base_url().unwrap(), &db.name, OWNER, OWNER_PASSWORD);
+    let mut slow = connect(&url).await;
+    let start = events(&mut db.client, &t).await.last().unwrap().seq;
+    // The slow one writes first and commits last.
+    let slow_tx = slow.transaction().await.unwrap();
+    crate::emit(&slow_tx, &t, crate::OutboxEvent::ModelPublished { rev: 1 })
+        .await
+        .unwrap();
+    let fast = {
+        let (url, t) = (url.clone(), t.clone());
+        tokio::spawn(async move {
+            let mut c = connect(&url).await;
+            let tx = c.transaction().await.unwrap();
+            crate::emit(&tx, &t, crate::OutboxEvent::ModelPublished { rev: 2 })
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!fast.is_finished(), "the second writer waits for the first");
+    assert!(read_after(&mut db.client, &t, start).await.is_empty());
+    slow_tx.commit().await.unwrap();
+    fast.await.unwrap();
+    let got = read_after(&mut db.client, &t, start).await;
+    let revs: Vec<_> = got.iter().map(|e| e.data["rev"].clone()).collect();
+    assert_eq!(revs, [serde_json::json!(1), serde_json::json!(2)]);
+    assert_eq!((got[0].seq, got[1].seq), (start + 1, start + 2));
+    // A cursor after both sees nothing more; `events_now` is there too.
+    assert!(read_after(&mut db.client, &t, got[1].seq).await.is_empty());
+    let tx = db.client.transaction().await.unwrap();
+    let now = crate::events_now(&tx, &t).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(now, got[1].seq);
+    // A rolled-back writer uses no number.
+    let tx = db.client.transaction().await.unwrap();
+    crate::emit(&tx, &t, crate::OutboxEvent::ModelPublished { rev: 3 })
+        .await
+        .unwrap();
+    tx.rollback().await.unwrap();
+    let tx = db.client.transaction().await.unwrap();
+    crate::emit(&tx, &t, crate::OutboxEvent::ModelPublished { rev: 4 })
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let last = read_after(&mut db.client, &t, now).await;
+    assert_eq!(last.len(), 1);
+    assert_eq!(
+        (last[0].seq, last[0].data["rev"].clone()),
+        (now + 1, serde_json::json!(4))
+    );
+    db.finish().await;
+}
+
+/// A tenant reads only its own events, and finds another tenant's id
+/// nowhere; an event of a user field that is not a user is refused.
+#[tokio::test]
+async fn events_are_the_tenants_alone() {
+    let Some(mut db) = db().await else { return };
+    let (a, _) = tenant(&mut db.client).await;
+    let (b, _) = tenant(&mut db.client).await;
+    let tx = db.client.transaction().await.unwrap();
+    let id = crate::emit(&tx, &a, crate::OutboxEvent::ModelPublished { rev: 7 })
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let tx = db.client.transaction().await.unwrap();
+    assert!(crate::event_cursor(&tx, &a, &id).await.unwrap().is_some());
+    tx.commit().await.unwrap();
+    let tx = db.client.transaction().await.unwrap();
+    assert!(crate::event_cursor(&tx, &b, &id).await.unwrap().is_none());
+    tx.commit().await.unwrap();
+    assert!(events(&mut db.client, &b).await.iter().all(|e| e.id != id));
+    let tx = db.client.transaction().await.unwrap();
+    let agent: Principal = "agent:agt_0193a1b2-c3d4-7b33-9c44-5d6e7f809102"
+        .parse()
+        .unwrap();
+    assert_eq!(
+        kind(crate::emit(&tx, &a, crate::OutboxEvent::UserCreated { user: agent }).await),
+        Some(StoreErrorKind::Invalid)
+    );
+    drop(tx);
+    // Pruning removes old events, of this tenant only.
+    let tx = db.client.transaction().await.unwrap();
+    let gone = crate::prune_events(&tx, &a, SystemTime::now() + Duration::from_secs(1))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert!(gone >= 2);
+    assert!(events(&mut db.client, &a).await.is_empty());
+    assert!(!events(&mut db.client, &b).await.is_empty());
+    db.finish().await;
+}

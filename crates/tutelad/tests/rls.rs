@@ -39,10 +39,11 @@ const MANIFEST: &str = "version = 1\n[app]\nname = \"rls_test\"\n";
 
 /// Every table with tenant data today. The test also reads the catalog, so a
 /// new tenant table that nobody seeds below fails here, on purpose.
-const TENANT_TABLES: [&str; 16] = [
+const TENANT_TABLES: [&str; 17] = [
     "audit_head",
     "audit_record",
     "boundary_rule",
+    "event",
     "exchanged_token",
     "field_rule",
     "group",

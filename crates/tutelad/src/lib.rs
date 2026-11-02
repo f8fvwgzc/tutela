@@ -16,6 +16,7 @@
 //! - [`expiry`]: the timer that removes expired assignments and bumps the
 //!   revision.
 //! - [`keys`]: the service's own issuer: its signing keys and its JWKS.
+//! - [`events`]: the CloudEvents envelope of the outbox's events.
 //! - [`exchange`]: token exchange (RFC 8693) at `POST /oauth2/token`.
 //! - [`revocation`]: raised epochs and disabled principals, per tenant.
 //! - [`audit`]: the records `tutelad` writes to the local audit log.
@@ -28,6 +29,7 @@ pub mod authz;
 pub mod cache;
 pub mod config;
 pub mod db;
+pub mod events;
 pub mod exchange;
 pub mod expiry;
 pub mod keys;

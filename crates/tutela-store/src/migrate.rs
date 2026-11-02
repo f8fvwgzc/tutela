@@ -47,6 +47,7 @@ const MIGRATIONS: &[(i32, &str, &str)] = &[
         "audit_log",
         include_str!("../migrations/0008_audit_log.sql"),
     ),
+    (9, "events", include_str!("../migrations/0009_events.sql")),
 ];
 
 /// One lock id for every migrator of this schema (`pg_advisory_xact_lock`).
