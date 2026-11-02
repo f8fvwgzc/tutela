@@ -367,11 +367,7 @@ impl TenantCache {
             Ok(c) => {
                 *gate = None;
                 self.metrics.count_revision_check(true);
-                let have = c.snapshot.rev;
-                match need {
-                    Some(need) if have < need => Err(Refused::Stale { have, need }),
-                    _ => Ok(self.fresh(c)),
-                }
+                self.checked(c, need, Instant::now())
             }
             Err(CheckError::Db(e)) if e.store_kind() == Some(StoreErrorKind::UnknownTenant) => {
                 Err(Refused::UnknownTenant(e))
@@ -386,6 +382,20 @@ impl TenantCache {
                 );
                 self.stale(&slot, need)
             }
+        }
+    }
+
+    /// The result of a good check. A load takes time, so its snapshot can
+    /// reach its expiry on the way here. It then answers nothing: the next
+    /// request loads again.
+    fn checked(&self, c: Current, need: Option<u64>, now: Instant) -> Result<View, Refused> {
+        if !c.snapshot.valid(now) {
+            return Err(Refused::Expired);
+        }
+        let have = c.snapshot.rev;
+        match need {
+            Some(need) if have < need => Err(Refused::Stale { have, need }),
+            _ => Ok(self.fresh(c)),
         }
     }
 
@@ -611,6 +621,42 @@ mod tests {
         assert!(at(30).for_class(ActionClass::Write).is_err());
         assert!(at(61).for_class(ActionClass::Read).is_err());
         assert!(at(0).for_class(ActionClass::Admin).is_ok());
+    }
+
+    /// A cache on a database that is never reached.
+    fn cache() -> TenantCache {
+        let db = Db::connect("host=127.0.0.1 port=1 user=nobody dbname=nothing", 1).unwrap();
+        TenantCache::new(db, Limits::default(), Arc::new(Metrics::new()))
+    }
+
+    fn current(valid_until: Option<Instant>) -> Current {
+        let snapshot = Arc::into_inner(view(Duration::ZERO, Limits::default()).snapshot).unwrap();
+        Current {
+            snapshot: Arc::new(Snapshot {
+                valid_until,
+                ..snapshot
+            }),
+            verified: Instant::now(),
+        }
+    }
+
+    #[test]
+    fn tm13_a_snapshot_that_reached_its_expiry_during_its_load_answers_nothing() {
+        let now = Instant::now();
+        let c = cache();
+        assert!(matches!(
+            c.checked(current(Some(now)), None, now),
+            Err(Refused::Expired)
+        ));
+        assert!(
+            c.checked(current(Some(now + Duration::from_secs(1))), None, now)
+                .is_ok()
+        );
+        assert!(c.checked(current(None), None, now).is_ok());
+        assert!(matches!(
+            c.checked(current(None), Some(2), now),
+            Err(Refused::Stale { have: 1, need: 2 })
+        ));
     }
 
     #[test]

@@ -657,6 +657,13 @@ async fn tm17_the_log_holds_no_token_subject_or_resource() {
     assert_eq!(replica.decision(&token, &bad).await, None);
     let log = replica.stop().await;
     assert!(log.contains("request served"), "{log}");
+    // The tenant may be there: an id, and it says whose request it was.
+    assert!(
+        log.lines()
+            .filter(|l| l.contains("request served"))
+            .all(|l| l.contains(&format!("\"tid\":\"{}\"", c.a.tid))),
+        "a request's log line must name its tenant:\n{log}"
+    );
     for secret in [token.as_str(), USER, common::STRANGER, "inv-1", "p-1"] {
         assert!(!log.contains(secret), "{secret} reached the log:\n{log}");
     }

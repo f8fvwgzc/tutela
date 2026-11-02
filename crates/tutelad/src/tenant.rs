@@ -25,10 +25,14 @@ use crate::api::{Problem, invalid_token};
 pub struct Tenant(TenantKey);
 
 impl Tenant {
-    /// The tenant of a verified identity.
+    /// The tenant of a verified identity. It also names the tenant in the
+    /// request's log span (ADR-0018 item 8), so every route does, over HTTP
+    /// and gRPC.
     #[must_use]
     pub fn of(identity: &Identity) -> Self {
-        Self(identity.tenant())
+        let tenant = Self(identity.tenant());
+        tracing::Span::current().record("tid", tracing::field::display(tenant.key().tid));
+        tenant
     }
 
     /// The tenant key.
@@ -44,12 +48,10 @@ impl<S: Send + Sync> FromRequestParts<S> for Tenant {
     type Rejection = Problem;
 
     async fn from_request_parts(parts: &mut Parts, _: &S) -> Result<Self, Problem> {
-        let tenant = parts
+        parts
             .extensions
             .get::<Identity>()
             .map(Self::of)
-            .ok_or_else(invalid_token)?;
-        tracing::Span::current().record("tid", tracing::field::display(tenant.key().tid));
-        Ok(tenant)
+            .ok_or_else(invalid_token)
     }
 }
