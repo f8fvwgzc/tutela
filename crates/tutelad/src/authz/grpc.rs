@@ -198,6 +198,26 @@ fn result(r: wire::EvaluationResult) -> pb::Evaluation {
     }
 }
 
+fn search(r: pb::SearchRequest) -> Result<wire::SearchBody, Status> {
+    Ok(wire::SearchBody {
+        subject: r.subject.map(subject).transpose()?,
+        action: r.action.map(|a| wire::Action { name: a.name }),
+        resource: r.resource.map(resource),
+        context: r.context.map(context),
+        page: r.page.map(|p| wire::Page {
+            token: (!p.token.is_empty()).then_some(p.token),
+            limit: Some(u64::from(p.limit)),
+        }),
+    })
+}
+
+fn page(p: wire::PageOut) -> pb::PageResponse {
+    pb::PageResponse {
+        next_token: p.next_token,
+        count: u32::try_from(p.count).unwrap_or(u32::MAX),
+    }
+}
+
 #[tonic::async_trait]
 impl Authz for AuthzService {
     async fn evaluate(
@@ -238,5 +258,49 @@ impl Authz for AuthzService {
             }
         };
         Ok(Response::new(pb::EvaluationsResponse { evaluations: out }))
+    }
+
+    async fn search_resource(
+        &self,
+        req: Request<pb::SearchRequest>,
+    ) -> Result<Response<pb::SearchResourceResponse>, Status> {
+        let id = identity(&req)?;
+        let out = super::search_resource(&self.state, &id, search(req.into_inner())?).await?;
+        let filter_json = serde_json::to_string(&out.context.tutela.filter)
+            .map_err(|_| Status::unavailable("unavailable: the filter cannot be written"))?;
+        Ok(Response::new(pb::SearchResourceResponse {
+            results: out
+                .results
+                .into_iter()
+                .map(|e| pb::PathEntry {
+                    r#type: e.kind,
+                    id: e.id,
+                })
+                .collect(),
+            page: Some(page(out.page)),
+            filter_json,
+            rev: out.context.tutela.rev,
+        }))
+    }
+
+    async fn search_subject(
+        &self,
+        req: Request<pb::SearchRequest>,
+    ) -> Result<Response<pb::SearchSubjectResponse>, Status> {
+        let id = identity(&req)?;
+        let out = super::search_subject(&self.state, &id, search(req.into_inner())?).await?;
+        Ok(Response::new(pb::SearchSubjectResponse {
+            results: out
+                .results
+                .into_iter()
+                .map(|s| pb::Subject {
+                    r#type: s.kind,
+                    id: s.id,
+                    act: None,
+                })
+                .collect(),
+            page: Some(page(out.page)),
+            rev: out.context.tutela.rev,
+        }))
     }
 }

@@ -140,7 +140,9 @@ The shared language. Every other package and every consumer uses these types.
 
 A small native Rust evaluator over the permission tables. No network calls.
 
-- API: `Pdp::check`, `Pdp::batch`, `Pdp::list_filter`, `Pdp::write_check`.
+- API: `Pdp::check`, `Pdp::batch`, `Pdp::list_filter`, `Pdp::write_check`,
+  and for the remote searches `Pdp::search_resources` and
+  `Pdp::search_subjects` (Phase B).
 - It also holds the model compiler (module `model`): it reads
   `tutela.resources.toml` ([MANIFEST.md](MANIFEST.md)), refuses anything the
   rules do not allow, and classifies a model change as narrowing, neutral or
@@ -250,9 +252,8 @@ tenant's revision against Postgres once a second while the tenant is in use.
 The rest of this list is planned.
 
 - **Check API** (AuthZEN 1.0 shape): `POST /access/v1/evaluation`,
-  `/access/v1/evaluations` (up to 200 items) and gRPC `tutela.authz.v1` are
-  built; `/access/v1/search/resource` and `/access/v1/search/subject` are
-  planned.
+  `/access/v1/evaluations` (up to 200 items), `/access/v1/search/resource`,
+  `/access/v1/search/subject`; gRPC `tutela.authz.v1`. Built.
 - **UI permission map**: `POST /v1/authz/permissions` (ETag / 304).
 - **Admin API** `tutela.admin.v1`: tenants, orgs, members, groups, roles,
   bindings, resource types, apps, keys, agent principals.

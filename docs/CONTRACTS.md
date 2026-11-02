@@ -40,7 +40,7 @@ Only the left column exists in `tutela-contracts` after the first commit. Everyt
 | 4 | Tokens | Claim structs for access tokens and delegated tokens, and their claim checks (no size, header, signature or `epoch` check) | Full verification in `tutela-sdk` (A); token exchange in `tutelad` (B); own OIDC provider (C, optional) |
 | 5 | API keys | Parse, format check, display prefix | Hashing, storage, verification, rotation (A, B) |
 | 6 | Decision | The Decision object: effect, level, field mask, rule ids, reason, rev, obligations | `Pdp::check`, `Pdp::batch`, `Pdp::list_filter`, `Pdp::write_check` (A; built in `tutela-pdp`, [ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)) |
-| 7 | Remote check API | — | Built in `tutelad`: evaluation and gRPC (B). Search and permission map planned (B). |
+| 7 | Remote check API | — | Built in `tutelad`: evaluation, search and gRPC (B). Permission map planned (B). |
 | 8 | Events | CloudEvents envelope, event type grammar and names | Outbox, webhooks, SSE (B) |
 | 9 | audit.v1 | The audit.v1 record | Producer signatures, sequence numbers, local hash chain, forwarding to attache's evidence ledger (B) |
 | 10 | Versioning | The rules apply from the first commit | Deprecation headers on live endpoints (B) |
@@ -678,6 +678,15 @@ impl Pdp {
 
     /// Per-field verdicts for a write (6.7).
     pub fn write_check(&self, req: &WriteCheckRequest) -> Result<WriteDecision, PdpError>;
+
+    /// One page of the known resources a principal may act on, with the
+    /// filter for the rest (7.4). Phase B.
+    pub fn search_resources<P: ScopePaths + ?Sized>(&self, req: &ListFilterRequest, paths: &P,
+        after: Option<&PathEntry>, limit: usize) -> Result<ResourcePage, PdpError>;
+
+    /// One page of the principals `check` allows on a resource (7.4). Phase B.
+    pub fn search_subjects(&self, req: &SubjectSearchRequest, after: Option<&Principal>,
+        limit: usize) -> Result<SubjectPage, PdpError>;
 }
 
 pub struct CheckRequest {
@@ -887,7 +896,7 @@ pub enum PdpError {
 ```
 
 - An error is **never** an allow. The caller fails closed.
-- In the remote API, `StaleBundle`, `ExpiredBundle`, `NoBundle` and `UnsupportedBundle` become HTTP 503. The others become 400. The mapping of `ScopePath` and `FilterTooLarge` comes with the search endpoints (Phase B).
+- In the remote API, `StaleBundle`, `ExpiredBundle`, `NoBundle`, `UnsupportedBundle` and `ScopePath` become HTTP 503. The others become 400, and `FilterTooLarge` is 400 `filter_too_large`: the request is well formed, but this principal's filter is above a limit, and a retry does not help.
 - `ExpiredBundle` and `UnsupportedBundle` need signed bundles (Phase B); the Phase A evaluator never returns them.
 - A field the model does not know is not an error: it is masked, as if secret.
 
@@ -897,7 +906,7 @@ pub enum PdpError {
 
 ## 7. Remote check API
 
-**Status: Phase B.** Built: 7.1, 7.2, 7.3, the same calls in 7.6, and 7.7 and 7.8. Planned: 7.4 and 7.5. `tutelad` serves it. The shapes follow the OpenID AuthZEN Authorization API 1.0, checked against the published text. Where AuthZEN leaves room (`properties`, `context`), Tutela fixes the fields below. The design is in [ADR-0021](DECISIONS.md#adr-0021-the-check-api-one-code-path-a-snapshot-per-tenant-and-a-revision-lease).
+**Status: Phase B.** Built: 7.1 to 7.4, the same calls in 7.6, and 7.7 and 7.8. Planned: 7.5. `tutelad` serves it. The shapes follow the OpenID AuthZEN Authorization API 1.0, checked against the published text. Where AuthZEN leaves room (`properties`, `context`), Tutela fixes the fields below. The design is in [ADR-0021](DECISIONS.md#adr-0021-the-check-api-one-code-path-a-snapshot-per-tenant-and-a-revision-lease).
 
 ### 7.1 Common rules
 
@@ -916,7 +925,7 @@ pub enum PdpError {
 |---|---|
 | 200 | A decision (allow **or** deny). |
 | 304 | Permission map not changed (7.5). |
-| 400 | Invalid request (`invalid_request`), too many items (`too_many_items`), unknown type or action (`unknown_key`). |
+| 400 | Invalid request (`invalid_request`), too many items (`too_many_items`), unknown type or action (`unknown_key`), a bad page token (`invalid_page`), a list filter above a limit (`filter_too_large`). |
 | 401 | Bad or missing token (`invalid_token`). |
 | 403 | The caller may not ask this question (`forbidden`), or a tenant that is not in the directory (`unknown_tenant`). |
 | 429 | Rate limited. (Not built: Phase D.) |
@@ -1025,7 +1034,11 @@ Many evaluations in one call. **At most 200 items**; more gives 400 (`urn:tutela
 
 **`POST /access/v1/search/resource`**: "which resources of this type may this subject act on?"
 
-Tutela never stores a product's records. So this endpoint can name only resources Tutela knows: scopes with assignments, and single resources with direct assignments. For full row lists the product uses the filter in `context.tutela.filter` (the 6.6 shape) inside its own SQL.
+Tutela never stores a product's records. So this endpoint can name only resources Tutela knows: the scopes registered with `tutela_store::put_scope`, of the asked type. A resource with an assignment on itself is always registered. For full row lists the product uses the filter in `context.tutela.filter` (the 6.6 shape) inside its own SQL.
+
+A resource is named only when it passes **whatever its field values are**. Tutela does not hold field values, so when the answer depends on a condition over a field, the resource is not named, and the filter covers it. Every named resource is one `check` allows; when the filter reads no field, the two agree exactly. A property test on random worlds proves both ([ADR-0022](DECISIONS.md#adr-0022-the-searches-live-next-to-the-evaluator)).
+
+`action` must be of `resource.type`; otherwise 400.
 
 ```json
 {
@@ -1038,9 +1051,10 @@ Tutela never stores a product's records. So this endpoint can name only resource
 ```json
 {
   "results": [ { "type": "invoice", "id": "inv-881" } ],
-  "page": { "next_token": "" },
+  "page": { "next_token": "", "count": 1 },
   "context": {
     "tutela": {
+      "rev": 42,
       "filter": {
         "type": "invoice",
         "rev": 42,
@@ -1052,9 +1066,15 @@ Tutela never stores a product's records. So this endpoint can name only resource
 }
 ```
 
-**`POST /access/v1/search/subject`**: "who may do this action on this resource?" The request names the `resource` (with its `path`), the `action`, and `subject.type`. The result lists principals, with groups expanded.
+**`POST /access/v1/search/subject`**: "who may do this action on this resource?" The request names the `resource` (with its `path` and `attrs`, as in 7.2), the `action`, and `subject.type`; `subject.id` is ignored. The result lists principals of that kind, with groups expanded, each one as `{"type": "user", "id": "user:usr_…"}`. Every principal is decided by `check`, so a principal is listed exactly when `check` allows it. `context.tutela` holds `rev`. Only a service (`sa`, `key`) may ask: a person's token gets 403, because this is a question about other principals.
 
-Paging uses the AuthZEN 1.0 `page` object. The exact page field names are checked against the final AuthZEN 1.0 text in Phase B.
+Both searches:
+- Paging uses the AuthZEN 1.0 `page` object. Request: `page.token` (the `next_token` of the page before) and `page.limit`. Response: `page.next_token` and `page.count`. An empty `next_token` means there is nothing more. `total` is not sent: counting needs the whole list.
+- `page.limit` is at most 1,000; a bigger one is lowered. Missing or `0` means 100.
+- One page looks at no more than 10,000 candidates. A page cut by this can be short, or empty, and still have a `next_token`. So follow `next_token`, not the size of a page.
+- The token is opaque. It says only where a sorted list goes on. A bad token is 400 `invalid_page`. Each page is decided again at the current revision, so a list that spans a change can differ between pages. Each page's `rev` says which one it used.
+- `context.at_least_revision`, the age limits and the token's `rev` work as in 7.1. There is no partial list: a failure anywhere is an error.
+- `search/action` of AuthZEN is not built, and the metadata does not name it.
 
 ### 7.5 `POST /v1/authz/permissions` (UI permission map)
 
@@ -1111,7 +1131,7 @@ The map is a **UI hint only**. Every server route checks again.
 
 ### 7.6 gRPC `tutela.authz.v1`
 
-The same operations over gRPC: `Evaluate` and `Evaluations` are built; `SearchResource`, `SearchSubject` and `Permissions` are planned (Phase B). Service `tutela.authz.v1.Authz`, on the API port, behind the same token check. The handlers call the same code as HTTP. Messages carry the same fields with the same names and meanings as the JSON above, with these differences: `properties` is flat (`subject.act`, `resource.path`, `resource.attrs`), and with no items `Evaluations` answers with one item. The errors of 7.1 become gRPC codes: 400 `INVALID_ARGUMENT`, 401 `UNAUTHENTICATED`, 403 `PERMISSION_DENIED`, 503 `UNAVAILABLE`. The message starts with the problem code. The `.proto` file is `crates/tutela-contracts/proto/tutela/authz/v1/authz.proto`, and it is published with each release (section 10).
+The same operations over gRPC: `Evaluate`, `Evaluations`, `SearchResource` and `SearchSubject` are built; `Permissions` is planned (Phase B). Service `tutela.authz.v1.Authz`, on the API port, behind the same token check. The handlers call the same code as HTTP. Messages carry the same fields with the same names and meanings as the JSON above, with these differences: `properties` is flat (`subject.act`, `resource.path`, `resource.attrs`), with no items `Evaluations` answers with one item, and `SearchResource` carries the filter as JSON text in `filter_json`, because a condition is a tree of open shape. The errors of 7.1 become gRPC codes: 400 `INVALID_ARGUMENT`, 401 `UNAUTHENTICATED`, 403 `PERMISSION_DENIED`, 503 `UNAVAILABLE`. The message starts with the problem code. The `.proto` file is `crates/tutela-contracts/proto/tutela/authz/v1/authz.proto`, and it is published with each release (section 10).
 
 ---
 

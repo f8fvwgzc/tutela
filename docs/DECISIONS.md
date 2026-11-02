@@ -38,6 +38,7 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0019](#adr-0019-tenants-in-tutelad-the-tenant-comes-from-the-token-and-rls-is-checked) | Tenants in `tutelad`: the tenant comes from the token, and RLS is checked | Accepted |
 | [0020](#adr-0020-the-bindings-store-closures-at-read-time-and-assignment-expiry) | The bindings store: closures at read time, and assignment expiry | Accepted |
 | [0021](#adr-0021-the-check-api-one-code-path-a-snapshot-per-tenant-and-a-revision-lease) | The check API: one code path, a snapshot per tenant, and a revision lease | Accepted |
+| [0022](#adr-0022-the-searches-live-next-to-the-evaluator) | The searches live next to the evaluator | Accepted |
 
 ---
 
@@ -507,7 +508,7 @@ Benchmark (`cargo bench -p tutela-pdp`): the tenant has the sizes of the week-1 
   - `tm08_a_change_the_diff_calls_safe_never_widens`, which ties the diff of ADR-0012 to the evaluator: a change the diff does not call widening never widens a decision. Its changes include levels, field and feature levels, grants, conditions, org-root rules, `needs`, the `grant` flag, `assignable_to`, sensitivity, and fields, features, actions and roles added or removed;
   - `check_matches_the_reference_evaluator`: an oracle written from PERMISSION-MODEL.md §7.1 and this ADR, sharing no code with the evaluator, so a bug in shared code cannot hide behind list ≡ check;
   - `write_check_agrees_with_the_field_mask`: a data field is in `field_mask.write` exactly when `write_check` allows it, a write of all fields gives the verdicts of the writes one by one, and a delegated write needs the person and every actor.
-- `crates/tutela-pdp/mutants/mutants.py` plants 26 bugs (in the walk, conditions, field rules, delegation, tenant checks, request checks, loading, the group closure, the write mask, the placer and the filter) and runs the tests against each; `results.txt` next to it is the committed output. Every one is caught. One guard cannot be a mutant: "admin keys and owner-only actions never pass through delegation" is also kept by the compiler (a role that holds them is never given to an agent, and every actor is an agent), so removing the evaluator's guard alone changes no answer. It stays as defense in depth.
+- `crates/tutela-pdp/mutants/mutants.py` plants 26 bugs (35 since [ADR-0022](#adr-0022-the-searches-live-next-to-the-evaluator)) (in the walk, conditions, field rules, delegation, tenant checks, request checks, loading, the group closure, the write mask, the placer and the filter) and runs the tests against each; `results.txt` next to it is the committed output. Every one is caught. One guard cannot be a mutant: "admin keys and owner-only actions never pass through delegation" is also kept by the compiler (a role that holds them is never given to an agent, and every actor is an agent), so removing the evaluator's guard alone changes no answer. It stays as defense in depth.
 - `tutela-store` (item 5) must record private scopes, keep group keys unique in the tenant (or change this ADR), and provide scope paths by (tenant, type, id). `list_filter` asks for every private scope of the tenant on each call, so its cost grows with the number of private scopes; the store should index private scopes by org or by ancestor before large tenants.
 - Moves stay refused until boundary rules exist. Break-glass for the org Owner, disabled principals (token step 1, `tutela-sdk`), clearance for labelled output, and signed bundles with expiry (Phase B) are not in this evaluator.
 - The week-1 spike code (`spike/week1/`) may be deleted once this lands, as ADR-0011 planned.
@@ -882,3 +883,31 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 - **Serve the stale snapshot while a background read runs.** A tenant with little traffic would then get its first answer from data up to the max age old, in normal running. A request waits for the read instead, and uses stale data only when the read fails.
 - **One shared `Pdp`.** It has org claims across tenants and one lock for all of them.
 - **`protoc` at build time.** One more tool on every machine, in CI and in the image build.
+
+---
+
+## ADR-0022: The searches live next to the evaluator
+
+**Status:** Accepted, 2026-11-02. Built in Phase B, part 2a.
+
+**Context.** CONTRACTS.md 7.4 asks for `search/resource` and `search/subject`, bounded and paged. TM-10 requires that they use the same evaluator as `check`, and the property tests of that rule are in `tutela-pdp`, with a random world generator that nothing outside the crate can use. Two facts make the question harder than a loop over `check`. Tutela holds no field values, so `check` cannot be asked about a resource whose type has `grants_access` fields. And a scan over every member of a tenant's groups could cost a third of a second per call.
+
+**Decision.**
+
+1. **`Pdp::search_resources` and `Pdp::search_subjects` are in `tutela-pdp`.** `tutelad` only checks who asks, finds a view and runs them on a blocking thread. So they can use the private index, and the property test in `tests_props` can reach them. That test extends the `list_filter` ≡ `check` differential: `tm10_search_agrees_with_check` runs on random worlds, and 9 new planted bugs (M27 to M35 in `mutants.py`) are all caught.
+2. **A resource search reads the filter with three values.** `list_filter` is proved equal to `check`, so it is read here for one known scope. A node that needs a field value answers "unknown". `and`, `or` and `not` follow three-valued logic, and only a certain true is listed. Treating unknown as false is not enough: under a `not` it would turn into true. So a named resource passes for every field value, and the test re-checks each one with other rows' values.
+3. **A subject search asks `check` itself**, on the resource the caller sent. There `check` has what it needs. Candidates are the principals of assignments on the resource and on its path, and the members of those groups, because with no assignment on the path the answer is a default deny. The test compares the result with `check` for every principal of the world in both directions.
+4. **A page has two bounds**: the limit (default 100, at most 1,000) and 10,000 candidates looked at. A page cut by the second keeps a cursor at the last candidate looked at, not the last result, so the list is never ended early. This is why a short page does not mean the end.
+5. **The cursor is keyset, and the token is not signed.** A list is decided again on every page, so a forged token can only skip ahead through what the caller may see anyway. Binding the token to a revision would break every paging client on each revision.
+6. **Only a service may list subjects.** It is a question about other principals.
+7. **The errors.** A scope that cannot be placed is 503: the tenant's data is at fault, and a list must not come back partial. A filter over a limit is 400 `filter_too_large`.
+
+**Consequences.**
+- A product with conditions over fields gets fewer names from `search/resource`, and the same complete answer from the filter. This matches CONTRACTS.md 7.4: names are a convenience, and the filter is the list.
+- `ScopePaths` providers must answer `below` to serve a search. `ScopePathSnapshot` does.
+- The cost of a call is bounded, not small: up to 10,000 candidates. Rate limits for search are open (TM-23, Phase D).
+
+**Alternatives considered.**
+- **Call `check` for each known resource with null fields.** Under `not`, a null makes a comparison true, so it would name a resource that its real values deny.
+- **Put search in `tutelad`.** It would need the private index, and the property test could not see it.
+- **A `total` in the page.** It needs the whole list on every page, which is the cost the scan bound exists to avoid.

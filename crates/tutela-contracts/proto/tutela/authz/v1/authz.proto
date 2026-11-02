@@ -10,6 +10,10 @@ service Authz {
   rpc Evaluate(EvaluationRequest) returns (Evaluation);
   // POST /access/v1/evaluations.
   rpc Evaluations(EvaluationsRequest) returns (EvaluationsResponse);
+  // POST /access/v1/search/resource.
+  rpc SearchResource(SearchRequest) returns (SearchResourceResponse);
+  // POST /access/v1/search/subject.
+  rpc SearchSubject(SearchRequest) returns (SearchSubjectResponse);
 }
 
 // One link of the `act` chain: subject.properties.act in JSON.
@@ -127,4 +131,41 @@ message EvaluationsRequest {
 
 message EvaluationsResponse {
   repeated Evaluation evaluations = 1;
+}
+
+message PageRequest {
+  string token = 1;
+  // 0 means the default page size.
+  uint32 limit = 2;
+}
+
+message PageResponse {
+  // Empty on the last page.
+  string next_token = 1;
+  uint32 count = 2;
+}
+
+// A resource search names `subject.id` and leaves `resource.id` empty.
+// A subject search does the opposite.
+message SearchRequest {
+  Subject subject = 1;
+  Action action = 2;
+  Resource resource = 3;
+  Context context = 4;
+  PageRequest page = 5;
+}
+
+message SearchResourceResponse {
+  repeated PathEntry results = 1;
+  PageResponse page = 2;
+  // context.tutela.filter in JSON: the CONTRACTS.md 6.6 filter, as JSON text,
+  // because its condition is a tree of open shape.
+  string filter_json = 3;
+  uint64 rev = 4;
+}
+
+message SearchSubjectResponse {
+  repeated Subject results = 1;
+  PageResponse page = 2;
+  uint64 rev = 3;
 }

@@ -27,10 +27,10 @@ use crate::filter::{ListFilter, Listing};
 use crate::model::{FieldType, Model};
 
 /// One tenant's model and data at one revision.
-struct Bundle {
-    rev: u64,
-    model: Arc<Model>,
-    index: Index,
+pub(crate) struct Bundle {
+    pub(crate) rev: u64,
+    pub(crate) model: Arc<Model>,
+    pub(crate) index: Index,
 }
 
 impl Bundle {
@@ -150,7 +150,11 @@ impl Pdp {
         self.tenants.get(tenant).map(|b| b.rev)
     }
 
-    fn bundle(&self, tenant: &TenantKey, at_least: Option<u64>) -> Result<&Bundle, PdpError> {
+    pub(crate) fn bundle(
+        &self,
+        tenant: &TenantKey,
+        at_least: Option<u64>,
+    ) -> Result<&Bundle, PdpError> {
         let b = self.tenants.get(tenant).ok_or(PdpError::NoBundle)?;
         if let Some(need) = at_least
             && b.rev < need
@@ -490,7 +494,7 @@ impl Pdp {
 /// at most [`MAX_PATH`] ancestors, the last one an org, no other org, and no
 /// entry twice (the resource itself included). An org itself has no
 /// ancestors.
-fn this_entry(res: &ResourceRef) -> Result<PathEntry, PdpError> {
+pub(crate) fn this_entry(res: &ResourceRef) -> Result<PathEntry, PdpError> {
     if res.path.len() > MAX_PATH {
         return Err(PdpError::PathTooLong);
     }
@@ -594,7 +598,7 @@ fn mask(
 /// With `complete` (the resource's current values), every `grants_access`
 /// field of the type must be there, `null` included: conditions read only
 /// those fields, and a field left out would be read as null.
-fn check_attrs(
+pub(crate) fn check_attrs(
     model: &Model,
     ty: &ResourceType,
     attrs: &Attrs,

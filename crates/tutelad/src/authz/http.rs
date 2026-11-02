@@ -8,7 +8,10 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tutela_sdk::Identity;
 
-use super::wire::{EvaluationBody, EvaluationResult, EvaluationsBody, EvaluationsResult};
+use super::wire::{
+    EvaluationBody, EvaluationResult, EvaluationsBody, EvaluationsResult, ResourceResults,
+    SearchBody, SubjectResults,
+};
 use crate::api::{AppState, Problem};
 
 /// A JSON body. A bad one is a problem document that says nothing about the
@@ -57,12 +60,32 @@ pub async fn evaluations(
     super::evaluations(&state, &id, body).await.map(Json)
 }
 
+/// `POST /access/v1/search/resource`.
+pub async fn search_resource(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Body(body): Body<SearchBody>,
+) -> Result<Json<ResourceResults>, Problem> {
+    super::search_resource(&state, &id, body).await.map(Json)
+}
+
+/// `POST /access/v1/search/subject`.
+pub async fn search_subject(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Body(body): Body<SearchBody>,
+) -> Result<Json<SubjectResults>, Problem> {
+    super::search_subject(&state, &id, body).await.map(Json)
+}
+
 /// The AuthZEN metadata (section 9).
 #[derive(Debug, Serialize)]
 pub struct Metadata {
     policy_decision_point: String,
     access_evaluation_endpoint: String,
     access_evaluations_endpoint: String,
+    search_subject_endpoint: String,
+    search_resource_endpoint: String,
 }
 
 /// `GET /.well-known/authzen-configuration`. Behind the token check, like
@@ -81,6 +104,8 @@ pub async fn metadata(
     Ok(Json(Metadata {
         access_evaluation_endpoint: format!("{base}/access/v1/evaluation"),
         access_evaluations_endpoint: format!("{base}/access/v1/evaluations"),
+        search_subject_endpoint: format!("{base}/access/v1/search/subject"),
+        search_resource_endpoint: format!("{base}/access/v1/search/resource"),
         policy_decision_point: base,
     }))
 }

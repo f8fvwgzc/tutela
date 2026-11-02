@@ -259,6 +259,16 @@ impl View {
         Ok(&self.snapshot)
     }
 
+    /// As [`View::for_class`], for work on another thread.
+    ///
+    /// # Errors
+    ///
+    /// [`Refused::Expired`] when the snapshot is too old for this class.
+    pub fn shared_for_class(&self, class: ActionClass) -> Result<Arc<Snapshot>, Refused> {
+        self.for_class(class)?;
+        Ok(Arc::clone(&self.snapshot))
+    }
+
     /// The model, to work out a request's class.
     #[must_use]
     pub fn model(&self) -> &Model {
