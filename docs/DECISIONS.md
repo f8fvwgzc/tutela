@@ -51,6 +51,7 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0032](#adr-0032-admin-tokens-a-person-steps-up-a-pipeline-keeps-its-service-token) | Admin tokens: a person steps up, a pipeline keeps its service token | Accepted |
 | [0033](#adr-0033-delegated-agent-tokens-from-token-exchange) | Delegated agent tokens from token exchange | Accepted |
 | [0034](#adr-0034-the-local-audit-log-one-chain-per-tenant-written-with-the-change) | The local audit log: one chain per tenant, written with the change | Accepted |
+| [0035](#adr-0035-the-outbox-events-numbered-per-tenant-in-commit-order) | The outbox: events numbered per tenant, in commit order | Accepted |
 
 ---
 
@@ -1331,4 +1332,33 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 - **Postgres advisory locks instead of a head row.** One lock space for the whole server, and nothing to read back for the verifier's head check.
 - **Sign every record at write time.** Every replica would need the producer key on the write path, and the store could not record a call by itself.
 - **Fold the extra values into `reason`.** `reason` is short text for people; ids and numbers belong in a field a ledger can read.
+
+---
+
+## ADR-0035: The outbox: events numbered per tenant, in commit order
+
+**Status:** Accepted, 2026-11-02. Built in Phase B, part 3b. It builds the transactional outbox of CONTRACTS.md 8.5, and adds one event type.
+
+**Context.** CONTRACTS.md 8.5 wants each event row in the transaction of its change, at least once with a stable id, and order per subject. Webhooks and SSE read the same rows. A reader that keeps "the last event I saw" must never skip an event whose transaction commits after a later one, and a resumed SSE stream (`Last-Event-ID`) must find its place. Parts 3a and 2b left the list of what to emit: a publish, a data change, a session revocation and a disabling with the new epoch.
+
+**Decision.**
+
+1. **`tutela.event`** (migration 9) holds a tenant's events under its row-level security: the id (a UUIDv7, the idempotency key), the type, the subject, the org, the `data` object as text and the time. The CloudEvents envelope is made when the event is sent, with `source = tutela://<host of TUTELA_ISSUER>/<tid>`, so the store needs no host.
+2. **Each event gets the tenant's next number, `seq`**, from a counter on the tenant's revision row (`tenant_rev.event_seq`), which the writer keeps locked until it commits. Numbers are then given in commit order with no gap, a rolled-back change uses none, and a reader that walks `seq` never skips an event that commits late: the next number does not exist until it does. A write that bumps the revision holds that lock already; a provisioning, which bumps nothing, now waits for a write in progress in its tenant.
+3. **What is emitted, by whom.** In the store, in the caller's transaction: `tutela.permissions.changed.v1 {rev}` by every data write (assignments, groups, field rules, scopes, boundary rules, moves, deletes) and by the expiry sweep; `tutela.model.published.v1 {rev}` by `publish_tenant_model`, `publish_proposal`, and `publish_manifest` for each tenant that follows the app (a tenant with its own model gets `permissions.changed` for its new revision); `tutela.user.created.v1` when `provision_user` makes a person; `tutela.session.revoked.v1 {principal, epoch}` by `revoke_sessions` of a user; `tutela.principal.disabled.v1 {principal, epoch}` and, for a user, `tutela.user.disabled.v1` by `set_disabled(true)`; and **`tutela.principal.enabled.v1 {principal, epoch}`** by `set_disabled(false)`.
+4. **`tutela.principal.enabled.v1` is new** (CONTRACTS.md 10.2 allows a new type). Without it an SDK that marked a principal disabled from an event could never learn it was enabled again, and would refuse its new tokens until it restarted.
+5. **Not emitted.** `revoke_sessions` of an agent: only users have sessions; to stop an agent's delegated tokens at once, disable it (ADR-0033 item 6). `register_agent` and `tutela.membership.changed.v1`: there is no event type for the first, and org membership is not modeled yet. `tutela.key.*`: API keys come with part 4. The org lifecycle events and `tutela.user.deleted.v1` are variants of `tutela_store::OutboxEvent` already; part 3c emits each with one line, `tutela_store::emit(tx, tenant, OutboxEvent::OrgCreated { org })`.
+6. **This departs from a ROADMAP note** for part 3b, "Provisioning bumps no revision and needs no event": CONTRACTS.md 8.3 lists `tutela.user.created.v1` "also by just-in-time provisioning", and the contract is the source of truth. It still bumps no revision.
+7. **Events never change** (a trigger), and old ones are pruned (`tutela_store::prune_events`); the service role gets `SELECT, INSERT, DELETE` on them.
+8. **Library mode** writes the same events, because the store writes them. Nothing delivers them there; a product that does not read them prunes them.
+
+**Consequences.**
+- A tenant's events are totally ordered, which is stronger than "order per subject": a receiver that processes them in `seq` order keeps per-subject order for free.
+- Writers of one tenant were already serialized by the revision row; provisioning joins them. Two people of one tenant signing in at once for the first time wait for each other, for one short transaction.
+- A gap in `seq` is impossible by construction, so a reader that sees one has lost rows to pruning.
+
+**Alternatives considered.**
+- **Order by transaction id (`pg_current_xact_id()`) and read only below the snapshot's `xmin`.** No new lock, but `xmin` is the whole server's: any long transaction in any database of the server, the operator's own included, holds back every tenant's events. Tried and dropped: on a shared test server events were hidden for seconds.
+- **A table of its own for the counter.** A second lock to order against the revision row, and a deadlock to avoid by convention.
+- **Order by the event's UUIDv7.** Time of writing is not time of commit; a reader would skip an event of a transaction that commits late.
 

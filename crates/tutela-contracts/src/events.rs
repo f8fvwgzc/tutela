@@ -90,6 +90,9 @@ impl EventType {
     pub const SESSION_REVOKED: Self = Self(Cow::Borrowed("tutela.session.revoked.v1"));
     /// `tutela.principal.disabled.v1`: a principal of any kind was disabled.
     pub const PRINCIPAL_DISABLED: Self = Self(Cow::Borrowed("tutela.principal.disabled.v1"));
+    /// `tutela.principal.enabled.v1` (Phase B, additive): a disabled principal
+    /// may act again, with tokens of the new `epoch`.
+    pub const PRINCIPAL_ENABLED: Self = Self(Cow::Borrowed("tutela.principal.enabled.v1"));
     /// `tutela.model.published.v1`: a new model version was published.
     pub const MODEL_PUBLISHED: Self = Self(Cow::Borrowed("tutela.model.published.v1"));
     /// `tutela.permissions.changed.v1`: assignments, groups or rules changed.
@@ -111,6 +114,7 @@ impl EventType {
         Self::MEMBERSHIP_CHANGED,
         Self::SESSION_REVOKED,
         Self::PRINCIPAL_DISABLED,
+        Self::PRINCIPAL_ENABLED,
         Self::MODEL_PUBLISHED,
         Self::PERMISSIONS_CHANGED,
         Self::KEY_CREATED,
@@ -770,6 +774,16 @@ pub struct PrincipalDisabledData {
     pub epoch: u64,
 }
 
+/// `data` of `tutela.principal.enabled.v1` (Phase B, additive).
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct PrincipalEnabledData {
+    /// The principal enabled again (any kind).
+    pub principal: Principal,
+    /// Its epoch: tokens of an older epoch stay refused.
+    #[serde(with = "json_int")]
+    pub epoch: u64,
+}
+
 /// `data` of `tutela.model.published.v1` and `tutela.permissions.changed.v1`.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct RevData {
@@ -1062,6 +1076,7 @@ mod tests {
             "tutela.membership.changed.v1",
             "tutela.session.revoked.v1",
             "tutela.principal.disabled.v1",
+            "tutela.principal.enabled.v1",
             "tutela.model.published.v1",
             "tutela.permissions.changed.v1",
             "tutela.key.created.v1",

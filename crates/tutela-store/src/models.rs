@@ -240,6 +240,12 @@ pub async fn publish_tenant_model(
     let tid = tenant.tid.to_string();
     require_one_person(tx, &tid).await?;
     let version = insert_version(tx, &tid, rev, p).await?;
+    crate::events::insert(
+        tx,
+        &tenant.tid,
+        &crate::events::OutboxEvent::ModelPublished { rev },
+    )
+    .await?;
     Ok((version, rev))
 }
 

@@ -204,7 +204,8 @@ pub async fn publish_manifest(
             .ok_or(StoreError::corrupt("tenant revision row"))?
             .try_get(0)
             .db()?;
-        if head.as_ref().is_none_or(|(_, origin)| origin != "tenant") {
+        let follows = head.as_ref().is_none_or(|(_, origin)| origin != "tenant");
+        if follows {
             let number = head.map_or(1, |(v, _)| v.saturating_add(1));
             tx.execute(
                 "INSERT INTO tutela.model_revision (tenant_id, rev, parent_rev, app, author, \
@@ -227,6 +228,14 @@ pub async fn publish_manifest(
             .await
             .db()?;
         }
+        // A tenant that follows the app gets a new model; one with its own
+        // model only a new revision (ADR-0026 item 4, ADR-0035).
+        let event = if follows {
+            crate::events::OutboxEvent::ModelPublished { rev: to_rev(rev)? }
+        } else {
+            crate::events::OutboxEvent::PermissionsChanged { rev: to_rev(rev)? }
+        };
+        crate::events::insert(tx, &tid, &event).await?;
         out.push((TenantKey::new(iss, tid), to_rev(rev)?));
     }
     // A manifest is the one write that spans tenants. Leave none entered.

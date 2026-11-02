@@ -41,6 +41,10 @@ AUDIT_SQL = "crates/tutela-store/migrations/0008_audit_log.sql"
 STORE_TM20 = ["-p", "tutela-store", "--lib", "tm20"]
 AUDIT = ["-p", "tutelad", "--test", "audit"]
 WRITE_SRC = "crates/tutelad/src/authz/write.rs"
+EVENTS_SRC = "crates/tutela-store/src/events.rs"
+STORE_LIB = "crates/tutela-store/src/lib.rs"
+STORE_EVENTS = ["-p", "tutela-store", "--lib"]
+EVENTS = ["-p", "tutelad", "--test", "events"]
 
 # (id, file, what it breaks, old text, new text, cargo test arguments).
 # `old` must occur once.
@@ -70,8 +74,8 @@ MUTANTS = [
      "    for org in orgs.into_iter().take(1) {\n",
      ["-p", "tutelad", "--test", "models"]),
     ("S06", "crates/tutela-store/src/manifest.rs", "an app publish overwrites a tenant's own model",
-     'if head.as_ref().is_none_or(|(_, origin)| origin != "tenant") {',
-     "if true {",
+     'let follows = head.as_ref().is_none_or(|(_, origin)| origin != "tenant");',
+     "let follows = true;",
      ["-p", "tutela-store", "--lib"]),
     ("S07", EXPLAIN, "explain and simulate need no admin key",
      "    if decision.is_allowed() {\n        Ok(())",
@@ -250,6 +254,37 @@ MUTANTS = [
      "        if sub.to_string() == crate::audit::SYSTEM {\n",
      "        if false && sub.to_string() == crate::audit::SYSTEM {\n",
      AUDIT),
+    # The transactional outbox (ADR-0035).
+    ("E01", MODELS, "a publish emits its event outside its transaction, before it",
+     "    let author = actor.to_string();\n",
+     "    let author = actor.to_string();\n    {\n        let mut c = state.db.conn().await?;\n        let t = c.begin(&tenant).await?;\n        tutela_store::emit(&t, tenant.key(), tutela_store::OutboxEvent::ModelPublished { rev: now.bundle.rev + 1 }).await?;\n        t.commit().await?;\n    }\n",
+     EVENTS),
+    # A person found again returns before the event, so "announce every
+    # sign-in as a new person" is an equivalent mutant; this is the real one.
+    ("E02", PRINCIPALS, "a new person is not announced",
+     "    if created {\n",
+     "    if false && created {\n",
+     EXCHANGE),
+    ("E03", EVENTS_SRC, "event numbers are not given in commit order",
+     '            "UPDATE tutela.tenant_rev SET event_seq = event_seq + 1 WHERE tenant_id = $1 \\\n             RETURNING event_seq",\n',
+     '            "SELECT coalesce(max(seq), 0) + 1 FROM tutela.event WHERE tenant_id = $1",\n',
+     STORE_EVENTS),
+    ("E04", EVENTS_SRC, "a reader walks events out of order",
+     "                 ORDER BY seq LIMIT $3\"\n",
+     "                 ORDER BY id DESC LIMIT $3\"\n",
+     STORE_EVENTS),
+    ("E05", PRINCIPALS, "a session revocation announces no new epoch",
+     "                principal: principal.clone(),\n                epoch,\n                sid: None,\n",
+     "                principal: principal.clone(),\n                epoch: 0,\n                sid: None,\n",
+     STORE_EVENTS),
+    ("E06", PRINCIPALS, "disabling a principal announces nothing",
+     "        out.push(crate::events::OutboxEvent::PrincipalDisabled {\n            principal: principal.clone(),\n            epoch,\n        });\n",
+     "",
+     STORE_EVENTS),
+    ("E07", STORE_LIB, "a data change announces no new revision",
+     "    events::insert(\n        tx,\n        &tenant.tid,\n        &events::OutboxEvent::PermissionsChanged { rev },\n    )\n    .await?;\n",
+     "",
+     STORE_EVENTS),
 ]
 
 

@@ -41,7 +41,7 @@ Only the left column exists in `tutela-contracts` after the first commit. Everyt
 | 5 | API keys | Parse, format check, display prefix | Hashing, storage, verification, rotation (A, B) |
 | 6 | Decision | The Decision object: effect, level, field mask, rule ids, reason, rev, obligations | `Pdp::check`, `Pdp::batch`, `Pdp::list_filter`, `Pdp::write_check` (A; built in `tutela-pdp`, [ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)) |
 | 7 | Remote check API | — | Built in `tutelad` (B): evaluation, search, the permission map, write-check and gRPC. |
-| 8 | Events | CloudEvents envelope, event type grammar and names | Outbox, webhooks, SSE (B) |
+| 8 | Events | CloudEvents envelope, event type grammar and names | Outbox (B, **built**: 8.5, [ADR-0035](DECISIONS.md#adr-0035-the-outbox-events-numbered-per-tenant-in-commit-order)), webhooks, SSE (B) |
 | 9 | audit.v1 | The audit.v1 record | Local hash chain and sequence numbers (B, **built**: 9.4, [ADR-0034](DECISIONS.md#adr-0034-the-local-audit-log-one-chain-per-tenant-written-with-the-change)); producer signatures and forwarding to attache's evidence ledger (B) |
 | 10 | Versioning | The rules apply from the first commit | Deprecation headers on live endpoints (B) |
 
@@ -1485,7 +1485,7 @@ Every answer on the API port has `x-request-id`: the one the caller sent (AuthZE
 
 ## 8. Events
 
-**First commit:** the CloudEvents envelope and the event type grammar and names are in `tutela-contracts`. The outbox, webhook delivery, signing and SSE are **Phase B**.
+**First commit:** the CloudEvents envelope and the event type grammar and names are in `tutela-contracts`. **Built in Phase B, part 3b:** the transactional outbox ([ADR-0035](DECISIONS.md#adr-0035-the-outbox-events-numbered-per-tenant-in-commit-order)). Webhook delivery, signing and SSE are Phase B.
 
 ### 8.1 Envelope (CloudEvents 1.0, JSON)
 
@@ -1548,6 +1548,7 @@ Events are **notifications only**. They carry ids, not state. A receiver re-read
 | `tutela.membership.changed.v1` | principal | `{"org", "principal"}` | A principal joined or left an org, or its groups changed. Re-read memberships. |
 | `tutela.session.revoked.v1` | user principal | `{"principal", "epoch", "sid"}` (`principal` must be a `user`: only users have sessions) | Sessions were revoked. `sid` is set for one session and missing for all sessions. Tokens with a lower `epoch` are refused. |
 | `tutela.principal.disabled.v1` | principal | `{"principal", "epoch"}` | Any kind (user, sa, key, agent, workload) was disabled. SDK caches drop that principal's tokens and cached decisions. attache's quarantine disables an agent principal, which sends this event. |
+| `tutela.principal.enabled.v1` | principal | `{"principal", "epoch"}` | Added in Phase B (additive). A disabled principal may act again. Tokens with a lower `epoch` stay refused. SDK caches stop treating it as disabled. |
 | `tutela.model.published.v1` | tenant id | `{"rev"}` | A new model version (types, fields, roles, rules, UI keys) was published. |
 | `tutela.permissions.changed.v1` | tenant id | `{"rev"}` | Assignments, groups, field rules, boundary rules or conditions changed. PDPs load a bundle with at least this `rev`. |
 | `tutela.key.created.v1` | key principal | `{"key", "prefix", "owner"}` | An API key was created. `prefix` is the display prefix (5.2). |
@@ -1573,7 +1574,8 @@ Each delivery is an HTTP `POST` of the event JSON with `Content-Type: applicatio
 
 ### 8.5 Delivery guarantees (Phase B)
 
-- **Transactional outbox.** The event row is written in the same database transaction as the change. No change without its event, no event without its change.
+- **Transactional outbox** (**built**, `tutela.event`, migration 9). The event row is written in the same database transaction as the change. No change without its event, no event without its change. Each event also has a number per tenant, `seq`, given in commit order with no gap: a reader that walks `seq` never skips an event that commits late, and a rolled-back change uses no number. A tenant's events are therefore totally ordered, which keeps order per subject.
+- **What is emitted** today: `tutela.permissions.changed.v1` by every data write and the expiry sweep; `tutela.model.published.v1` by a publish (an app publish sends it to each tenant that follows the app, and `permissions.changed` to a tenant with its own model); `tutela.user.created.v1` by just-in-time provisioning; `tutela.session.revoked.v1` by revoking a user's sessions; `tutela.principal.disabled.v1` (and `tutela.user.disabled.v1` for a user) and `tutela.principal.enabled.v1` by disabling and enabling. Org lifecycle events and `tutela.user.deleted.v1` come with part 3c; `tutela.key.*` with API keys (part 4); `tutela.membership.changed.v1` when membership is modeled.
 - **At least once.** The same event can arrive more than once. Dedupe by `id`.
 - **Order per subject** (per endpoint). An event for subject S waits until the earlier events for S are delivered or dead-lettered. Events for different subjects can arrive in any order.
 - **Retries** with exponential backoff and jitter, for at least 24 hours. Then the event is dead-lettered, shown in the Tutela Console, and can be sent again by hand. The exact schedule is fixed in Phase B.

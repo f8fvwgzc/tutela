@@ -103,3 +103,18 @@ A11: caught by 2 test(s) - a write-check deny leaves no record
       tm20_the_service_role_cannot_change_or_delete_a_record, tm20_a_write_check_deny_is_recorded_with_its_fields
 A12: caught by 1 test(s) - a token may speak as tutelad itself
       no_token_may_speak_as_the_service_itself
+
+E01: caught by 1 test(s) - a publish emits its event outside its transaction, before it
+      changes_through_the_service_emit_their_events_and_refusals_emit_none
+E02: caught by 1 test(s) - a new person is not announced
+      provisioning_emits_its_event_only_when_the_exchange_commits
+E03: caught by 1 test(s) - event numbers are not given in commit order
+      tests_pg::a_late_commit_is_never_skipped
+E04: caught by 1 test(s) - a reader walks events out of order
+      tests_pg::every_change_emits_its_event_in_its_transaction
+E05: caught by 1 test(s) - a session revocation announces no new epoch
+      tests_pg::every_change_emits_its_event_in_its_transaction
+E06: caught by 1 test(s) - disabling a principal announces nothing
+      tests_pg::every_change_emits_its_event_in_its_transaction
+E07: caught by 3 test(s) - a data change announces no new revision
+      tests_pg::a_late_commit_is_never_skipped, tests_pg::events_are_the_tenants_alone, tests_pg::every_change_emits_its_event_in_its_transaction

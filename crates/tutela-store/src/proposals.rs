@@ -400,6 +400,12 @@ pub async fn publish_proposal(
     )
     .await
     .db()?;
+    crate::events::insert(
+        tx,
+        &tenant.tid,
+        &crate::events::OutboxEvent::ModelPublished { rev: new_rev },
+    )
+    .await?;
     Ok((version, new_rev))
 }
 

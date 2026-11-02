@@ -27,9 +27,11 @@ const KEPT: [&str; 1] = ["signing_key"];
 /// Tables with tenant data where a runtime role gets less than read and
 /// write: the audit log is append-only (ADR-0034), and its head only moves
 /// forward. A trigger refuses the rest for every role as well.
-const LIMITED: [(&str, &str); 2] = [
+const LIMITED: [(&str, &str); 3] = [
     ("audit_record", "SELECT, INSERT"),
     ("audit_head", "SELECT, INSERT, UPDATE"),
+    // Events are never changed; old ones are pruned (ADR-0035).
+    ("event", "SELECT, INSERT, DELETE"),
 ];
 
 /// A plain role name: it goes into `GRANT`, which takes no parameters.

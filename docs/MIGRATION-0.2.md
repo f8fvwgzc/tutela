@@ -148,3 +148,12 @@ These matter to whoever runs `tutelad`, and to a product that verifies its token
 - **`tutela-contracts`:** `AuditEventV1` has a new optional field, `details`, so a struct literal needs `details: None`. New: `AuditDraft` (a record before its `seq` and signature), `AuditEventV1::signing_bytes` and `from_body`, `Details`, and `tutela_contracts::jcs` (RFC 8785 for the values Tutela signs). `AuditError` has two new variants (`Details`, `Canonical`); it is `#[non_exhaustive]`.
 - **`tutela-store`:** `provision_user` now returns `(PrincipalState, bool)`, the `bool` being `true` when this call made the person. New: `append_audit`, `audit_records`, `verify_audit_chain`, and the same for the deployment's own chain.
 - **In library mode** (attache, texc-symphony when they bump): nothing is written to the log for you. Record your own admin calls with `tutela_store::append_audit` in the same transaction, last, just before the commit.
+
+## Events (part 3b)
+
+- **Migration 9** adds `tutela.event`, the transactional outbox, and a column `event_seq` on `tutela.tenant_rev` ([ADR-0035](DECISIONS.md#adr-0035-the-outbox-events-numbered-per-tenant-in-commit-order)). Run `grant_service` again: the service role gets `SELECT, INSERT, DELETE` on events, never `UPDATE`.
+- **Every store write now writes an event** in your transaction: `tutela.permissions.changed.v1` for a data write and `expire_assignments`, `tutela.model.published.v1` for a publish, `tutela.user.created.v1`, `tutela.session.revoked.v1`, `tutela.principal.disabled.v1`, `tutela.user.disabled.v1` and the new `tutela.principal.enabled.v1`. In library mode nothing delivers them: read them with `tutela_store::events_after`, or prune them with `tutela_store::prune_events` (for example daily, older than a week).
+- **A first sign-in now waits for a write in progress** in its tenant: provisioning takes the tenant's revision row to number its event.
+- **`tutela-contracts`:** `EventType::PRINCIPAL_ENABLED` and `PrincipalEnabledData`. An SDK that feeds `EpochBook` from events should call `set_disabled(p, false)` on it.
+- **`tutela-store`:** `emit`, `OutboxEvent`, `StoredEvent`, `events_after`, `event_cursor`, `events_now`, `prune_events`.
+
