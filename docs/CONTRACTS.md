@@ -1141,7 +1141,7 @@ Many evaluations in one call. **At most 200 items**; more gives 400 (`urn:tutela
 
 **`POST /access/v1/search/resource`**: "which resources of this type may this subject act on?"
 
-Tutela never stores a product's records. So this endpoint can name only resources Tutela knows: the scopes registered with `tutela_store::put_scope`, of the asked type. A resource with an assignment on itself is always registered. For full row lists the product uses the filter in `context.tutela.filter` (the 6.6 shape) inside its own SQL.
+Tutela never stores a product's records. So this endpoint can name only resources Tutela knows: the scopes registered with `tutela_store::put_scope`, of the asked type, and for `resource.type` `org` the tenant's orgs (an org is a root: its path is empty, as in a check). A resource with an assignment on itself is always registered. A person asks for themselves: the Tutela Console finds the orgs it may show with `org:read` ([ADR-0052](DECISIONS.md#adr-0052-the-console-a-vite-app-on-the-sdks-sign-in-by-code-with-pkce-the-permission-map-asked-again-every-half-second)). For full row lists the product uses the filter in `context.tutela.filter` (the 6.6 shape) inside its own SQL.
 
 A resource is named only when it passes **whatever its field values are**. Tutela does not hold field values, so when the answer depends on a condition over a field, the resource is not named, and the filter covers it. Every named resource is one `check` allows; when the filter reads no field, the two agree exactly. A property test on random worlds proves both ([ADR-0022](DECISIONS.md#adr-0022-the-searches-live-next-to-the-evaluator)).
 

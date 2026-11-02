@@ -1,0 +1,32 @@
+{
+  "name": "@f8fvwgzc/tutela-console",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The Tutela Console: a single-page app served by tutelad under /console/ (ADR-0050, ADR-0052).",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "build": "vite build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "dev": "vite build --watch"
+  },
+  "dependencies": {
+    "@f8fvwgzc/tutela-js": "workspace:*",
+    "@f8fvwgzc/tutela-react": "workspace:*",
+    "react": "19.1.10",
+    "react-dom": "19.1.10"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "10.4.2",
+    "@testing-library/react": "16.3.3",
+    "@testing-library/user-event": "14.6.8",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "axe-core": "4.14.0",
+    "vite": "8.3.5"
+  }
+}

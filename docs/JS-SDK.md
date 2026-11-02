@@ -124,7 +124,7 @@ map.can("project:manage_access"); // also tutela.can("project:manage_access", sc
 | `agents` | `page`, `list`, `register` |
 | `apps` | `list`, `create`, `rotate`, `disable` |
 | `webhooks` | `list`, `register`, `rotate`, `disable`, `deliveries`, `redeliver` |
-| check API | `whoami`, `permissions`, `can`, `explain`, `simulate` |
+| check API | `whoami`, `permissions`, `can`, `searchResources` (7.4, an async iterator), `explain`, `simulate` |
 
 - **Pages.** `page()` answers the wire shape (`{assignments, next_after?}`); `list()` is an async iterator that passes `next_after` back as `after`.
 - **Your own write.** Each write's `rev` is kept (`tutela.revision`, `tutela.onRevision`) and sent as `at_least_revision` on the next permission map and explain, so the page shows its own write.

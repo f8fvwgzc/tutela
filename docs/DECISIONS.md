@@ -68,6 +68,7 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0049](#adr-0049-tutela-react-embeddable-admin-components-scoped-css-variables-and-the-host-names-the-people) | `tutela-react`: embeddable admin components, scoped CSS variables, and the host names the people | Accepted |
 | [0050](#adr-0050-the-console-is-served-by-tutelad-under-console-from-files-read-at-start) | The Console is served by `tutelad` under `/console/`, from files read at start | Accepted |
 | [0051](#adr-0051-a-test-openid-provider-shaped-like-keycloak-a-dev-only-crate-on-loopback) | A test OpenID provider shaped like Keycloak: a dev-only crate on loopback | Accepted |
+| [0052](#adr-0052-the-console-a-vite-app-on-the-sdks-sign-in-by-code-with-pkce-the-permission-map-asked-again-every-half-second) | The Console: a Vite app on the SDKs, sign-in by code with PKCE, the permission map asked again every half second | Accepted |
 
 ---
 
@@ -1863,4 +1864,35 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 - **A feature flag of `tutelad`.** The provider could reach a shipped build by mistake.
 - **Keycloak in a container.** Image pulls hang on the owner's Mac; it stays the goal of #87.
 - **ES256 tokens.** Keycloak signs RS256 by default; RS256 also tests that path of `tutelad`'s verifier.
+
+---
+
+## ADR-0052: The Console: a Vite app on the SDKs, sign-in by code with PKCE, the permission map asked again every half second
+
+**Status:** Accepted, 2026-11-03. Phase B, part 4b2. It builds the Tutela Console the ROADMAP notes for part 4b2 plan, on `@f8fvwgzc/tutela-js` and `@f8fvwgzc/tutela-react` ([ADR-0048](#adr-0048-tutela-js-the-browser-token-flow-in-memory-typed-errors-and-a-retry-that-never-makes-twice), [ADR-0049](#adr-0049-tutela-react-embeddable-admin-components-scoped-css-variables-and-the-host-names-the-people)), served as [ADR-0050](#adr-0050-the-console-is-served-by-tutelad-under-console-from-files-read-at-start) says. It includes one **server change**: a resource search for `org` names orgs (item 4).
+
+**Context.** The Console is a public client in a browser: it keeps no secret (ADR-0044 item 7) and no token in storage (TM-06). A person signs in at the tenant's realm (Keycloak), and `tutelad` exchanges that token once for a `tutela-authz` token and an admin token after step-up (ADR-0031, ADR-0032). What a page shows must follow the permission map, and a role change must show within the documented revocation delay (1.5 s, PERMISSION-MODEL.md 16.1). The event stream is for services only (ADR-0037). A person who is not an org's admin may not list orgs or scopes over the admin API.
+
+**Decision.**
+
+1. **A workspace member, `console/`**, private, React 19 and TypeScript strict, built by Vite 8 (already in the lockfile through vitest) into `console/dist` with the base `/console/`. Nothing is inlined (no inline script or style, no `data:` URL), so the CSP of ADR-0050 needs no exception. `make js` builds it and runs its tests (vitest, Testing Library, axe-core); Biome lints it, and refuses `localStorage`, `indexedDB` and `document.cookie` in `console/src`.
+2. **Sign-in: the authorization code flow with PKCE (S256), as a public client** of the realm named by `/console/config.json`. The discovery document must name exactly that issuer. Each sign-in asks for the step-up `acr` (`acr_values`, the first value of `TUTELA_ADMIN_ACR`): the Console is for admin work. The callback checks `state`, the RFC 9207 `iss` when present and the ID token's `nonce`, removes the code from the address bar at once, and trades the code with the verifier. The redirect URI is `<origin>/console/callback`.
+3. **Tokens in memory only.** The realm's access, refresh and ID tokens and `tutelad`'s tokens live in JavaScript objects; a reload signs in again (with Keycloak's own session, without a form). **One departure:** the pending sign-in (`state`, `nonce`, the PKCE verifier and the page to return to) is kept in `sessionStorage` for the round trip to the realm, and removed when the callback reads it, before the code is traded. It is not a token, and it is useless once its code is spent; the browser check asserts that every storage is empty after sign-in. Sign-out drops every token and ends the realm's session without `id_token_hint` (no token in a URL).
+4. **What the person sees comes from the permission map.** The Console finds the orgs the person can see with a resource search for `org:read` (CONTRACTS.md 7.4, `searchResources`, new in `tutela-js`), and asks the permission map at each for the six admin keys. **Server change:** `tutela-pdp`'s resource search took an org's path from the scope-path provider, which holds only scopes below orgs, so a search for `org` failed with 503; an org is a root, so its path is now empty, as in a check (regression test `a_search_for_orgs_names_the_orgs_check_allows`). The rail shows a page only when the keys allow it ("every org" means every org the person sees); a hidden page is not rendered, and a page opened by its path says the keys are missing. Every route checks again.
+5. **Asked again every 500 ms while the page is visible**, with the map's ETag, so most answers are a 304 with no body; the orgs are searched again every 20 rounds. With `TUTELA_REVISION_CHECK_MS` at 1 s, a role given or taken shows in the other person's Console within the 1.5 s delay (measured in the browser check). Server-sent events would be quieter, but they are for services only (ADR-0037).
+6. **Step-up as a banner.** When the person holds any admin key, the admin token is asked for at once; without step-up the session says `step-up-required` and the Console shows a banner whose "Sign in with MFA" signs in again with the step-up `acr`. The check API keeps working meanwhile.
+7. **Pages** (Overview, Scopes, Roles, Model history, Groups, People and agents, Apps, Webhooks, Tenant and orgs, Explain and simulate) use `MembersTable`, `PermissionMatrix`, `RoleEditor` and `ErrorNotice` where they exist and the client elsewhere, and do what the notes for part 4b say with each answer: 403 `forbidden` hides, `not_held` and `move_refused` explain, 409 loads again, 503 retries. A scope's path always comes from the scope tree, never from the address bar. A secret is shown once, in a component's state, and dropped when closed. Principals go in request bodies, never in a URL.
+8. **Looks:** dense and full width, a left rail of pages, the components' palette (one accent), a theme switch (system, light, dark), a skip link, visible focus, arrow keys in the scope tree, and no motion under `prefers-reduced-motion`.
+
+**Consequences.**
+- The Keycloak client of the Console is public, standard flow only, PKCE S256 required, the redirect URI `https://<tutelad host>/console/callback`, the web origin `https://<tutelad host>`, the post-logout redirect URI `https://<tutelad host>/console/`, an audience mapper to `TUTELA_AUDIENCE`, and an ACR-to-LoA mapping whose step-up level is named as in `TUTELA_ADMIN_ACR` (the notes for part 4c).
+- An open Console tab asks `tutelad` twice a second per org it shows; a hidden tab does not ask.
+- A person who can see no org (no role at any org, only below) sees only the overview: the scopes below an org are found from an org.
+
+**Alternatives considered.**
+- **keycloak-js.** Its silent check-SSO needs an iframe (`frame-src`) and third-party cookies, and it keeps state in storage.
+- **oidc-client-ts.** It keeps its state and, by default, its user in storage; the flow the Console needs is a hundred lines.
+- **A popup sign-in that keeps the verifier in memory.** Popups are blocked unless clicked, and `Cross-Origin-Opener-Policy: same-origin` cuts the popup from its opener once it visits the realm.
+- **Listing orgs with `GET /v1/admin/orgs`.** It needs `read_audit` at every org, and every refusal is audited: polling it would fill the audit chain.
+- **Server-sent events for browsers.** ADR-0037 keeps the stream for services.
 

@@ -8,6 +8,7 @@
   "files": {
     "includes": [
       "sdk/**",
+      "console/**",
       "scripts/**",
       "package.json",
       "biome.json",
@@ -120,6 +121,51 @@
                   {
                     "object": "globalThis",
                     "property": "sessionStorage",
+                    "message": "Tokens live in memory only (THREAT-MODEL.md TM-06)."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["console/src/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedGlobals": {
+              "level": "error",
+              "options": {
+                "deniedGlobals": {
+                  "localStorage": "Tokens live in memory only (THREAT-MODEL.md TM-06).",
+                  "indexedDB": "Tokens live in memory only (THREAT-MODEL.md TM-06).",
+                  "process": "The browser build has no Node globals.",
+                  "Buffer": "The browser build has no Node globals.",
+                  "require": "ES modules only."
+                }
+              }
+            }
+          },
+          "nursery": {
+            "noJsRestrictedProperties": {
+              "level": "error",
+              "options": {
+                "entries": [
+                  {
+                    "object": "document",
+                    "property": "cookie",
+                    "message": "Tokens live in memory only (THREAT-MODEL.md TM-06)."
+                  },
+                  {
+                    "object": "window",
+                    "property": "localStorage",
+                    "message": "Tokens live in memory only (THREAT-MODEL.md TM-06)."
+                  },
+                  {
+                    "object": "window",
+                    "property": "indexedDB",
                     "message": "Tokens live in memory only (THREAT-MODEL.md TM-06)."
                   }
                 ]
