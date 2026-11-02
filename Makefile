@@ -1,21 +1,27 @@
 # Tutela developer tasks. CI (.github/workflows/ci.yml) calls these same targets.
 #
-#   make            # = make all: format check, clippy, tests, docs, cargo-deny, cargo-audit
+#   make            # = make all: the Rust gates (format check, clippy, tests, docs,
+#                   #   cargo-deny, cargo-audit) and the JavaScript SDKs' gates (js)
 #
-# Requirements: Rust (pinned by rust-toolchain.toml), cargo-deny and cargo-audit.
+# Requirements: Rust (pinned by rust-toolchain.toml), cargo-deny and cargo-audit;
+# node >= 22.12 and pnpm 10 for `make js` (ADR-0047). Plain `cargo build` and
+# `cargo test` never need node.
 
 CARGO  ?= cargo
+PNPM   ?= pnpm
 # Cargo resolution flags; `make lint LOCKED=` while you are still adding dependencies.
 LOCKED ?= --locked
 
 .DEFAULT_GOAL := all
 
-.PHONY: help all ci fmt fmt-check lint test doc deny audit clean
+.PHONY: help all ci fmt fmt-check lint test doc deny audit clean \
+	js js-install js-build js-typecheck js-lint js-test js-audit js-licenses
 
 help:
-	@echo "Targets: all (fmt-check lint test doc deny audit), fmt, fmt-check, lint, test, doc, deny, audit, clean"
+	@echo "Targets: all (fmt-check lint test doc deny audit js), fmt, fmt-check, lint, test, doc, deny, audit, clean"
+	@echo "         js (js-install js-build js-typecheck js-lint js-test js-audit js-licenses)"
 
-all: fmt-check lint test doc deny audit
+all: fmt-check lint test doc deny audit js
 
 ci: all
 
@@ -42,3 +48,29 @@ audit:
 
 clean:
 	$(CARGO) clean
+
+# ---------- The JavaScript SDKs: sdk/js and sdk/react (ADR-0047) ----------
+
+js: js-install js-build js-typecheck js-lint js-test js-audit js-licenses
+
+js-install:
+	$(PNPM) install --frozen-lockfile
+
+# Builds first: @f8fvwgzc/tutela-react type-checks against tutela-js's output.
+js-build:
+	$(PNPM) -r run build
+
+js-typecheck:
+	$(PNPM) -r run typecheck
+
+js-lint:
+	$(PNPM) run lint
+
+js-test:
+	$(PNPM) -r run test
+
+js-audit:
+	$(PNPM) audit
+
+js-licenses:
+	node scripts/js-licenses.mjs

@@ -55,10 +55,12 @@ tutela/
 │   └── tutelad/             the service: config, ports, health, metrics, logs, shutdown,  now
 │                            the check API, the permission map, the admin API (Console: B)
 ├── deploy/                  production settings for tutelad                               now
+├── package.json, pnpm-workspace.yaml, pnpm-lock.yaml, biome.json, tsconfig.base.json
+│                            the JavaScript workspace (ADR-0047)                           now
 ├── sdk/
-│   ├── react/               @f8fvwgzc/tutela-react                                        A
+│   ├── react/               @f8fvwgzc/tutela-react                                        now (B: admin components)
 │   ├── node/                @f8fvwgzc/tutela-node                                         A
-│   ├── js/                  @f8fvwgzc/tutela-js                                           A
+│   ├── js/                  @f8fvwgzc/tutela-js                                           now (B: the tutelad client)
 │   └── python/              tutela-py (import name `tutela`)                              A
 ├── console/                 Tutela Console web UI                                         B
 └── templates/product/       a template product that uses Tutela                          A
@@ -104,10 +106,11 @@ For these changes:
 
 ## 5. Running the gates
 
-You need Rust (pinned in `rust-toolchain.toml`), `cargo-deny` and `cargo-audit`:
+You need Rust (pinned in `rust-toolchain.toml`), `cargo-deny` and `cargo-audit`, and for the JavaScript SDKs node 22.12 or later and pnpm 10 ([ADR-0047](docs/DECISIONS.md#adr-0047-the-javascript-sdks-a-pnpm-workspace-under-sdk-checked-by-make)):
 
 ```sh
 cargo install --locked cargo-deny cargo-audit
+corepack enable   # or install pnpm 10.18 another way
 ```
 
 | Command | What it runs | CI job |
@@ -119,6 +122,7 @@ cargo install --locked cargo-deny cargo-audit
 | `make test` | `cargo test --workspace --all-features --locked` | test |
 | `make deny` | `cargo deny check` (licences, bans, sources, advisories) | supply-chain |
 | `make audit` | `cargo audit --deny warnings` | supply-chain |
+| `make js` | the JavaScript SDKs: `pnpm install --frozen-lockfile`, build, `tsc` typecheck, `biome ci` (format and lint), vitest, `pnpm audit`, production licences | js |
 | `make fmt` | formats the code (not a gate) | none |
 
 Notes:
@@ -126,6 +130,7 @@ Notes:
 - Run `make` before every commit and every pull request.
 - The tests of `tutela-store`, `tutela-sdk`, `tutela-cli` and `tutelad` need a Postgres. Set `TUTELA_TEST_DATABASE_URL` to a key=value connection string for a role that may create roles and databases, for example `host=127.0.0.1 port=5432 user=postgres password=postgres dbname=postgres`. Without it they print `skipped` and pass; CI sets `TUTELA_REQUIRE_DATABASE=1`, so there a missing database fails.
 - The gates run with `--locked`. When you add a dependency, run `make lint LOCKED=` once, then commit the new `Cargo.lock` with the change.
+- The JavaScript gates install with `--frozen-lockfile`. When you add an npm dependency, pin its exact version, run `pnpm install` once, then commit `pnpm-lock.yaml`. Plain `cargo build` and `cargo test` never need node; `make` does.
 - An advisory ignore in `deny.toml` needs an id, a reason and a review date.
 - The later phases add more gates (fuzzing, property tests, latency numbers, RLS tests, conformance). They are listed in [SECURITY.md](SECURITY.md).
 

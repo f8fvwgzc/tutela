@@ -1,0 +1,36 @@
+{
+  "name": "@f8fvwgzc/tutela-js",
+  "version": "0.0.0",
+  "description": "The framework-free client of tutelad: the browser token flow, the admin API and the permission map.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/f8fvwgzc/tutela.git",
+    "directory": "sdk/js"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "restricted"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  }
+}
