@@ -8,7 +8,7 @@ use std::time::Duration;
 use axum::extract::{Extension, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router, middleware};
 use serde::Serialize;
 use tower::ServiceExt as _;
@@ -18,6 +18,8 @@ use tutela_sdk::Verifier;
 use tutela_sdk::http::{AuthLayer, Protocol};
 use tutela_store::{StoreError, StoreErrorKind};
 
+use crate::authz;
+use crate::cache::TenantCache;
 use crate::db::{Db, DbError};
 use crate::telemetry::{Metrics, observe};
 use crate::tenant::Tenant;
@@ -32,15 +34,19 @@ pub struct AppState {
     pub verifier: Arc<Verifier>,
     /// The database.
     pub db: Db,
+    /// What decisions are made from.
+    pub cache: Arc<TenantCache>,
     /// The metrics.
     pub metrics: Arc<Metrics>,
     /// Set when a shutdown starts, so readiness fails first.
     pub stopping: Arc<AtomicBool>,
+    /// `TUTELA_DEV_MODE`.
+    pub dev_mode: bool,
 }
 
 /// An error answer: `application/problem+json` (RFC 9457, CONTRACTS.md 7.1).
 /// The detail never holds secrets or personal data.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Problem {
     /// The status.
     pub status: StatusCode,
@@ -48,16 +54,70 @@ pub struct Problem {
     pub code: &'static str,
     /// A short title.
     pub title: &'static str,
+    /// Short English about this request. No secrets, no personal data.
+    pub detail: Option<String>,
+    /// `Retry-After`, in seconds.
+    pub retry_after: Option<u32>,
+}
+
+impl Problem {
+    /// A problem with no detail.
+    #[must_use]
+    pub const fn new(status: StatusCode, code: &'static str, title: &'static str) -> Self {
+        Self {
+            status,
+            code,
+            title,
+            detail: None,
+            retry_after: None,
+        }
+    }
+
+    /// 400: the request is wrong.
+    #[must_use]
+    pub fn invalid(code: &'static str, detail: String) -> Self {
+        Self {
+            detail: Some(detail),
+            ..Self::new(StatusCode::BAD_REQUEST, code, "the request is not valid")
+        }
+    }
+
+    /// 403: this token may not ask this question.
+    #[must_use]
+    pub const fn forbidden() -> Self {
+        Self::new(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "this caller may not ask this question",
+        )
+    }
+
+    /// 503: no data fit to answer from. Never a hidden allow: the caller
+    /// fails closed.
+    #[must_use]
+    pub fn stale(code: &'static str) -> Self {
+        Self {
+            retry_after: Some(1),
+            ..Self::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                code,
+                "the service cannot answer now",
+            )
+        }
+    }
 }
 
 impl IntoResponse for Problem {
     fn into_response(self) -> Response {
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "type": format!("urn:tutela:problem:{}", self.code),
             "title": self.title,
             "status": self.status.as_u16(),
         });
-        (
+        if let Some(detail) = self.detail {
+            body["detail"] = detail.into();
+        }
+        let mut res = (
             self.status,
             [(
                 header::CONTENT_TYPE,
@@ -65,7 +125,12 @@ impl IntoResponse for Problem {
             )],
             body.to_string(),
         )
-            .into_response()
+            .into_response();
+        if let Some(secs) = self.retry_after {
+            res.headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from(secs));
+        }
+        res
     }
 }
 
@@ -75,11 +140,11 @@ impl From<DbError> for Problem {
     /// server's message may hold a value from a row.
     fn from(e: DbError) -> Self {
         if e.store_kind() == Some(StoreErrorKind::UnknownTenant) {
-            return Self {
-                status: StatusCode::FORBIDDEN,
-                code: "unknown_tenant",
-                title: "this tenant is not known here",
-            };
+            return Self::new(
+                StatusCode::FORBIDDEN,
+                "unknown_tenant",
+                "this tenant is not known here",
+            );
         }
         tracing::error!(
             error = %e,
@@ -87,11 +152,7 @@ impl From<DbError> for Problem {
             sqlstate = e.sqlstate(),
             "a database call failed"
         );
-        Self {
-            status: StatusCode::SERVICE_UNAVAILABLE,
-            code: "unavailable",
-            title: "the service cannot answer now",
-        }
+        Self::stale("unavailable")
     }
 }
 
@@ -127,11 +188,7 @@ async fn whoami(
     Extension(id): Extension<Identity>,
     tenant: Tenant,
 ) -> Result<Json<WhoAmI>, Problem> {
-    let (sub, kind) = subject(&id).ok_or(Problem {
-        status: StatusCode::UNAUTHORIZED,
-        code: "invalid_token",
-        title: "a valid bearer token is required",
-    })?;
+    let (sub, kind) = subject(&id).ok_or_else(invalid_token)?;
     let mut conn = state.db.conn().await?;
     let tx = conn.begin(&tenant).await?;
     let rev = tutela_store::rev(&tx, tenant.key()).await?;
@@ -146,11 +203,17 @@ async fn whoami(
 }
 
 async fn not_found() -> Problem {
-    Problem {
-        status: StatusCode::NOT_FOUND,
-        code: "not_found",
-        title: "no such route",
-    }
+    Problem::new(StatusCode::NOT_FOUND, "not_found", "no such route")
+}
+
+/// 401.
+#[must_use]
+pub(crate) const fn invalid_token() -> Problem {
+    Problem::new(
+        StatusCode::UNAUTHORIZED,
+        "invalid_token",
+        "a valid bearer token is required",
+    )
 }
 
 /// `AuthLayer` answers 401 with an empty body. Clients of the HTTP API get
@@ -161,13 +224,7 @@ async fn problem_for_401(res: Response) -> Response {
         return res;
     }
     let (mut parts, _) = res.into_parts();
-    let problem = Problem {
-        status: StatusCode::UNAUTHORIZED,
-        code: "invalid_token",
-        title: "a valid bearer token is required",
-    }
-    .into_response();
-    let (problem, body) = problem.into_parts();
+    let (problem, body) = invalid_token().into_response().into_parts();
     parts.headers.extend(problem.headers);
     Response::from_parts(parts, body)
 }
@@ -179,6 +236,12 @@ pub fn api_router(state: &AppState, grpc: Router, request_timeout: Duration) -> 
     let timeout = TimeoutLayer::with_status_code(StatusCode::SERVICE_UNAVAILABLE, request_timeout);
     let http = Router::new()
         .route("/v1/whoami", get(whoami))
+        .route("/access/v1/evaluation", post(authz::http::evaluation))
+        .route("/access/v1/evaluations", post(authz::http::evaluations))
+        .route(
+            "/.well-known/authzen-configuration",
+            get(authz::http::metadata),
+        )
         .fallback(not_found)
         .with_state(state.clone())
         .layer(timeout)

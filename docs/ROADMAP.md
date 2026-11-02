@@ -1,6 +1,6 @@
 # Tutela roadmap
 
-Status: **pre-alpha**. `v0.1.0` is a pre-release of the Rust crates in library mode. Part 1 of Phase B is merged: the `tutelad` service, tenant isolation and the bindings store. `tutelad` serves no permission API yet. Nothing is usable in production yet. See [Phase B status](#phase-b-status).
+Status: **pre-alpha**. `v0.1.0` is a pre-release of the Rust crates in library mode. Part 1 of Phase B is merged: the `tutelad` service, tenant isolation and the bindings store. So is the evaluation API of part 2. Nothing is usable in production yet. See [Phase B status](#phase-b-status).
 
 This file lists the four phases (A, B, C, D), what each one builds, how we know it is done, and how long it takes. The reasons behind the big choices are in [DECISIONS.md](DECISIONS.md). The design is in [ARCHITECTURE.md](ARCHITECTURE.md) and [PERMISSION-MODEL.md](PERMISSION-MODEL.md).
 
@@ -119,12 +119,14 @@ Done:
 | `tutelad`: config, the API port (HTTP and gRPC), the ops port, metrics, JSON logs, graceful shutdown, bearer tokens through `tutela-sdk`, `tutelad migrate`, `deploy/` | Done | [ADR-0018](DECISIONS.md#adr-0018-tutelad-the-stack-the-two-ports-and-the-config) |
 | Tenants with row-level security: `FORCE`, a non-owner role, the tenant only from the verified token with `SET LOCAL`, `check_isolation` | Done | [ADR-0019](DECISIONS.md#adr-0019-tenants-in-tutelad-the-tenant-comes-from-the-token-and-rls-is-checked) |
 | Bindings and groups store with a per-tenant revision; assignment expiry with a revision bump | Done | [ADR-0020](DECISIONS.md#adr-0020-the-bindings-store-closures-at-read-time-and-assignment-expiry) |
+| Evaluation API: `POST /access/v1/evaluation`, `/access/v1/evaluations`, gRPC `tutela.authz.v1`, per-tenant snapshots with a revision lease | Done | [ADR-0021](DECISIONS.md#adr-0021-the-check-api-one-code-path-a-snapshot-per-tenant-and-a-revision-lease) |
 
 Not started. These are parts 2 to 4:
 
 | Work | Note |
 |---|---|
-| AuthZEN API and gRPC `tutela.authz.v1` | Signed bundles come with it. Their `expires_at` must honour `next_expiry`. |
+| Search: `/access/v1/search/resource`, `/access/v1/search/subject` | |
+| Signed bundles | Their `expires_at` must honour `next_expiry`. |
 | Permission map, `POST /v1/authz/permissions` | |
 | Model versioning, impact report, explain and simulate, two-person publish | |
 | Moves and links in `write_check` | |

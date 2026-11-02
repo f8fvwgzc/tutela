@@ -57,7 +57,7 @@ pub use bindings::{
 pub use connect::{Transport, database_config};
 pub use isolation::{check_isolation, grant_service};
 pub use load::{ScopePathSnapshot, TenantBundle, load, rev};
-pub use manifest::{Publish, StoredManifest, digest, manifest, publish_manifest};
+pub use manifest::{Publish, StoredManifest, applied_manifest, digest, manifest, publish_manifest};
 pub use migrate::{applied as applied_migration, latest as latest_migration, migrate};
 pub use tokio_postgres;
 pub use write::{

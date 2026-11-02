@@ -243,11 +243,16 @@ Tenant isolation is built too
 ([ADR-0019](DECISIONS.md#adr-0019-tenants-in-tutelad-the-tenant-comes-from-the-token-and-rls-is-checked)).
 `tutelad migrate` runs the migrations and grants as the owner, apart from the
 service. A timer removes expired assignments, tenant by tenant, and bumps each
-revision. Production settings are in `deploy/`. The rest of this list is planned.
+revision. Production settings are in `deploy/`. The evaluation API is built
+([ADR-0021](DECISIONS.md#adr-0021-the-check-api-one-code-path-a-snapshot-per-tenant-and-a-revision-lease)):
+each replica answers from an in-memory snapshot per tenant, and checks the
+tenant's revision against Postgres once a second while the tenant is in use.
+The rest of this list is planned.
 
 - **Check API** (AuthZEN 1.0 shape): `POST /access/v1/evaluation`,
-  `/access/v1/evaluations` (up to 200 items), `/access/v1/search/resource`,
-  `/access/v1/search/subject`; gRPC `tutela.authz.v1`.
+  `/access/v1/evaluations` (up to 200 items) and gRPC `tutela.authz.v1` are
+  built; `/access/v1/search/resource` and `/access/v1/search/subject` are
+  planned.
 - **UI permission map**: `POST /v1/authz/permissions` (ETag / 304).
 - **Admin API** `tutela.admin.v1`: tenants, orgs, members, groups, roles,
   bindings, resource types, apps, keys, agent principals.

@@ -14,12 +14,11 @@
 //! ```
 
 use axum::extract::FromRequestParts;
-use axum::http::StatusCode;
 use axum::http::request::Parts;
 use tutela_contracts::tenant::TenantKey;
 use tutela_sdk::Identity;
 
-use crate::api::Problem;
+use crate::api::{Problem, invalid_token};
 
 /// The tenant of a verified token.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -49,11 +48,7 @@ impl<S: Send + Sync> FromRequestParts<S> for Tenant {
             .extensions
             .get::<Identity>()
             .map(Self::of)
-            .ok_or(Problem {
-                status: StatusCode::UNAUTHORIZED,
-                code: "invalid_token",
-                title: "a valid bearer token is required",
-            })?;
+            .ok_or_else(invalid_token)?;
         tracing::Span::current().record("tid", tracing::field::display(tenant.key().tid));
         Ok(tenant)
     }

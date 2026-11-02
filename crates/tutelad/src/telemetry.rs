@@ -81,6 +81,44 @@ struct SweepLabels {
     result: String,
 }
 
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct DecisionLabels {
+    operation: String,
+    outcome: String,
+}
+
+/// How one question ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    /// Allowed.
+    Allow,
+    /// Denied.
+    Deny,
+    /// No decision: the caller fails closed.
+    Error,
+}
+
+impl Outcome {
+    /// The label value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::Deny => "deny",
+            Self::Error => "error",
+        }
+    }
+}
+
+/// The id of a request: the caller's own, so that it can follow the request
+/// (AuthZEN 1.0 section 10.1.3), when it is short visible ASCII. Otherwise
+/// a new one.
+fn request_id(sent: Option<&HeaderValue>) -> String {
+    sent.and_then(|v| v.to_str().ok())
+        .filter(|s| (1..=128).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_graphic()))
+        .map_or_else(|| uuid::Uuid::now_v7().to_string(), str::to_owned)
+}
+
 /// Latency buckets from 1 ms to about 16 s.
 fn latency_histogram() -> Histogram {
     Histogram::new(exponential_buckets(0.001, 2.0, 15))
@@ -97,6 +135,9 @@ pub struct Metrics {
     pool_available: Gauge,
     expired: Counter,
     sweeps: Family<SweepLabels, Counter>,
+    decisions: Family<DecisionLabels, Counter>,
+    revision_checks: Family<SweepLabels, Counter>,
+    tenant_loads: Family<SweepLabels, Counter>,
 }
 
 impl Default for Metrics {
@@ -149,6 +190,24 @@ impl Metrics {
         );
         let sweeps = Family::<SweepLabels, Counter>::default();
         registry.register("expiry_sweeps", "Expiry sweeps, by result", sweeps.clone());
+        let decisions = Family::<DecisionLabels, Counter>::default();
+        registry.register(
+            "decisions",
+            "Permission questions, by operation and outcome",
+            decisions.clone(),
+        );
+        let revision_checks = Family::<SweepLabels, Counter>::default();
+        registry.register(
+            "revision_checks",
+            "Checks of a tenant's revision against the database, by result",
+            revision_checks.clone(),
+        );
+        let tenant_loads = Family::<SweepLabels, Counter>::default();
+        registry.register(
+            "tenant_loads",
+            "Whole-tenant loads from the database, by result",
+            tenant_loads.clone(),
+        );
         Self {
             registry,
             requests,
@@ -158,7 +217,30 @@ impl Metrics {
             pool_available,
             expired,
             sweeps,
+            decisions,
+            revision_checks,
+            tenant_loads,
         }
+    }
+
+    /// Counts one question.
+    pub fn count_decision(&self, operation: &'static str, outcome: Outcome) {
+        self.decisions
+            .get_or_create(&DecisionLabels {
+                operation: operation.to_owned(),
+                outcome: outcome.as_str().to_owned(),
+            })
+            .inc();
+    }
+
+    /// Counts one revision check.
+    pub fn count_revision_check(&self, ok: bool) {
+        count_result(&self.revision_checks, ok);
+    }
+
+    /// Counts one tenant load.
+    pub fn count_tenant_load(&self, ok: bool) {
+        count_result(&self.tenant_loads, ok);
     }
 
     /// Counts assignments the sweep removed.
@@ -168,12 +250,7 @@ impl Metrics {
 
     /// Counts one sweep.
     pub fn count_sweep(&self, ok: bool) {
-        let result = if ok { "ok" } else { "failed" };
-        self.sweeps
-            .get_or_create(&SweepLabels {
-                result: result.to_owned(),
-            })
-            .inc();
+        count_result(&self.sweeps, ok);
     }
 
     /// Records the pool's sizes, read at scrape time.
@@ -195,6 +272,15 @@ impl Metrics {
     }
 }
 
+fn count_result(family: &Family<SweepLabels, Counter>, ok: bool) {
+    let result = if ok { "ok" } else { "failed" };
+    family
+        .get_or_create(&SweepLabels {
+            result: result.to_owned(),
+        })
+        .inc();
+}
+
 /// Logs and counts each request on the API port, and gives it a request id.
 pub async fn observe(State(metrics): State<Arc<Metrics>>, req: Request, next: Next) -> Response {
     let started = Instant::now();
@@ -205,7 +291,7 @@ pub async fn observe(State(metrics): State<Arc<Metrics>>, req: Request, next: Ne
         .get::<MatchedPath>()
         .map_or("unmatched", MatchedPath::as_str)
         .to_owned();
-    let request_id = uuid::Uuid::now_v7().to_string();
+    let request_id = request_id(req.headers().get("x-request-id"));
     let trace = req.headers().get("traceparent").and_then(trace_id);
     let span = tracing::info_span!(
         "request",
@@ -283,6 +369,28 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn a_request_id_is_echoed_only_when_it_is_short_visible_ascii() {
+        let good = HeaderValue::from_static("abc-123");
+        assert_eq!(request_id(Some(&good)), "abc-123");
+        let long = HeaderValue::from_str(&"a".repeat(129)).unwrap();
+        for bad in [long, HeaderValue::from_static("has space")] {
+            assert_ne!(request_id(Some(&bad)), bad.to_str().unwrap());
+        }
+        assert!(!request_id(None).is_empty());
+    }
+
+    #[test]
+    fn decisions_are_counted_by_operation_and_outcome_only() {
+        let m = Metrics::new();
+        m.count_decision("evaluation", Outcome::Deny);
+        let text = m.render().unwrap();
+        assert!(
+            text.contains("tutelad_decisions_total{operation=\"evaluation\",outcome=\"deny\"} 1"),
+            "{text}"
+        );
     }
 
     #[test]

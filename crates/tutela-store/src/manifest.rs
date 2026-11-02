@@ -79,6 +79,37 @@ pub async fn manifest(
     .transpose()
 }
 
+/// The one applied manifest of this schema, if any. A schema holds one app
+/// (ADR-0014 item 7): assignments name role keys without an app, so a second
+/// app would mean something else by the same key. That is an error, not a
+/// choice between the two.
+///
+/// # Errors
+///
+/// [`Invalid`](crate::StoreErrorKind::Invalid) when two apps have a manifest,
+/// or a database error.
+pub async fn applied_manifest(tx: &Transaction<'_>) -> Result<Option<StoredManifest>, StoreError> {
+    let rows = tx
+        .query(
+            "SELECT source, digest, version FROM tutela.app_manifest LIMIT 2",
+            &[],
+        )
+        .await
+        .db()?;
+    let [row] = rows.as_slice() else {
+        return if rows.is_empty() {
+            Ok(None)
+        } else {
+            Err(StoreError::invalid("this schema holds more than one app"))
+        };
+    };
+    Ok(Some(StoredManifest {
+        source: row.try_get(0).db()?,
+        digest: row.try_get(1).db()?,
+        version: row.try_get(2).db()?,
+    }))
+}
+
 /// Publishes a manifest: replaces the app's manifest, then, in the same
 /// transaction, bumps every tenant's revision and records the change for
 /// each one. Returns each tenant with its new revision.
