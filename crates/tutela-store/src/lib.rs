@@ -62,7 +62,7 @@ pub use write::{
 #[non_exhaustive]
 pub enum StoreError {
     /// The database refused or failed the statement.
-    #[error("database error: {0}")]
+    #[error("database error")]
     Db(#[from] tokio_postgres::Error),
     /// The database has a migration this build does not know.
     #[error("the database has migration {0}, which this build does not know")]
@@ -80,7 +80,7 @@ pub enum StoreError {
     #[error("invalid input: {0}")]
     Invalid(&'static str),
     /// The change would break a rule of the tenant data; nothing may commit.
-    #[error("the change is refused: {0}")]
+    #[error("the change is refused")]
     Refused(#[from] LoadError),
     /// A stored value does not parse. The table was changed outside the
     /// store.

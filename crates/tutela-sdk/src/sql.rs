@@ -38,7 +38,7 @@ pub enum SqlError {
     #[error("the filter has an op or value this adapter does not support")]
     Unsupported,
     /// The statement timed out, or failed.
-    #[error("the list query failed: {0}")]
+    #[error("the list query failed")]
     Query(#[from] tokio_postgres::Error),
 }
 

@@ -142,7 +142,7 @@ pub async fn apply(
             }
             Err(why) => {
                 if let Some(e) = why {
-                    writeln!(out, "refused: {e}")?;
+                    writeln!(out, "refused: {}", e.report())?;
                 } else {
                     writeln!(
                         out,
