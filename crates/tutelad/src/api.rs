@@ -21,6 +21,7 @@ use tutela_store::{StoreError, StoreErrorKind};
 use crate::authz;
 use crate::cache::TenantCache;
 use crate::db::{Db, DbError};
+use crate::keys::{self, KeyRing};
 use crate::models;
 use crate::telemetry::{Metrics, observe};
 use crate::tenant::Tenant;
@@ -33,6 +34,8 @@ const READY_TIMEOUT: Duration = Duration::from_secs(2);
 pub struct AppState {
     /// The token verifier.
     pub verifier: Arc<Verifier>,
+    /// The service's own signing keys (ADR-0030).
+    pub keys: Arc<KeyRing>,
     /// The database.
     pub db: Db,
     /// What decisions are made from.
@@ -306,10 +309,41 @@ pub fn api_router(state: &AppState, grpc: Router, request_timeout: Duration) -> 
             Arc::clone(&state.metrics),
             observe,
         ));
+    let public = public_router(state, request_timeout);
     Router::new().fallback(move |req: Request| {
-        let target = if is_grpc(&req) { &grpc } else { &http }.clone();
+        let target = if is_public(&req) {
+            &public
+        } else if is_grpc(&req) {
+            &grpc
+        } else {
+            &http
+        }
+        .clone();
         target.oneshot(req)
     })
+}
+
+/// The paths of the API port that need no token: what a verifier or a client
+/// must reach before it has one (ADR-0030). Exact paths only, so an unknown
+/// path still says nothing without a token.
+pub const PUBLIC_PATHS: [&str; 1] = [keys::JWKS_PATH];
+
+fn is_public(req: &Request) -> bool {
+    PUBLIC_PATHS.contains(&req.uri().path())
+}
+
+/// The routes of [`PUBLIC_PATHS`]. Each one checks what it is sent itself.
+fn public_router(state: &AppState, request_timeout: Duration) -> Router {
+    let timeout = TimeoutLayer::with_status_code(StatusCode::SERVICE_UNAVAILABLE, request_timeout);
+    Router::new()
+        .route(keys::JWKS_PATH, get(keys::jwks))
+        .fallback(not_found)
+        .with_state(state.clone())
+        .layer(timeout)
+        .layer(middleware::from_fn_with_state(
+            Arc::clone(&state.metrics),
+            observe,
+        ))
 }
 
 fn is_grpc(req: &Request) -> bool {

@@ -377,6 +377,15 @@ async fn tm15_the_kid_deny_list_and_the_refetch_limit_hold() {
     v.deny_kid(&old.kid());
     assert_eq!(step(&v, &t_old).await, Some(Step::Key));
     assert!(v.verify(&t_new).await.is_ok());
+    // The forced refetch of an emergency: a key that signs at once is found
+    // at once, inside the refetch limit.
+    let urgent = Signer::new(Alg::Es256);
+    src.set(&[new.jwk(&new.kid()), urgent.jwk(&urgent.kid())]);
+    let t_urgent = urgent.token(&urgent.header("at+jwt"), &claims());
+    assert_eq!(step(&v, &t_urgent).await, Some(Step::Key));
+    v.forget_jwks(&format!("{ISS}/.well-known/jwks.json")).await;
+    assert!(v.verify(&t_urgent).await.is_ok());
+    assert_eq!(src.fetches(), 4);
 }
 
 #[tokio::test]

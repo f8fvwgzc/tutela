@@ -19,6 +19,11 @@ use crate::{DbResult as _, StoreError};
 /// manifest.
 const READ_ONLY: [&str; 4] = ["tenant", "app_manifest", "schema_migration", "approver_key"];
 
+/// Tables with no tenant data that a runtime role may read, add to and
+/// update, never delete from: the service's own signing keys (ADR-0030).
+/// A trigger keeps a key's identity and its denial.
+const KEPT: [&str; 1] = ["signing_key"];
+
 /// A plain role name: it goes into `GRANT`, which takes no parameters.
 fn plain_role(role: &str) -> bool {
     !role.is_empty()
@@ -34,8 +39,9 @@ fn plain_role(role: &str) -> bool {
 
 /// Gives a runtime role what it needs and no more: read and write on every
 /// table with row-level security, read on the tenant directory, the applied
-/// manifest, the migration table and the approver keys, and nothing else. It owns nothing and
-/// cannot create anything.
+/// manifest, the migration table and the approver keys, read, add and update
+/// on the signing keys, and nothing else. It owns nothing and cannot create
+/// anything.
 ///
 /// Run it as the owner, after [`migrate`](crate::migrate), in the same
 /// deploy step: a new tenant table gets its grant from the catalog here. It
@@ -90,6 +96,13 @@ pub async fn grant_service(client: &mut Client, role: &str) -> Result<(), StoreE
         tx.batch_execute(&format!("GRANT SELECT ON tutela.{table} TO {role}"))
             .await
             .db()?;
+    }
+    for table in KEPT {
+        tx.batch_execute(&format!(
+            "GRANT SELECT, INSERT, UPDATE ON tutela.{table} TO {role}"
+        ))
+        .await
+        .db()?;
     }
     tx.commit().await.db()
 }

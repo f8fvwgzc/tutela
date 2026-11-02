@@ -15,6 +15,7 @@
 //!   run a query as a tenant.
 //! - [`expiry`]: the timer that removes expired assignments and bumps the
 //!   revision.
+//! - [`keys`]: the service's own issuer: its signing keys and its JWKS.
 //! - [`telemetry`]: JSON logs and Prometheus metrics.
 //! - [`server`]: the two listeners and the graceful shutdown.
 
@@ -24,6 +25,7 @@ pub mod cache;
 pub mod config;
 pub mod db;
 pub mod expiry;
+pub mod keys;
 pub mod models;
 pub mod server;
 pub mod telemetry;

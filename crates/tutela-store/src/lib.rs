@@ -39,6 +39,7 @@ mod manifest;
 mod migrate;
 mod models;
 mod proposals;
+pub mod signing_keys;
 mod write;
 
 #[cfg(test)]
@@ -69,6 +70,10 @@ pub use models::{
 pub use proposals::{
     MAX_PROPOSAL_PAGE, NewProposal, Proposal, TwoPerson, close_proposal, proposal, proposals,
     propose, publish_proposal, set_two_person, two_person,
+};
+pub use signing_keys::{
+    KeySet, KeyTimes, Rotation, StoredKey, deny_signing_key, ensure_signing_key,
+    rewrap_signing_keys, rotate_signing_key, signing_keys,
 };
 pub use tokio_postgres;
 pub use write::{

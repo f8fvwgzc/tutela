@@ -41,6 +41,12 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0022](#adr-0022-the-searches-live-next-to-the-evaluator) | The searches live next to the evaluator | Accepted |
 | [0023](#adr-0023-the-permission-map-and-a-tag-that-covers-the-answer) | The permission map, and a tag that covers the answer | Accepted |
 | [0024](#adr-0024-signed-bundles-wait-for-part-3) | Signed bundles wait for part 3 | Accepted |
+| [0025](#adr-0025-moves-and-links-in-write_check) | Moves and links in `write_check` | Accepted |
+| [0026](#adr-0026-a-tenant-owns-its-model-versions) | A tenant owns its model versions | Accepted |
+| [0027](#adr-0027-the-impact-report) | The impact report | Accepted |
+| [0028](#adr-0028-explain-and-simulate-need-read_audit-on-the-resource) | Explain and simulate need `read_audit` on the resource | Accepted |
+| [0029](#adr-0029-two-person-publish) | Two-person publish | Accepted |
+| [0030](#adr-0030-tutelads-own-issuer-signing-keys-the-jwks-and-paths-without-a-token) | `tutelad`'s own issuer: signing keys, the JWKS, and paths without a token | Accepted |
 
 ---
 
@@ -1129,4 +1135,41 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 - **Stale on any revision change.** Every unrelated assignment would undo a review.
 - **Stale only when the model moved.** A new holder of the changed role would get access nobody reviewed.
 - **Off by one person.** It undoes the setting in one call.
+
+---
+
+## ADR-0030: `tutelad`'s own issuer: signing keys, the JWKS, and paths without a token
+
+**Status:** Accepted, 2026-11-02. Built in Phase B, part 3a. It builds what [ADR-0024](#adr-0024-signed-bundles-wait-for-part-3) item 1 left to token exchange, and it **changes [ADR-0018](#adr-0018-tutelad-the-stack-the-two-ports-and-the-config) item 3**: one path of the API port needs no token.
+
+**Context.** Token exchange, admin tokens, delegated tokens and later signed bundles all need `tutelad` to sign. TM-15 wants the rotation timing and a `kid` deny-list to work from the first token, and a `Signer` trait from the start. TM-22 wants `TUTELA_MASTER_KEY` and `TUTELA_KEY_PEPPER` required. ADR-0018 left two problems: every request to the API port needs a token, but a verifier must fetch the JWKS before it has one; and the trust file is static, so a tenant made at runtime could never be trusted.
+
+**Decision.**
+
+1. **`TUTELA_ISSUER` names the service's own issuer.** It is required, and it must not be an issuer of the trust file. `http` is allowed only on loopback in dev mode, as for any issuer.
+2. **The own issuer is trusted for every tenant of the directory.** `TrustList::insert_directory` (new, in `tutela-contracts`) trusts an issuer for any tenant id; the tenant is then checked against the directory when a request enters it (`tutela_store::enter`, ADR-0019), so a tenant id the directory holds under another issuer is refused (TM-05). A tenant made at runtime is trusted with no change to the trust file. Such an issuer has no sole tenant, so it can never stand in for an external issuer. Products do not use this: they name their tenants.
+3. **One key set for the deployment, ES256.** Per-tenant keys are Phase C (TM-15). ES256 is the default of CONTRACTS.md 4.1. Publishing an RS256 key for OIDC Discovery waits for the login server (Phase C).
+4. **Storage.** `tutela.signing_key` (migration 6) holds the public JWK and the private key as a `tutela-vault` envelope, sealed for the purpose `signing_key` and the key's `kid`. A private key is never stored, returned or logged in plain text. The table is not tenant data, so it has no row-level security; the service role may read, add and update rows, never delete them. A trigger keeps a key's identity and its denial, for every role.
+5. **Times are the database's.** A key is in the JWKS from when it is made until `retire_at`. It signs from `signs_from`. The key that signs is the latest whose time has come.
+6. **The store API** (`tutela_store::signing_keys`), for `tutelad` and for part 4's `tutela keys rotate`:
+   - `rotate_signing_key(tx, vault, times)`: the next key is published now and signs at `times.lead`; the old one leaves the JWKS at `times.keep` after the switch. `tutelad::keys::rotation_times` gives `lead` = 2 × `TUTELA_JWKS_CACHE_SECS` (default 300) and `keep` = 600 s + 60 s (CONTRACTS.md 10.4). A rotation that already waits is returned, not made twice.
+   - `deny_signing_key(tx, vault, kid)`: the emergency. The key leaves the JWKS at once and stays on the deny-list. If nothing may sign after it, a waiting next key signs at once, or a new key is made.
+   - `ensure_signing_key` makes a first key under an advisory lock, so replicas that start together make one. `rewrap_signing_keys` moves keys sealed under `TUTELA_MASTER_KEY_PREVIOUS` to the current master key.
+7. **Replicas.** A `KeyRing` opens the keys in memory and reads the table every `TUTELA_KEY_REFRESH_SECS` (default 10). A denied `kid` goes on the verifier's deny-list at once, and a change in the published keys makes the verifier forget its cached copy of the JWKS (`Verifier::forget_jwks`, new in `tutela-sdk`): the forced refetch TM-15 asks for. The verifier reads the own JWKS from memory, never over the network.
+8. **Signing goes through a `Signer` trait**, so a KMS or HSM backend (Phase C) changes no call site.
+9. **`GET /.well-known/jwks.json` needs no token.** A verifier must read it before it can check one. Only exact paths in `api::PUBLIC_PATHS` are open; an unknown path still needs a token and says nothing without one. The answer is cacheable for `TUTELA_JWKS_CACHE_SECS`.
+10. **TM-22.** `TUTELA_MASTER_KEY`, `TUTELA_KEY_PEPPER` and `TUTELA_ISSUER` are required. Start-up fails and names the variable, never its value. The pepper must be at least 32 bytes as base64 or hex, and must not be the master key (CONTRACTS.md 5.4). Nothing uses the pepper until API keys (part 4); it is required now so that no deployment runs without one.
+
+**Consequences.**
+- Rotation is started by an operator. There is no timer that rotates by itself yet; `tutela keys rotate` (part 4) calls the store API.
+- Across replicas, a denial takes effect within `TUTELA_KEY_REFRESH_SECS`; on the replica that read it, at once. Products learn of it from their own JWKS refresh, or from the `kid` deny-list over SSE when part 3b builds it.
+- A replica that cannot read the table keeps the keys in hand. With none at all, what needs a signature answers 503.
+- Each replica keeps a tenant's snapshot in memory for every tenant that reaches it (ADR-0021). Tenants are now bounded by the directory, not the trust file; an eviction rule is still open.
+- Part 3b's audit log should record key operations: a rotation, a denial, a first key, a re-wrap.
+
+**Alternatives considered.**
+- **A key from an environment variable.** Every replica would need the same secret, rotation would be a redeploy, and there would be no pre-publication.
+- **A key per replica.** Every verifier would have to trust every replica, and a restart would change the key (ADR-0024).
+- **Reload the verifier's trust list from the directory.** A tenant made between reloads would be refused, and the verifier would need a database.
+- **Serve the JWKS on the ops port.** It is kept out of the public load balancer, where products and SDKs must reach it.
 

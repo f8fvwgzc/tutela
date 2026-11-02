@@ -97,7 +97,7 @@ fn with(url: &str, db: &str, user: &str, password: &str) -> String {
 async fn db() -> Option<Db> {
     let mut db = empty_db().await?;
     let applied = crate::migrate(&mut db.client).await.unwrap();
-    assert_eq!(applied, [1, 2, 3, 4, 5]);
+    assert_eq!(applied, [1, 2, 3, 4, 5, 6]);
     Some(db)
 }
 
@@ -1773,5 +1773,208 @@ async fn migration_4_numbers_what_is_there() {
         .unwrap();
     let got: Vec<(i64, Option<String>)> = rows.iter().map(|r| (r.get(0), r.get(1))).collect();
     assert_eq!(got, vec![(1, None), (2, Some("the text".to_owned()))]);
+    db.finish().await;
+}
+
+// ---------- Signing keys (ADR-0030, TM-15) ----------
+
+const MASTER: &str = "0000000000000000000000000000000000000000000000000000000000000001";
+const OTHER_MASTER: &str = "0000000000000000000000000000000000000000000000000000000000000002";
+
+fn vault(current: &str, previous: Option<&str>) -> tutela_vault::Vault {
+    tutela_vault::Vault::new(tutela_vault::LocalKms::from_values(Some(current), previous).unwrap())
+}
+
+const TIMES: crate::KeyTimes = crate::KeyTimes {
+    lead: Duration::from_secs(600),
+    keep: Duration::from_secs(660),
+};
+
+async fn key_set(c: &mut Client) -> crate::KeySet {
+    let tx = c.transaction().await.unwrap();
+    let set = crate::signing_keys(&tx).await.unwrap();
+    tx.commit().await.unwrap();
+    set
+}
+
+/// The private key is stored sealed: the row holds no PKCS#8, no private
+/// scalar, and it opens only with the master key it was sealed under.
+#[tokio::test]
+async fn tm15_a_signing_key_is_never_stored_in_plain_text() {
+    let Some(mut db) = db().await else { return };
+    let v = vault(MASTER, None);
+    let tx = db.client.transaction().await.unwrap();
+    let kid = crate::ensure_signing_key(&tx, &v).await.unwrap().unwrap();
+    assert_eq!(crate::ensure_signing_key(&tx, &v).await.unwrap(), None);
+    tx.commit().await.unwrap();
+
+    let set = key_set(&mut db.client).await;
+    let key = set.signing(set.now).unwrap();
+    assert_eq!(key.kid, kid);
+    let pkcs8 = key.open(&v).unwrap();
+    let pair = aws_lc_rs::signature::EcdsaKeyPair::from_pkcs8(
+        &aws_lc_rs::signature::ECDSA_P256_SHA256_FIXED_SIGNING,
+        &pkcs8,
+    )
+    .unwrap();
+    // Every column of the row, as the database holds it.
+    let raw = db
+        .client
+        .query_one(
+            "SELECT kid, alg, public_jwk, sealed FROM tutela.signing_key WHERE kid = $1",
+            &[&kid],
+        )
+        .await
+        .unwrap();
+    let sealed: Vec<u8> = raw.get(3);
+    let mut stored = sealed.clone();
+    for i in 0..3 {
+        stored.extend_from_slice(raw.get::<_, String>(i).as_bytes());
+    }
+    // The private scalar sits in the PKCS#8 document: no 16-byte run of the
+    // document is in the row, sealed or not.
+    for window in pkcs8.windows(16) {
+        assert!(
+            !stored.windows(16).any(|w| w == window),
+            "the row holds part of the private key"
+        );
+    }
+    let jwk: serde_json::Value = serde_json::from_str(&key.public_jwk).unwrap();
+    assert!(
+        jwk.get("d").is_none(),
+        "the public JWK holds no private part"
+    );
+    let point = aws_lc_rs::signature::KeyPair::public_key(&pair)
+        .as_ref()
+        .to_vec();
+    assert_eq!(
+        crate::signing_keys::thumbprint(jwk["x"].as_str().unwrap(), jwk["y"].as_str().unwrap()),
+        kid
+    );
+    assert_eq!(point.len(), 65);
+    // Another master key opens nothing.
+    assert_eq!(
+        key.open(&vault(OTHER_MASTER, None))
+            .map(|_| ())
+            .unwrap_err()
+            .kind(),
+        StoreErrorKind::Invalid
+    );
+    // The blob is bound to its kid: moved to another row it does not open.
+    let mut moved = key.clone();
+    moved.kid = "A".repeat(43);
+    assert!(moved.open(&v).is_err());
+    db.finish().await;
+}
+
+/// A rotation publishes the next key first and keeps the old one until its
+/// tokens have expired; a denied key leaves at once and stays denied.
+#[tokio::test]
+async fn tm15_rotation_publishes_ahead_and_a_denied_kid_stays_denied() {
+    let Some(mut db) = db().await else { return };
+    let v = vault(MASTER, None);
+    let tx = db.client.transaction().await.unwrap();
+    // With no key at all, a rotation makes one that signs at once.
+    let first = crate::rotate_signing_key(&tx, &v, TIMES).await.unwrap();
+    assert!(first.made && first.previous.is_none());
+    let second = crate::rotate_signing_key(&tx, &v, TIMES).await.unwrap();
+    tx.commit().await.unwrap();
+    assert!(second.made);
+    let (prev, retire_at) = second.previous.clone().unwrap();
+    assert_eq!(prev, first.next);
+    assert_eq!(retire_at, second.signs_from + TIMES.keep);
+
+    let set = key_set(&mut db.client).await;
+    // Both are published; the old one still signs until the switch.
+    assert_eq!(set.keys.len(), 2);
+    assert_eq!(set.signing(set.now).unwrap().kid, first.next);
+    let lead = second.signs_from.duration_since(set.now).unwrap();
+    assert!(
+        lead > Duration::from_secs(590) && lead <= TIMES.lead,
+        "{lead:?}"
+    );
+    // After the switch the new key signs, and the old one is still published.
+    let after = second.signs_from + Duration::from_secs(1);
+    assert_eq!(set.signing(after).unwrap().kid, second.next);
+    assert!(
+        set.keys
+            .iter()
+            .any(|k| k.kid == first.next && k.published(after))
+    );
+    // Past its retire time it leaves.
+    let gone = retire_at + Duration::from_secs(1);
+    assert!(
+        !set.keys
+            .iter()
+            .any(|k| k.kid == first.next && k.published(gone))
+    );
+
+    // A second rotation while one waits makes nothing new.
+    let tx = db.client.transaction().await.unwrap();
+    let again = crate::rotate_signing_key(&tx, &v, TIMES).await.unwrap();
+    assert!(!again.made);
+    assert_eq!(again.next, second.next);
+
+    // Deny the key that signs: the waiting key signs at once, so no key is
+    // made that no cache has seen.
+    let replacement = crate::deny_signing_key(&tx, &v, &first.next).await.unwrap();
+    assert_eq!(replacement.as_deref(), Some(second.next.as_str()));
+    assert_eq!(
+        kind(crate::deny_signing_key(&tx, &v, &"B".repeat(43)).await),
+        Some(StoreErrorKind::NotFound)
+    );
+    tx.commit().await.unwrap();
+    let set = key_set(&mut db.client).await;
+    assert_eq!(set.denied, vec![first.next.clone()]);
+    assert!(!set.keys.iter().any(|k| k.kid == first.next));
+    assert_eq!(set.signing(set.now).unwrap().kid, second.next);
+
+    // Deny that one too: nothing waits, so a new key is made.
+    let tx = db.client.transaction().await.unwrap();
+    let made = crate::deny_signing_key(&tx, &v, &second.next)
+        .await
+        .unwrap()
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_ne!(made, second.next);
+    assert_eq!(key_set(&mut db.client).await.denied.len(), 2);
+
+    // A denial is never undone, and a key is never deleted, by any role.
+    for sql in [
+        format!(
+            "UPDATE tutela.signing_key SET denied_at = NULL WHERE kid = '{}'",
+            first.next
+        ),
+        format!("DELETE FROM tutela.signing_key WHERE kid = '{made}'"),
+        format!("UPDATE tutela.signing_key SET public_jwk = '{{}}' WHERE kid = '{made}'"),
+    ] {
+        let e = db.client.batch_execute(&sql).await.unwrap_err();
+        assert_eq!(e.code().map(|c| c.code()), Some("23000"), "{sql}");
+    }
+    db.finish().await;
+}
+
+/// After a master-key rotation, keys sealed under the old key open with
+/// `TUTELA_MASTER_KEY_PREVIOUS` set, and are re-wrapped to the new key.
+#[tokio::test]
+async fn tm15_signing_keys_follow_a_master_key_rotation() {
+    let Some(mut db) = db().await else { return };
+    let old = vault(MASTER, None);
+    let tx = db.client.transaction().await.unwrap();
+    crate::ensure_signing_key(&tx, &old).await.unwrap();
+    tx.commit().await.unwrap();
+    let new = vault(OTHER_MASTER, Some(MASTER));
+    let only_new = vault(OTHER_MASTER, None);
+    let set = key_set(&mut db.client).await;
+    let key = set.signing(set.now).unwrap().clone();
+    assert!(key.open(&new).is_ok());
+    assert!(key.open(&only_new).is_err());
+    let tx = db.client.transaction().await.unwrap();
+    assert_eq!(crate::rewrap_signing_keys(&tx, &new).await.unwrap(), 1);
+    assert_eq!(crate::rewrap_signing_keys(&tx, &new).await.unwrap(), 0);
+    tx.commit().await.unwrap();
+    let set = key_set(&mut db.client).await;
+    let key = set.signing(set.now).unwrap();
+    assert!(key.open(&only_new).is_ok());
     db.finish().await;
 }

@@ -20,6 +20,7 @@ use crate::cache::TenantCache;
 use crate::config::Config;
 use crate::db::Db;
 use crate::expiry;
+use crate::keys;
 use crate::telemetry::Metrics;
 
 /// The bound service, not yet serving.
@@ -34,6 +35,7 @@ pub struct Server {
     drain: Duration,
     stop_timeout: Duration,
     sweep_every: Duration,
+    key_refresh: Duration,
 }
 
 impl Server {
@@ -49,6 +51,12 @@ impl Server {
         let ops = TcpListener::bind(config.ops_listen)
             .await
             .with_context(|| format!("binding the ops port {}", config.ops_listen))?;
+        // The keys before the first request, where the database allows; the
+        // job loads them again on its timer.
+        if let Err(e) = keys::refresh(&state.keys, &state.verifier, &state.db, &state.metrics).await
+        {
+            tracing::warn!(error = %e, "starting without signing keys");
+        }
         let (health, health_service) = tonic_health::server::health_reporter();
         let grpc = tonic::service::Routes::new(health_service)
             .add_service(AuthzService::server(state.clone()))
@@ -64,6 +72,7 @@ impl Server {
             drain: config.shutdown_drain,
             stop_timeout: config.shutdown_timeout,
             sweep_every: config.expiry_sweep,
+            key_refresh: config.key_refresh,
         })
     }
 
@@ -109,6 +118,7 @@ impl Server {
             drain,
             stop_timeout,
             sweep_every,
+            key_refresh,
         } = self;
         let (stop_api, api_stopped) = watch::channel(false);
         let (stop_ops, ops_stopped) = watch::channel(false);
@@ -119,8 +129,9 @@ impl Server {
             state.db.clone(),
             Arc::clone(&state.metrics),
             sweep_every,
-            jobs_stopped,
+            jobs_stopped.clone(),
         ));
+        let key_job = tokio::spawn(keys::run(state.clone(), key_refresh, jobs_stopped));
 
         tokio::select! {
             () = shutdown => {}
@@ -141,6 +152,9 @@ impl Server {
         let _ = stop_ops.send(true);
         if tokio::time::timeout(stop_timeout, sweeper).await.is_err() {
             tracing::warn!("the expiry sweep did not stop in time");
+        }
+        if tokio::time::timeout(stop_timeout, key_job).await.is_err() {
+            tracing::warn!("the key refresh did not stop in time");
         }
         match finished {
             Ok(joined) => {
@@ -190,8 +204,10 @@ fn stopped_by_itself(
 pub fn state(config: &Config) -> anyhow::Result<AppState> {
     let db = Db::connect(&config.database_url, config.pool_size)?;
     let metrics = Arc::new(Metrics::new());
+    let keys = Arc::new(config.key_ring()?);
     Ok(AppState {
-        verifier: Arc::new(config.verifier()?),
+        verifier: Arc::new(config.verifier(Arc::clone(&keys))?),
+        keys,
         cache: Arc::new(TenantCache::new(
             db.clone(),
             config.limits,
@@ -211,6 +227,9 @@ pub fn state(config: &Config) -> anyhow::Result<AppState> {
 ///
 /// A failed start, a role or a schema that does not isolate tenants, or a
 /// failed shutdown.
+///
+/// `TUTELA_MASTER_KEY`, `TUTELA_KEY_PEPPER` and `TUTELA_ISSUER` are checked
+/// in [`Config::from_env`], before this: without them nothing starts.
 pub async fn run(config: Config, shutdown: impl Future<Output = ()> + Send) -> anyhow::Result<()> {
     let state = state(&config)?;
     // A database that is down may come up later. A role that can bypass

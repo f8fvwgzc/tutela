@@ -18,6 +18,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.104"
+aws-lc-rs = { version = "1.18.2", default-features = false, features = ["aws-lc-sys", "alloc"] }
 axum = { version = "0.8.9", features = ["http2"] }
 base64 = "0.23.1"
 clap = { version = "4.6.7", features = ["derive", "env"] }
@@ -42,10 +43,11 @@ tutela-pdp = { workspace = true }
 tutela-safenet = { workspace = true }
 tutela-sdk = { workspace = true }
 tutela-store = { workspace = true }
+tutela-vault = { workspace = true }
 uuid = { version = "1.29.0", features = ["v7"] }
+zeroize = "1.9.1"
 
 [dev-dependencies]
-aws-lc-rs = { version = "1.18.2", default-features = false, features = ["aws-lc-sys", "alloc"] }
 ed25519-dalek = "3.0.0"
 reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
 tokio = { version = "1.54.1", features = ["io-util", "process"] }

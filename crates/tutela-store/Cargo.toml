@@ -13,6 +13,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+aws-lc-rs = { version = "1.18.2", default-features = false, features = ["aws-lc-sys", "alloc"] }
 base64 = "0.23.1"
 ed25519-dalek = "3.0.0"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -22,7 +23,9 @@ thiserror = "2.0.21"
 tokio-postgres = { version = "0.7.18", default-features = false, features = ["runtime", "with-uuid-1"] }
 tutela-contracts = { workspace = true }
 tutela-pdp = { workspace = true }
+tutela-vault = { workspace = true }
 uuid = { version = "1.29.0", features = ["v7"] }
+zeroize = "1.9.1"
 
 [dev-dependencies]
 tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread"] }

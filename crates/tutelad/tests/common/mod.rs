@@ -30,6 +30,11 @@ use tutelad::db::Db;
 use tutelad::telemetry::Metrics;
 
 pub const ISS: &str = "https://auth.example.test";
+/// `tutelad`'s own issuer in the tests.
+pub const OWN_ISS: &str = "https://tutela.example.test";
+/// Test values only.
+pub const MASTER_KEY: &str = "6d61737465722d6b65792d666f722d74657374732d6f6e6c792d303030303031";
+pub const PEPPER: &str = "7065707065722d666f722d74657374732d6f6e6c792d30303030303030303031";
 pub const USER: &str = "user:usr_0193a1b2-c3d4-7a11-8b22-3c4d5e6f7081";
 pub const OWNER: &str = "tutela_test_owner";
 pub const OWNER_PASSWORD: &str = "tutela_test_owner";
@@ -302,7 +307,21 @@ pub fn config(database_url: &str, trust: TrustFile) -> Config {
         expiry_sweep: Duration::from_secs(3600),
         limits: tutelad::cache::Limits::default(),
         impact_work: tutela_pdp::MAX_IMPACT_WORK,
+        issuer: OWN_ISS.parse().unwrap(),
+        secrets: secrets(),
+        jwks_cache: Duration::from_secs(300),
+        key_refresh: Duration::from_secs(10),
     }
+}
+
+/// The test master key and pepper.
+pub fn secrets() -> tutelad::config::Secrets {
+    tutelad::config::Secrets::from_values(Some(MASTER_KEY), None, Some(PEPPER), None).unwrap()
+}
+
+/// The vault of [`MASTER_KEY`], for the store's key calls.
+pub fn vault() -> tutela_vault::Vault {
+    secrets().vault().unwrap()
 }
 
 /// The state, with the issuer's keys in memory.
@@ -312,13 +331,13 @@ pub fn state(config: &Config, issuer: &Issuer) -> AppState {
 
 /// [`state`], with delegated (`agent+jwt`) tokens on or off.
 pub fn state_with(config: &Config, issuer: &Issuer, delegation: bool) -> AppState {
-    let vc: VerifierConfig = config.trust.verifier_config(config.audience.clone());
+    let vc: VerifierConfig = config.verifier_config();
     let vc = VerifierConfig {
         issuers: vc
             .issuers
             .into_iter()
             .map(|i| IssuerConfig {
-                algs: vec![Alg::Es256],
+                algs: if i.external { i.algs } else { vec![Alg::Es256] },
                 ..i
             })
             .collect(),
@@ -329,12 +348,17 @@ pub fn state_with(config: &Config, issuer: &Issuer, delegation: bool) -> AppStat
     };
     let db = Db::connect(&config.database_url, config.pool_size).unwrap();
     let metrics = Arc::new(Metrics::new());
+    let keys = Arc::new(config.key_ring().unwrap());
     AppState {
         verifier: Arc::new(Verifier::with(
             vc,
-            Arc::new(Keys(issuer.jwks())),
+            Arc::new(tutelad::keys::OwnJwks::new(
+                Arc::clone(&keys),
+                Arc::new(Keys(issuer.jwks())),
+            )),
             Arc::new(Now),
         )),
+        keys,
         cache: Arc::new(tutelad::cache::TenantCache::new(
             db.clone(),
             config.limits,

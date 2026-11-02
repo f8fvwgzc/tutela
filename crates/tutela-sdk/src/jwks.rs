@@ -310,6 +310,12 @@ impl KeyCache {
         }
     }
 
+    /// Drops what is cached for `url`, and when it was last fetched, so the
+    /// next token of that issuer fetches its JWKS at once.
+    pub(crate) async fn forget(&self, url: &str) {
+        self.state.lock().await.remove(url);
+    }
+
     /// The key `kid` of the issuer whose JWKS is at `url`, at time `now`.
     pub(crate) async fn key(&self, url: &str, kid: &str, now: u64) -> Option<Key> {
         let mut state = self.state.lock().await;

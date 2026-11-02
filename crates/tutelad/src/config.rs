@@ -10,13 +10,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::cache::Limits;
+use crate::keys::{KeyRing, OwnJwks};
 use anyhow::{Context as _, anyhow, bail, ensure};
 use serde::Deserialize;
 use tutela_contracts::claims::Audience;
 use tutela_contracts::tenant::{Issuer, TenantId, TrustList};
 use tutela_sdk::{
-    Alg, CacheRules, IssuerConfig, SafenetSource, SystemClock, Verifier, VerifierConfig,
+    Alg, CacheRules, Clock, IssuerConfig, JwksSource, SafenetSource, SystemClock, Verifier,
+    VerifierConfig,
 };
+use tutela_vault::{LocalKms, Vault};
+use zeroize::Zeroizing;
 
 /// The planned audience of the check API (CONTRACTS.md 7.1).
 pub const DEFAULT_AUDIENCE: &str = "tutela-authz";
@@ -58,6 +62,127 @@ pub struct Config {
     /// `TUTELA_IMPACT_MAX_WORK`: the most steps one impact report takes
     /// (ADR-0027). A report that reaches it says it is not complete.
     pub impact_work: usize,
+    /// `TUTELA_ISSUER`: this service's own issuer, the `iss` of every token
+    /// it signs (ADR-0030). Its tokens are trusted for every tenant of the
+    /// directory under it.
+    pub issuer: Issuer,
+    /// `TUTELA_MASTER_KEY` and `TUTELA_KEY_PEPPER`: required, never made up
+    /// (THREAT-MODEL.md TM-22).
+    pub secrets: Secrets,
+    /// `TUTELA_JWKS_CACHE_SECS`: how long a verifier may keep the JWKS. A
+    /// rotation publishes the next key twice this long before it signs.
+    pub jwks_cache: Duration,
+    /// `TUTELA_KEY_REFRESH_SECS`: how often a replica reads the signing keys
+    /// again, so a rotation or a denial elsewhere reaches it.
+    pub key_refresh: Duration,
+}
+
+/// The secrets `tutelad` needs at start-up. `Debug` shows none of them.
+#[derive(Clone)]
+pub struct Secrets {
+    master: Zeroizing<String>,
+    master_previous: Option<Zeroizing<String>>,
+    pepper: Zeroizing<Vec<u8>>,
+    pepper_version: u32,
+}
+
+impl std::fmt::Debug for Secrets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Secrets")
+            .field("pepper_version", &self.pepper_version)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Secrets {
+    /// From the values of `TUTELA_MASTER_KEY`, `TUTELA_MASTER_KEY_PREVIOUS`,
+    /// `TUTELA_KEY_PEPPER` and `TUTELA_KEY_PEPPER_VERSION`.
+    ///
+    /// # Errors
+    ///
+    /// A missing master key or pepper, a master key that is not 32 bytes, a
+    /// pepper under 32 bytes, a pepper that is the master key (CONTRACTS.md
+    /// 5.4: it is never derived from it), or a bad version. The text names
+    /// the variable, never its value.
+    pub fn from_values(
+        master: Option<&str>,
+        master_previous: Option<&str>,
+        pepper: Option<&str>,
+        pepper_version: Option<&str>,
+    ) -> anyhow::Result<Self> {
+        fn present(v: Option<&str>) -> Option<&str> {
+            v.map(str::trim).filter(|v| !v.is_empty())
+        }
+        // The vault's own checks, so the two never disagree.
+        LocalKms::from_values(master, master_previous).map_err(|e| anyhow!("{e}"))?;
+        let master = present(master).context("TUTELA_MASTER_KEY is not set")?;
+        let pepper_text =
+            present(pepper).context("TUTELA_KEY_PEPPER is not set; Tutela never makes one up")?;
+        let pepper = decode_secret(pepper_text)
+            .filter(|p| p.len() >= 32)
+            .context("TUTELA_KEY_PEPPER must be at least 32 random bytes, as base64 or hex")?;
+        ensure!(
+            decode_secret(master).is_none_or(|m| *m != *pepper),
+            "TUTELA_KEY_PEPPER must not be the master key: it is separate and never derived \
+             from it (CONTRACTS.md 5.4)"
+        );
+        let pepper_version = match present(pepper_version) {
+            None => 1,
+            Some(v) => v
+                .parse::<u32>()
+                .ok()
+                .filter(|v| *v >= 1)
+                .context("TUTELA_KEY_PEPPER_VERSION must be a whole number from 1")?,
+        };
+        Ok(Self {
+            master: Zeroizing::new(master.to_owned()),
+            master_previous: present(master_previous).map(|p| Zeroizing::new(p.to_owned())),
+            pepper,
+            pepper_version,
+        })
+    }
+
+    /// The vault over the master key.
+    ///
+    /// # Errors
+    ///
+    /// Never for values that [`Secrets::from_values`] accepted.
+    pub fn vault(&self) -> anyhow::Result<Vault> {
+        LocalKms::from_values(
+            Some(self.master.as_str()),
+            self.master_previous.as_ref().map(|p| p.as_str()),
+        )
+        .map(Vault::new)
+        .map_err(|e| anyhow!("{e}"))
+    }
+
+    /// The API-key pepper and its version (CONTRACTS.md 5.4). API keys come
+    /// with part 4; the pepper is required now so a deployment never runs
+    /// without one (TM-22).
+    #[must_use]
+    pub fn pepper(&self) -> (&[u8], u32) {
+        (&self.pepper, self.pepper_version)
+    }
+}
+
+/// Bytes from hex (an even number of digits) or base64 (standard or
+/// URL-safe, with or without padding).
+fn decode_secret(v: &str) -> Option<Zeroizing<Vec<u8>>> {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
+    if v.len().is_multiple_of(2) && v.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return (0..v.len() / 2)
+            .map(|i| {
+                v.get(2 * i..2 * i + 2)
+                    .and_then(|d| u8::from_str_radix(d, 16).ok())
+            })
+            .collect::<Option<Vec<u8>>>()
+            .map(Zeroizing::new);
+    }
+    [&STANDARD, &STANDARD_NO_PAD, &URL_SAFE, &URL_SAFE_NO_PAD]
+        .into_iter()
+        .find_map(|engine| engine.decode(v).ok())
+        .map(Zeroizing::new)
 }
 
 impl std::fmt::Debug for Config {
@@ -70,6 +195,8 @@ impl std::fmt::Debug for Config {
             .field("log", &self.log)
             .field("pool_size", &self.pool_size)
             .field("limits", &self.limits)
+            .field("issuer", &self.issuer)
+            .field("secrets", &self.secrets)
             .finish_non_exhaustive()
     }
 }
@@ -128,12 +255,30 @@ impl Config {
             impact_work >= 1,
             "TUTELA_IMPACT_MAX_WORK must be at least 1"
         );
+        let secrets = Secrets::from_values(
+            var("TUTELA_MASTER_KEY").as_deref(),
+            var("TUTELA_MASTER_KEY_PREVIOUS").as_deref(),
+            var("TUTELA_KEY_PEPPER").as_deref(),
+            var("TUTELA_KEY_PEPPER_VERSION").as_deref(),
+        )?;
+        let trust = TrustFile::read(&trust_path, dev_mode)?;
+        let issuer = own_issuer(&need("TUTELA_ISSUER")?, dev_mode, &trust)?;
+        let jwks_cache = seconds(&get, "TUTELA_JWKS_CACHE_SECS", "300")?;
+        ensure!(
+            !jwks_cache.is_zero(),
+            "TUTELA_JWKS_CACHE_SECS must be at least 1"
+        );
+        let key_refresh = seconds(&get, "TUTELA_KEY_REFRESH_SECS", "10")?;
+        ensure!(
+            !key_refresh.is_zero() && key_refresh <= jwks_cache,
+            "TUTELA_KEY_REFRESH_SECS must be from 1 to TUTELA_JWKS_CACHE_SECS"
+        );
         Ok(Self {
             database_url: need("TUTELA_DATABASE_URL")?,
             listen: parsed(&get, "TUTELA_LISTEN", "0.0.0.0:8080")?,
             ops_listen: parsed(&get, "TUTELA_OPS_LISTEN", "0.0.0.0:9090")?,
             audience: audience.parse().context("TUTELA_AUDIENCE is not valid")?,
-            trust: TrustFile::read(&trust_path, dev_mode)?,
+            trust,
             dev_mode,
             log: get("TUTELA_LOG").unwrap_or_else(|| "info".to_owned()),
             pool_size: parsed(&get, "TUTELA_DB_POOL_SIZE", "16")?,
@@ -143,16 +288,41 @@ impl Config {
             expiry_sweep,
             limits,
             impact_work,
+            issuer,
+            secrets,
+            jwks_cache,
+            key_refresh,
         })
     }
 
-    /// The token verifier, fetching JWKS through `tutela-safenet` under this
-    /// config's rules.
+    /// The verifier's settings: the trust file's issuers, and this service's
+    /// own issuer, trusted for every tenant of its directory (each request's
+    /// tenant is checked against the directory when it enters it).
+    #[must_use]
+    pub fn verifier_config(&self) -> VerifierConfig {
+        let mut config = self.trust.verifier_config(self.audience.clone());
+        // `own_issuer` refused an issuer of the trust file, and a dev-only
+        // issuer outside dev mode, so this cannot fail.
+        if config.trust.insert_directory(self.issuer.clone()).is_err() {
+            tracing::error!("the own issuer could not be trusted");
+        }
+        config.issuers.push(IssuerConfig {
+            iss: self.issuer.clone(),
+            jwks_uri: crate::keys::jwks_url(&self.issuer),
+            algs: vec![Alg::Es256],
+            external: false,
+            allow_typ_jwt: false,
+        });
+        config
+    }
+
+    /// The token verifier: this service's own keys from `ring`, every other
+    /// issuer's JWKS through `tutela-safenet` under this config's rules.
     ///
     /// # Errors
     ///
     /// When the JWKS client cannot be set up.
-    pub fn verifier(&self) -> anyhow::Result<Verifier> {
+    pub fn verifier(&self, ring: Arc<KeyRing>) -> anyhow::Result<Verifier> {
         let mut policy = tutela_safenet::Policy::new();
         if self.dev_mode {
             policy = policy.dev_loopback();
@@ -163,13 +333,54 @@ impl Config {
                 .with_context(|| format!("private host {host:?} in the trust file"))?;
         }
         let source = SafenetSource::new(policy).context("setting up the JWKS client")?;
-        let config = self.trust.verifier_config(self.audience.clone());
-        Ok(Verifier::with(
-            config,
-            Arc::new(source),
-            Arc::new(SystemClock),
+        Ok(self.verifier_with(ring, Arc::new(source), Arc::new(SystemClock)))
+    }
+
+    /// The token verifier with another JWKS source for the other issuers,
+    /// and another clock: for tests.
+    #[must_use]
+    pub fn verifier_with(
+        &self,
+        ring: Arc<KeyRing>,
+        other: Arc<dyn JwksSource>,
+        clock: Arc<dyn Clock>,
+    ) -> Verifier {
+        Verifier::with(
+            self.verifier_config(),
+            Arc::new(OwnJwks::new(ring, other)),
+            clock,
+        )
+    }
+
+    /// The signing keys, not loaded yet.
+    ///
+    /// # Errors
+    ///
+    /// Never for a config that [`Config::from_vars`] accepted.
+    pub fn key_ring(&self) -> anyhow::Result<KeyRing> {
+        Ok(KeyRing::new(
+            self.issuer.clone(),
+            self.secrets.vault()?,
+            self.jwks_cache,
         ))
     }
+}
+
+/// `TUTELA_ISSUER`, checked: a valid issuer, `http` only on loopback in dev
+/// mode, and not an issuer of the trust file, whose tenants are fixed.
+fn own_issuer(text: &str, dev_mode: bool, trust: &TrustFile) -> anyhow::Result<Issuer> {
+    let iss: Issuer = text
+        .parse()
+        .context("TUTELA_ISSUER is not a valid issuer")?;
+    ensure!(
+        dev_mode || !iss.is_dev_only(),
+        "TUTELA_ISSUER may be http only on loopback in dev mode"
+    );
+    ensure!(
+        !trust.issuer.iter().any(|e| e.iss == iss),
+        "TUTELA_ISSUER must not be an issuer of the trust file"
+    );
+    Ok(iss)
 }
 
 fn parsed<T: FromStr>(
@@ -314,6 +525,19 @@ mod tests {
     use super::*;
 
     const TID: &str = "ten_0193a1b2-c3d4-7e5f-8a6b-7c8d9e0f1a2b";
+    const MASTER: &str = "6d61737465722d6b65792d666f722d74657374732d6f6e6c792d303030303031";
+    const PEPPER: &str = "7065707065722d666f722d74657374732d6f6e6c792d30303030303030303031";
+    const OWN: &str = "https://tutela.example.test";
+
+    /// The variables every start needs besides the ones a test names.
+    fn required(name: &str) -> Option<String> {
+        match name {
+            "TUTELA_ISSUER" => Some(OWN.to_owned()),
+            "TUTELA_MASTER_KEY" => Some(MASTER.to_owned()),
+            "TUTELA_KEY_PEPPER" => Some(PEPPER.to_owned()),
+            _ => None,
+        }
+    }
 
     fn file(iss: &str, extra: &str) -> String {
         format!(
@@ -333,7 +557,7 @@ mod tests {
             "TUTELA_REVISION_CHECK_MS" => Some(check_ms.to_owned()),
             "TUTELA_MAX_AGE_READ_SECS" => Some(read.to_owned()),
             "TUTELA_MAX_AGE_WRITE_SECS" => Some(write.to_owned()),
-            _ => None,
+            other => required(other),
         });
         std::fs::remove_file(&path).unwrap();
         config
@@ -391,7 +615,85 @@ mod tests {
                 .iter()
                 .find(|(k, _)| *k == name)
                 .map(|(_, v)| v.clone())
+                .or_else(|| required(name))
         }
+    }
+
+    /// TM-22: a missing or weak secret stops the start-up, and says which
+    /// variable, never its value.
+    #[test]
+    fn tm22_missing_secrets_stop_the_start_up() {
+        let path = trust_on_disk("secrets");
+        let base = [
+            ("TUTELA_DATABASE_URL", "host=db".to_owned()),
+            ("TUTELA_TRUST_FILE", path.display().to_string()),
+        ];
+        let run = |extra: &[(&'static str, &str)]| {
+            let extra: Vec<(&str, String)> =
+                extra.iter().map(|(k, v)| (*k, (*v).to_owned())).collect();
+            let all: Vec<(&'static str, String)> =
+                base.iter().cloned().chain(extra.iter().cloned()).collect();
+            let blank = extra.clone();
+            Config::from_vars(move |name| {
+                if let Some((_, v)) = blank.iter().find(|(k, _)| *k == name) {
+                    return Some(v.clone()).filter(|v| v != "<unset>");
+                }
+                vars(&all)(name)
+            })
+            .map(|_| ())
+            .map_err(|e| format!("{e:#}"))
+        };
+        assert!(run(&[]).is_ok());
+        for (name, value, why) in [
+            (
+                "TUTELA_MASTER_KEY",
+                "<unset>",
+                "TUTELA_MASTER_KEY is not set",
+            ),
+            ("TUTELA_MASTER_KEY", "", "TUTELA_MASTER_KEY is not set"),
+            (
+                "TUTELA_MASTER_KEY",
+                "short",
+                "TUTELA_MASTER_KEY must be 32 bytes",
+            ),
+            (
+                "TUTELA_KEY_PEPPER",
+                "<unset>",
+                "TUTELA_KEY_PEPPER is not set",
+            ),
+            ("TUTELA_KEY_PEPPER", "abcd", "at least 32 random bytes"),
+            ("TUTELA_KEY_PEPPER", MASTER, "must not be the master key"),
+            (
+                "TUTELA_KEY_PEPPER_VERSION",
+                "0",
+                "TUTELA_KEY_PEPPER_VERSION",
+            ),
+            ("TUTELA_ISSUER", "<unset>", "TUTELA_ISSUER is not set"),
+            (
+                "TUTELA_ISSUER",
+                "http://127.0.0.1:9",
+                "only on loopback in dev mode",
+            ),
+            (
+                "TUTELA_ISSUER",
+                "https://auth.example.test",
+                "an issuer of the trust file",
+            ),
+            ("TUTELA_KEY_REFRESH_SECS", "0", "TUTELA_KEY_REFRESH_SECS"),
+        ] {
+            let e = run(&[(name, value)]).unwrap_err();
+            assert!(e.contains(why), "{name}={value:?}: {e}");
+            assert!(!e.contains(PEPPER) && !e.contains(MASTER), "{e}");
+        }
+        let good = Config::from_vars(vars(&base)).unwrap();
+        let shown = format!("{good:?}");
+        assert!(
+            !shown.contains(MASTER) && !shown.contains(PEPPER),
+            "{shown}"
+        );
+        assert_eq!(good.secrets.pepper().1, 1);
+        assert_eq!(good.secrets.pepper().0.len(), 32);
+        std::fs::remove_file(path).unwrap();
     }
 
     fn trust_on_disk(name: &str) -> PathBuf {

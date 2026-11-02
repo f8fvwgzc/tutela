@@ -108,3 +108,15 @@ A `SafenetError` of kind `Http` also needs the chain now: its own text no longer
 
 - `tutela_contracts::error_chain` is new and public.
 - Workload examples use attache's path, `/ns/<namespace>/svc/<service>` ([CONTRACTS.md 1.4](CONTRACTS.md#14-workload-principals-spiffe)). Nothing in the parser changed.
+
+## `tutelad`'s own issuer (part 3a)
+
+These matter to whoever runs `tutelad`, and to a product that verifies its tokens.
+
+- **New required variables.** `tutelad` does not start without `TUTELA_ISSUER` (its own issuer, a public https URL), `TUTELA_MASTER_KEY` (32 bytes) and `TUTELA_KEY_PEPPER` (32 bytes or more, not the master key), each as base64 or hex. `deploy/compose.yaml` asks for them. `TUTELA_ISSUER` must not be an issuer of the trust file.
+- **Run `tutelad migrate`.** Migration 6 adds `tutela.signing_key`, and `grant_service` gives the service role read, add and update on it.
+- **The JWKS** is at `<TUTELA_ISSUER>/.well-known/jwks.json` on the API port, with no token. To accept `tutelad`'s tokens, add its issuer to your `tutela-sdk` trust list with that `jwks_uri`, `algs = ["ES256"]`, and the tenants you serve.
+- **Additive in `tutela-contracts`:** `TrustList::insert_directory` and `TrustList::is_directory`. Only a service that checks every tenant against its own directory uses them; a product never does. `TrustList` gained a private field, so nothing that builds one changes.
+- **Additive in `tutela-sdk`:** `Verifier::forget_jwks(jwks_uri)`, the forced refetch of an emergency rotation.
+- **New in `tutela-store`:** the signing-key API (`rotate_signing_key`, `deny_signing_key`, `ensure_signing_key`, `rewrap_signing_keys`, `signing_keys`), and a dependency on `tutela-vault`.
+
