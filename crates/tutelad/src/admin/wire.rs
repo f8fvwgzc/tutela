@@ -687,3 +687,40 @@ pub struct RolesOut {
     /// By name.
     pub types: Vec<TypeOut>,
 }
+
+// ---------- Apps (CONTRACTS.md 7.13.8) ----------
+
+/// One app. Never its secret.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppOut {
+    /// Its client id, `app_<uuidv7>`.
+    pub client_id: String,
+    /// Its display name.
+    pub name: String,
+    /// Its service account, `sa:sa_<uuidv7>`.
+    pub principal: String,
+    /// Who made it.
+    pub created_by: String,
+    /// When it was made.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    /// When it was disabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disabled_at: Option<String>,
+}
+
+/// An app and a new client secret: the one answer that shows it.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppSecretOut {
+    /// The app.
+    pub app: AppOut,
+    /// `tut_sk_<prefix>_<secret>` (CONTRACTS.md 5.1). Shown this once.
+    pub client_secret: String,
+}
+
+/// The tenant's apps.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppsOut {
+    /// Oldest first.
+    pub apps: Vec<AppOut>,
+}

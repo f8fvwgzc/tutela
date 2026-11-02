@@ -31,6 +31,7 @@
 
 pub mod approval;
 mod approvers;
+mod apps;
 pub mod audit;
 mod bindings;
 mod connect;
@@ -59,6 +60,10 @@ use tutela_pdp::model::Model;
 use tutela_pdp::{LoadError, PathEntry, Pdp, TenantData};
 
 pub use approvers::{Approver, add_approver, approver, approver_id, approvers, revoke_approver};
+pub use apps::{
+    AppInfo, SecretHash, StoredSecret, app, app_secret, app_tenant, apps, create_app, disable_app,
+    rotate_app_secret,
+};
 pub use audit::{
     AuditEntry, BrokenLink, ChainProblem, ChainReport, append_audit, append_deployment_audit,
     audit_records, deployment_audit_records, verify_audit_chain, verify_deployment_audit_chain,

@@ -263,3 +263,20 @@ M13: caught by 1 test(s) - a person names who approved a move
       a_move_goes_through_write_check_and_its_boundary_rules
 M14: caught by 2 test(s) - the private flag needs no manage_boundaries
       a_move_goes_through_write_check_and_its_boundary_rules, tm01_every_route_refuses_the_tokens_the_admin_api_refuses
+
+C01: caught by 5 test(s) - a client secret is stored in plain text (its own bytes, in hex)
+      the_operator_makes_an_app_for_the_bootstrap, tm09_an_exchange_binds_azp_to_the_client_that_authenticated, tm09_client_credentials_give_the_apps_service_account_a_token_of_its_tenant, a_secret_rotates_with_an_overlap_and_a_disabled_app_stops_at_once and 1 more
+C02: caught by 2 test(s) - a client secret is shown again, in the audit log
+      tm09_an_app_is_made_by_the_tenants_owner_and_its_secret_is_shown_once_and_stored_hashed, tm09_client_credentials_give_the_apps_service_account_a_token_of_its_tenant
+C03: caught by 1 test(s) - an exchange accepts a client of another app
+      tm09_an_exchange_binds_azp_to_the_client_that_authenticated
+C04: caught by 1 test(s) - a client of another tenant exchanges this tenant's token
+      tm09_an_exchange_binds_azp_to_the_client_that_authenticated
+C05: caught by 1 test(s) - an exchange with no client authentication keeps an app's azp
+      tm09_an_exchange_binds_azp_to_the_client_that_authenticated
+C06: caught by 1 test(s) - the secret is not compared
+      tm09_client_credentials_give_the_apps_service_account_a_token_of_its_tenant
+C07: caught by 1 test(s) - another app's secret authenticates this app
+      tm09_client_credentials_give_the_apps_service_account_a_token_of_its_tenant
+C08: caught by 1 test(s) - a rotation keeps the old secrets for good
+      a_secret_rotates_with_an_overlap_and_a_disabled_app_stops_at_once

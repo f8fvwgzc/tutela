@@ -8,6 +8,8 @@
 //!   behind [`tutela_sdk::http::AuthLayer`]) and the ops port (`/healthz`,
 //!   `/readyz`, `/metrics`).
 //! - [`admin`]: the admin API, `tutela.admin.v1` and its HTTP routes.
+//! - [`apps`]: apps, their client secrets, and client authentication at
+//!   the token endpoint.
 //! - [`authz`]: the permission decision APIs, one code path for HTTP and gRPC.
 //! - [`bundle`]: signed bundles of a tenant's data, for offline checks.
 //! - [`cache`]: the tenant data decisions are made from, and how it stays
@@ -32,6 +34,7 @@
 
 pub mod admin;
 pub mod api;
+pub mod apps;
 pub mod audit;
 pub mod authz;
 pub mod bundle;

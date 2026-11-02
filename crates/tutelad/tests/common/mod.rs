@@ -414,6 +414,7 @@ pub fn state_with(config: &Config, issuer: &Issuer, delegation: bool) -> AppStat
         stopping: Arc::new(AtomicBool::new(false)),
         dev_mode: config.dev_mode,
         impact_work: config.impact_work,
+        pepper: Arc::new(tutelad::apps::Pepper::of(&config.secrets)),
     }
 }
 

@@ -6,13 +6,13 @@ use tutela_sdk::Identity;
 
 use super::observed;
 use super::wire::{
-    AgentsOut, AgentsQuery, AssignBody, AssignmentChangeOut, AssignmentsOut, AssignmentsQuery,
-    BoundaryBody, DeliveriesOut, DeliveriesQuery, DeliveryOut, ExpiryBody, GroupBody, GroupOut,
-    GroupsOut, GroupsQuery, MemberBody, MembersOut, MembersQuery, MoveScopeBody, NameBody, OrgOut,
-    OrgsOut, PrincipalBody, PrincipalOut, PrivateBody, PutScopeBody, RegisterAgentBody,
-    RegisterWebhookBody, ResourceTypesBody, RevOut, RolesOut, RolesQuery, RotateBody, ScopeBody,
-    ScopeChangeOut, ScopesOut, ScopesQuery, SetDisabledBody, TenantOut, WebhookOut,
-    WebhookSecretOut, WebhooksOut,
+    AgentsOut, AgentsQuery, AppOut, AppSecretOut, AppsOut, AssignBody, AssignmentChangeOut,
+    AssignmentsOut, AssignmentsQuery, BoundaryBody, DeliveriesOut, DeliveriesQuery, DeliveryOut,
+    ExpiryBody, GroupBody, GroupOut, GroupsOut, GroupsQuery, MemberBody, MembersOut, MembersQuery,
+    MoveScopeBody, NameBody, OrgOut, OrgsOut, PrincipalBody, PrincipalOut, PrivateBody,
+    PutScopeBody, RegisterAgentBody, RegisterWebhookBody, ResourceTypesBody, RevOut, RolesOut,
+    RolesQuery, RotateBody, ScopeBody, ScopeChangeOut, ScopesOut, ScopesQuery, SetDisabledBody,
+    TenantOut, WebhookOut, WebhookSecretOut, WebhooksOut,
 };
 use crate::api::{AppState, Problem};
 use crate::authz::http::Body;
@@ -401,4 +401,46 @@ pub async fn roles(
 ) -> Result<Json<RolesOut>, Problem> {
     let out = super::bindings::roles(&state, &id, q).await;
     observed(&state, "list_roles", out).map(Json)
+}
+
+// ---------- Apps (CONTRACTS.md 7.13.8) ----------
+
+/// `POST /v1/admin/apps`.
+pub async fn create_app(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Body(body): Body<NameBody>,
+) -> Result<Json<AppSecretOut>, Problem> {
+    let out = super::apps::create(&state, &id, body).await;
+    observed(&state, "create_app", out).map(Json)
+}
+
+/// `GET /v1/admin/apps`.
+pub async fn apps(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+) -> Result<Json<AppsOut>, Problem> {
+    let out = super::apps::list(&state, &id).await;
+    observed(&state, "list_apps", out).map(Json)
+}
+
+/// `POST /v1/admin/apps/{id}/rotate`.
+pub async fn rotate_app(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(app): Path<String>,
+    Body(body): Body<RotateBody>,
+) -> Result<Json<AppSecretOut>, Problem> {
+    let out = super::apps::rotate(&state, &id, &app, body).await;
+    observed(&state, "rotate_app_secret", out).map(Json)
+}
+
+/// `POST /v1/admin/apps/{id}/disable`.
+pub async fn disable_app(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(app): Path<String>,
+) -> Result<Json<AppOut>, Problem> {
+    let out = super::apps::disable(&state, &id, &app).await;
+    observed(&state, "disable_app", out).map(Json)
 }

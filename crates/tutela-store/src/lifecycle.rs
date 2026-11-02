@@ -34,7 +34,9 @@ pub const MAX_NAME: usize = 200;
 /// The tables a tenant's purge empties, children first. The audit chain
 /// (`audit_record`, `audit_head`, `audit_forward`), the revision row and the
 /// directory row stay.
-const PURGED: [&str; 16] = [
+const PURGED: [&str; 18] = [
+    "app_secret",
+    "app",
     "webhook_delivery",
     "webhook",
     "event",

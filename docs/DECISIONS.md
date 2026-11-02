@@ -60,6 +60,7 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0041](#adr-0041-the-lifecycle-of-tenants-orgs-and-people-the-operator-makes-a-tenant-soft-delete-with-a-grace-a-purge-that-keeps-the-audit-chain) | The lifecycle of tenants, orgs and people: the operator makes a tenant, soft-delete with a grace, a purge that keeps the audit chain | Accepted |
 | [0042](#adr-0042-the-audit-logs-leftovers-a-chain-check-on-a-timer-the-callers-trace-in-each-record) | The audit log's leftovers: a chain check on a timer, the caller's trace in each record | Accepted |
 | [0043](#adr-0043-scopes-assignments-and-groups-over-the-admin-api-checked-on-the-data-they-change) | Scopes, assignments and groups over the admin API, checked on the data they change | Accepted |
+| [0044](#adr-0044-apps-one-tenant-each-a-hashed-client-secret-and-azp-bound-to-the-client-that-authenticated) | Apps: one tenant each, a hashed client secret, and `azp` bound to the client that authenticated | Accepted |
 
 ---
 
@@ -1621,3 +1622,35 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 - **Check on the cached snapshot, write in another transaction.** Cheaper, but another write could land between the check and the commit.
 - **A bare `move_scope` route.** It would skip the boundary rules.
 
+---
+
+## ADR-0044: Apps: one tenant each, a hashed client secret, and `azp` bound to the client that authenticated
+
+**Status:** Accepted, 2026-11-02. Built in Phase B, part 4a. It builds the client authentication [ADR-0031](#adr-0031-token-exchange-the-tenant-from-the-trust-list-a-person-from-iss-sub) left to part 4 ("the token endpoint should then authenticate the client and bind `azp` to it"), and decides the plan of the notes for part 4 on how apps attach to tenants.
+
+**Context.** Until now the token endpoint had no client authentication: a subject token was the only credential, and the issued token's `azp` was copied from it. A product's backend had no credential of its own at `tutelad`: it got a service token from Keycloak and exchanged it, or used a token of a Tutela-format issuer. CONTRACTS.md 5 defines API keys (`tut_sk_…`, stored as SHA-256(pepper ‖ key)), and `TUTELA_KEY_PEPPER` has been required at start-up since part 3a for this. The Console is a browser app: it cannot keep a secret.
+
+**Decision.**
+
+1. **An app belongs to one tenant.** `POST /v1/admin/apps {name}` (and `tutela.admin.v1` `CreateApp`) makes it in the caller's tenant: a client id `app_<uuidv7>`, a service account `sa:sa_<uuidv7>` of that tenant, and a first client secret. It needs every admin key at every org (the tenant's owner), as making an org does: an app's credentials speak for the tenant. The operator makes apps for the bootstrap with `tutelad apps create --tenant <tid> --name <n>`, as the owner role, as for `tutelad tenant create` (ADR-0041); the Helm bootstrap job (part 4c) calls the same `tutelad::lifecycle::create_app`. A tenant under another issuer than `TUTELA_ISSUER` has no apps: `tutelad` issues tokens for its own tenants only.
+2. **The service account holds what assignments give it, nothing by default.** It is an ordinary principal: the owner gives it roles with `POST /v1/admin/assignments` (ADR-0043), under the narrow-only rule. No admin key comes with an app.
+3. **A client secret is an API key** of CONTRACTS.md 5 (`tut_sk_<prefix>_<secret>`, 59 characters), owned by the app's service account, and authenticates as that service account. It is shown once, in the answer of create and rotate, and stored only as SHA-256(pepper ‖ key) with `pepper_version`, never in plain text and never sealed: nothing needs it back. A prefix is unique in the deployment. Records and logs name the key id and the display prefix, never the secret.
+4. **Client authentication at `POST /oauth2/token`**: `client_secret_basic` or `client_secret_post` (RFC 6749 2.3.1), never both (`invalid_request`). Every failure is `401 invalid_client` with one description and `WWW-Authenticate: Basic`, after a hash computed on every path. The token endpoint finds the app's tenant in `tutela.app_directory` (client id to tenant, no secret: every role reads it, a runtime role adds a row only for the tenant its transaction entered), then reads the secret under the tenant's row-level security.
+5. **`grant_type=client_credentials`** gives the app's service account an access token: `sub` the service account, `tid` its tenant from the app's record (never from the request), `azp` the client id, `aud` the asked audience (`TUTELA_AUDIENCE` by default, or an `[[audience]]` of the trust file; never `tutela-admin`, never delegated), `epoch` the service account's, no `sid` or `amr`, at most `TUTELA_TOKEN_TTL_SECS`. Each one is recorded (kind `client`, the app).
+6. **`azp` is bound to the client that authenticated.** In a token exchange with client authentication, the client must be an app of the subject's tenant (else `invalid_grant`), and the issued token's `azp` is its client id. A subject token whose `azp` is the client id of an app of the tenant is exchanged only by that app, authenticated: another app gets `invalid_grant`, and no client authentication gets `invalid_client`.
+7. **An exchange with no client authentication stays open, for public clients.** The Console runs in a browser and cannot keep a secret; neither can a mobile app. Such an exchange keeps the subject token's `azp`. It may not name an app: a `client_id` of a registered app without its secret is `invalid_client`, and so is a subject token whose `azp` is an app's (item 6). The other rules of ADR-0031 (each external token once, the tenant from the trust list) stand.
+8. **Rotation with an overlap.** `POST /v1/admin/apps/{id}/rotate {overlap_secs?}` adds a new secret, shown once, and lets every older one work for `overlap_secs` more (default 3600, at most 604800, 0 ends them now), as webhook secrets rotate (ADR-0036). The app moves to the new secret within the overlap.
+9. **Disabling.** `POST /v1/admin/apps/{id}/disable` ends every secret at once and disables the service account with a raised epoch, in one transaction: the tokens it holds are refused on `tutelad`'s API within `TUTELA_REVISION_CHECK_MS`, and products hear `tutela.principal.disabled.v1`. Migration 13 lets a service account have an epoch for this.
+10. **A pepper rotation** makes old hashes unverifiable until a secret is rotated: a secret hashed under another `pepper_version` is refused (and logged). `TUTELA_KEY_PEPPER_PREVIOUS` (CONTRACTS.md 10.4) is still only proposed.
+11. **Signed bundles stay as ADR-0038 says**: a service with `read_audit` at every org. Narrowing them to an app's registered audience waits until the products that pull bundles authenticate as apps (MIGRATION-0.2.md); doing it now would break every product that has a service token today, and the rule would add no key the owner does not already give.
+
+**Consequences.**
+- attache and texc-symphony authenticate as apps when they move to `v0.2.0`: the tenant's owner (or the bootstrap job) makes one per product, gives its service account roles, and the product calls `client_credentials` for its own token (MIGRATION-0.2.md).
+- A product's `azp` in tokens it exchanges is its client id, so a product can tell its own users' tokens from another app's.
+- A stolen Keycloak token can still be exchanged once by a public client (ADR-0031 item 6); an app's token cannot be exchanged by anyone but the app.
+
+**Alternatives considered.**
+- **Seal the secrets with `tutela-vault`.** It would keep them recoverable, which nothing needs; a hash with a pepper is what CONTRACTS.md 5 decided for keys.
+- **Refuse every exchange without client authentication once apps exist.** The Console and other browser apps could not sign in.
+- **Apps shared by tenants.** One app per tenant keeps its tenant in the record, never in a request, and lets the tenant's owner make and disable it.
+- **Private-key JWT client authentication (RFC 7523).** Stronger, but every product would need a key pair and a JWKS; it can come beside the secret later.

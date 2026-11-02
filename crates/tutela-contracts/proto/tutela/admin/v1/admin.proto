@@ -133,6 +133,22 @@ service Admin {
   rpc RemoveGroupMember(GroupMemberRequest) returns (JsonResult);
   // GET /v1/admin/roles: the roles and types of the active model.
   rpc ListRoles(ListRolesRequest) returns (JsonResult);
+
+  // ---------- Apps (CONTRACTS.md 7.13.8) ----------
+  //
+  // Each answers the JSON of its route as `result_json`. The answers of
+  // CreateApp and RotateAppSecret hold a client secret, the one time it is
+  // shown.
+
+  // POST /v1/admin/apps: a new app, its service account and its secret.
+  rpc CreateApp(CreateAppRequest) returns (JsonResult);
+  // GET /v1/admin/apps.
+  rpc ListApps(ListAppsRequest) returns (JsonResult);
+  // POST /v1/admin/apps/{id}/rotate: a new secret; the old ones keep working
+  // for the overlap.
+  rpc RotateAppSecret(RotateAppSecretRequest) returns (JsonResult);
+  // POST /v1/admin/apps/{id}/disable.
+  rpc DisableApp(AppRequest) returns (JsonResult);
 }
 
 
@@ -459,4 +475,23 @@ message ListRolesRequest {
   // `type:id` of the org or registered scope the caller manages. Empty: the
   // whole tenant.
   string scope = 1;
+}
+
+// ---------- Apps (CONTRACTS.md 7.13.8) ----------
+
+message CreateAppRequest {
+  string name = 1;
+}
+
+message ListAppsRequest {}
+
+message RotateAppSecretRequest {
+  // The client id, `app_<uuidv7>`.
+  string id = 1;
+  // Not set: 3600. At most 604800.
+  optional uint64 overlap_secs = 2;
+}
+
+message AppRequest {
+  string id = 1;
 }

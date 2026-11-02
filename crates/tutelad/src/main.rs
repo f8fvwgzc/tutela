@@ -23,6 +23,25 @@ enum Command {
     /// TUTELA_OWNER_DATABASE_URL and TUTELA_ISSUER.
     #[command(subcommand)]
     Tenant(TenantCommand),
+    /// The operator's apps, for the bootstrap (ADR-0044), as the owner role.
+    /// Reads TUTELA_OWNER_DATABASE_URL, TUTELA_ISSUER, TUTELA_MASTER_KEY and
+    /// TUTELA_KEY_PEPPER.
+    #[command(subcommand)]
+    Apps(AppsCommand),
+}
+
+#[derive(Debug, Subcommand)]
+enum AppsCommand {
+    /// Make an app of a tenant under TUTELA_ISSUER. Prints its client id,
+    /// its service account and its client secret, once, as one line of JSON.
+    Create {
+        /// The tenant id, `ten_<uuidv7>`.
+        #[arg(long)]
+        tenant: String,
+        /// The app's display name.
+        #[arg(long)]
+        name: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -65,6 +84,7 @@ async fn main() -> ExitCode {
     let result = match args.command {
         Some(Command::Migrate) => migrate().await,
         Some(Command::Tenant(t)) => tenant(t).await,
+        Some(Command::Apps(a)) => apps(a).await,
         Some(Command::Serve) | None => serve().await,
     };
     match result {
@@ -143,6 +163,43 @@ async fn tenant(command: TenantCommand) -> anyhow::Result<()> {
             let key = tutela_contracts::tenant::TenantKey::new(own.clone(), tid);
             tutelad::lifecycle::restore_tenant(&mut owner, &own, &key).await?;
             println!("{}", serde_json::json!({"restored": key.tid.to_string()}));
+            Ok(())
+        }
+    }
+}
+
+async fn apps(command: AppsCommand) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    tutelad::telemetry::init_logs("info")?;
+    let var = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
+    let url = var("TUTELA_OWNER_DATABASE_URL").context("TUTELA_OWNER_DATABASE_URL is not set")?;
+    let own: tutela_contracts::tenant::Issuer = var("TUTELA_ISSUER")
+        .context("TUTELA_ISSUER is not set")?
+        .parse()
+        .map_err(|_| anyhow::anyhow!("TUTELA_ISSUER is not an issuer"))?;
+    let secrets = tutelad::config::Secrets::from_values(
+        var("TUTELA_MASTER_KEY").as_deref(),
+        var("TUTELA_MASTER_KEY_PREVIOUS").as_deref(),
+        var("TUTELA_KEY_PEPPER").as_deref(),
+        var("TUTELA_KEY_PEPPER_VERSION").as_deref(),
+    )?;
+    let mut owner = tutelad::lifecycle::connect_owner(&url).await?;
+    match command {
+        AppsCommand::Create { tenant, name } => {
+            let tid = tenant
+                .parse()
+                .map_err(|_| anyhow::anyhow!("--tenant is not a tenant id"))?;
+            let key = tutela_contracts::tenant::TenantKey::new(own.clone(), tid);
+            let (app, secret) =
+                tutelad::lifecycle::create_app(&mut owner, &own, &key, &name, &secrets).await?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "client_id": app.id,
+                    "principal": app.principal.to_string(),
+                    "client_secret": secret.as_str(),
+                })
+            );
             Ok(())
         }
     }

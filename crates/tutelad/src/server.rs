@@ -341,6 +341,7 @@ pub fn state(config: &Config) -> anyhow::Result<AppState> {
         own: config.issuer.clone(),
         vault: Arc::new(config.secrets.vault()?),
         safenet,
+        pepper: Arc::new(crate::apps::Pepper::of(&config.secrets)),
     })
 }
 

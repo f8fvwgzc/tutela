@@ -833,4 +833,48 @@ impl Admin for AdminService {
         let out = super::bindings::roles(&self.state, &id, q).await;
         json(&observed(&self.state, "list_roles", out)?)
     }
+
+    async fn create_app(
+        &self,
+        req: Request<pb::CreateAppRequest>,
+    ) -> Result<Response<pb::JsonResult>, Status> {
+        let id = identity(&req)?;
+        let body = NameBody {
+            name: some(req.into_inner().name),
+        };
+        let out = super::apps::create(&self.state, &id, body).await;
+        json(&observed(&self.state, "create_app", out)?)
+    }
+
+    async fn list_apps(
+        &self,
+        req: Request<pb::ListAppsRequest>,
+    ) -> Result<Response<pb::JsonResult>, Status> {
+        let id = identity(&req)?;
+        let out = super::apps::list(&self.state, &id).await;
+        json(&observed(&self.state, "list_apps", out)?)
+    }
+
+    async fn rotate_app_secret(
+        &self,
+        req: Request<pb::RotateAppSecretRequest>,
+    ) -> Result<Response<pb::JsonResult>, Status> {
+        let id = identity(&req)?;
+        let r = req.into_inner();
+        let body = RotateBody {
+            overlap_secs: r.overlap_secs,
+        };
+        let out = super::apps::rotate(&self.state, &id, &r.id, body).await;
+        json(&observed(&self.state, "rotate_app_secret", out)?)
+    }
+
+    async fn disable_app(
+        &self,
+        req: Request<pb::AppRequest>,
+    ) -> Result<Response<pb::JsonResult>, Status> {
+        let id = identity(&req)?;
+        let r = req.into_inner();
+        let out = super::apps::disable(&self.state, &id, &r.id).await;
+        json(&observed(&self.state, "disable_app", out)?)
+    }
 }

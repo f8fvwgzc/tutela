@@ -46,6 +46,15 @@ impl Tenant {
         tenant
     }
 
+    /// The tenant of an app, from the app directory, at the token endpoint
+    /// only (ADR-0044): it is entered to read the app's secret, and nothing
+    /// is issued unless that secret matches. It never comes from a request.
+    pub(crate) fn of_app(key: TenantKey) -> Self {
+        let tenant = Self(key);
+        tracing::Span::current().record("tid", tracing::field::display(tenant.key().tid));
+        tenant
+    }
+
     /// The tenant key.
     #[must_use]
     pub const fn key(&self) -> &TenantKey {

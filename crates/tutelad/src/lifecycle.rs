@@ -213,6 +213,50 @@ pub async fn restore_tenant(
     Ok(())
 }
 
+/// Makes an app of tenant `key` for the bootstrap (ADR-0044 item 1), on
+/// `owner`, a connection of the **owner** role: its service account and its
+/// first client secret, which is returned once and stored only as its hash
+/// with the pepper of `secrets`. The tenant must be under `own`: `tutelad`
+/// issues tokens for its own tenants only. The tenant's chain and the
+/// deployment's record it.
+///
+/// # Errors
+///
+/// A tenant that is not under `own` or not in the directory, a bad name,
+/// or a database error. Nothing is made then.
+pub async fn create_app(
+    owner: &mut Client,
+    own: &Issuer,
+    key: &TenantKey,
+    name: &str,
+    secrets: &crate::config::Secrets,
+) -> anyhow::Result<(tutela_store::AppInfo, zeroize::Zeroizing<String>)> {
+    anyhow::ensure!(
+        key.iss == *own,
+        "an app belongs to a tenant under TUTELA_ISSUER"
+    );
+    let (pepper, version) = secrets.pepper();
+    let (secret, hash) = crate::apps::new_secret(pepper, version)?;
+    let tx = owner.transaction().await?;
+    let app = tutela_store::create_app(&tx, key, name, "operator", &hash).await?;
+    let rev = tutela_store::rev(&tx, key).await?;
+    let record = system_record(key, "tutela_app:create", ("tutela_app", &app.id), rev)?
+        .detail("by", "operator")
+        .detail("app", app.id.clone())
+        .detail("principal", app.principal.to_string())
+        .detail("key_id", hash.key_id.clone())
+        .detail("prefix", format!("tut_sk_{}", hash.prefix));
+    tutela_store::append_audit(&tx, key, &drafts(vec![record])?).await?;
+    tx.commit().await?;
+    let tx = owner.transaction().await?;
+    let record = deployment_record(own, "tutela_app:create", key, Actor::new(system()?))?
+        .detail("by", "operator")
+        .detail("app", app.id.clone());
+    tutela_store::append_deployment_audit(&tx, &drafts(vec![record])?).await?;
+    tx.commit().await?;
+    Ok((app, secret))
+}
+
 /// The records of a tenant's purge, in its own chain, by `tutelad`.
 ///
 /// # Errors
