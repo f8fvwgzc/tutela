@@ -291,6 +291,9 @@ pub enum TrustListError {
 pub struct TrustList {
     dev_mode: bool,
     issuers: BTreeMap<Issuer, BTreeSet<TenantId>>,
+    /// Issuers trusted for every tenant of a directory the holder checks on
+    /// each request ([`TrustList::insert_directory`]).
+    directory: BTreeSet<Issuer>,
 }
 
 impl TrustList {
@@ -305,7 +308,7 @@ impl TrustList {
     pub fn dev_mode() -> Self {
         Self {
             dev_mode: true,
-            issuers: BTreeMap::new(),
+            ..Self::default()
         }
     }
 
@@ -340,18 +343,51 @@ impl TrustList {
         Ok(self)
     }
 
+    /// Trusts `issuer` for every tenant of the holder's own tenant
+    /// directory. **Only for a service that is that issuer and checks each
+    /// request's `(iss, tid)` against its directory**, as `tutelad` does for
+    /// its own tokens: its tenants are made at runtime, so no static list
+    /// can name them. A token of such an issuer whose tenant is not in the
+    /// directory is still refused, by the directory. A product never uses
+    /// this; it names its tenants.
+    ///
+    /// Such an issuer has no [`TrustList::sole_tenant`], so it can never be
+    /// an external issuer (CONTRACTS.md 1.6).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrustListError::DevOnlyIssuer`] for an `http` issuer when the
+    /// list is not in dev mode.
+    pub fn insert_directory(&mut self, issuer: Issuer) -> Result<(), TrustListError> {
+        if issuer.is_dev_only() && !self.dev_mode {
+            return Err(TrustListError::DevOnlyIssuer);
+        }
+        self.directory.insert(issuer);
+        Ok(())
+    }
+
+    /// `true` if `issuer` was added with [`TrustList::insert_directory`].
+    #[must_use]
+    pub fn is_directory(&self, issuer: &Issuer) -> bool {
+        self.directory.contains(issuer)
+    }
+
     /// `true` if `issuer` is on the list.
     #[must_use]
     pub fn has_issuer(&self, issuer: &Issuer) -> bool {
-        self.issuers.contains_key(issuer)
+        self.issuers.contains_key(issuer) || self.directory.contains(issuer)
     }
 
-    /// `true` if the pair `(issuer, tenant)` is on the list.
+    /// `true` if the pair `(issuer, tenant)` is on the list. For an issuer
+    /// of [`TrustList::insert_directory`] the holder's directory decides,
+    /// so this is `true` for every tenant id.
     #[must_use]
     pub fn allows(&self, issuer: &Issuer, tenant: &TenantId) -> bool {
-        self.issuers
-            .get(issuer)
-            .is_some_and(|tenants| tenants.contains(tenant))
+        self.directory.contains(issuer)
+            || self
+                .issuers
+                .get(issuer)
+                .is_some_and(|tenants| tenants.contains(tenant))
     }
 
     /// `true` if the tenant key is on the list.
@@ -542,6 +578,32 @@ mod tests {
         let dev_list = TrustList::dev_mode().with(dev.clone(), t1).unwrap();
         assert!(dev_list.is_dev_mode());
         assert!(dev_list.allows(&dev, &t1));
+    }
+
+    #[test]
+    fn tm05_a_directory_issuer_speaks_for_any_tenant_but_is_never_external() {
+        let own = Issuer::parse("https://tutela.example.test").unwrap();
+        let other = Issuer::parse("https://other.example.test").unwrap();
+        let t1: TenantId = TEN.parse().unwrap();
+        let t2: TenantId = "ten_0193a1b2-c3d4-7e5f-8a6b-7c8d9e0f1a2c".parse().unwrap();
+        let mut list = TrustList::new().with(other.clone(), t1).unwrap();
+        list.insert_directory(own.clone()).unwrap();
+        assert!(list.is_directory(&own));
+        assert!(!list.is_directory(&other));
+        assert!(list.has_issuer(&own));
+        assert!(list.allows(&own, &t1) && list.allows(&own, &t2));
+        // The other issuer keeps its own list.
+        assert!(list.allows(&other, &t1) && !list.allows(&other, &t2));
+        // No sole tenant: a directory issuer can never stand in for an
+        // external issuer's one tenant.
+        assert_eq!(list.sole_tenant(&own), None);
+        assert_eq!(list.tenants(&own), None);
+        let dev = Issuer::parse("http://localhost:8080").unwrap();
+        assert_eq!(
+            TrustList::new().insert_directory(dev.clone()),
+            Err(TrustListError::DevOnlyIssuer)
+        );
+        TrustList::dev_mode().insert_directory(dev).unwrap();
     }
 
     proptest! {

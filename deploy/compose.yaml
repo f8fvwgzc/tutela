@@ -2,6 +2,7 @@
 # this machine needs sslmode=require, and the certificate is always verified.
 #
 #   TUTELA_DATABASE_URL="host=db.example.test user=tutela_service password=... dbname=tutela sslmode=require" \
+#   TUTELA_ISSUER=https://tutela.example.test TUTELA_MASTER_KEY=... TUTELA_KEY_PEPPER=... \
 #   TUTELAD_TAG=<release> docker compose -f deploy/compose.yaml up
 #
 # TUTELA_DATABASE_URL names a role that owns nothing. Migrations run as the
@@ -19,6 +20,11 @@ services:
     environment:
       TUTELA_DATABASE_URL: ${TUTELA_DATABASE_URL:?set TUTELA_DATABASE_URL}
       TUTELA_TRUST_FILE: /etc/tutela/trust.toml
+      # The service's own issuer: the public https URL it is reached at.
+      TUTELA_ISSUER: ${TUTELA_ISSUER:?set TUTELA_ISSUER}
+      # 32 random bytes each, as base64 or hex. Never the same value.
+      TUTELA_MASTER_KEY: ${TUTELA_MASTER_KEY:?set TUTELA_MASTER_KEY}
+      TUTELA_KEY_PEPPER: ${TUTELA_KEY_PEPPER:?set TUTELA_KEY_PEPPER}
     volumes:
       - ./trust.toml:/etc/tutela/trust.toml:ro
     ports:

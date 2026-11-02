@@ -128,6 +128,7 @@ Done:
 | Impact report: who gains or loses what, bounded, never "no impact" when cut short | Done | [ADR-0027](DECISIONS.md#adr-0027-the-impact-report) |
 | Explain and simulate, behind `read_audit` on the resource | Done | [ADR-0028](DECISIONS.md#adr-0028-explain-and-simulate-need-read_audit-on-the-resource) |
 | Two-person publish, optional per tenant; a proposal goes stale when its impact report would change | Done | [ADR-0029](DECISIONS.md#adr-0029-two-person-publish) |
+| `tutelad`'s own issuer: signing keys sealed by `tutela-vault`, the JWKS without a token, rotation with pre-publication, a `kid` deny-list, tenants made at runtime trusted through the directory; `TUTELA_MASTER_KEY`, `TUTELA_KEY_PEPPER` and `TUTELA_ISSUER` required at start-up | Done (part 3a) | [ADR-0030](DECISIONS.md#adr-0030-tutelads-own-issuer-signing-keys-the-jwks-and-paths-without-a-token) |
 
 Not started:
 

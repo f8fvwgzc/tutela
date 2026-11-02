@@ -175,6 +175,9 @@ impl Replica {
             .env("TUTELA_OPS_LISTEN", ops.to_string())
             .env("TUTELA_SHUTDOWN_DRAIN_SECS", "0")
             .env("TUTELA_DEV_MODE", "1")
+            .env("TUTELA_ISSUER", common::OWN_ISS)
+            .env("TUTELA_MASTER_KEY", common::MASTER_KEY)
+            .env("TUTELA_KEY_PEPPER", common::PEPPER)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::inherit())
             .kill_on_drop(true);

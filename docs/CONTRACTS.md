@@ -190,6 +190,7 @@ A tenant id alone is not enough. The SDK may trust more than one issuer, and two
 Rules:
 - There is **no one-string form** on the wire. Store the tenant key as two columns. Never use `tid` alone as a key.
 - The SDK trust list maps each issuer to the tenants it may speak for. A token is accepted only if its (iss, tid) pair is on the list.
+- `tutelad`'s own issuer (`TUTELA_ISSUER`) is the one exception, inside `tutelad` only: it is trusted for every tenant of the service's directory, and each request's (iss, tid) is checked against the directory instead (`TrustList::insert_directory`, [ADR-0030](DECISIONS.md#adr-0030-tutelads-own-issuer-signing-keys-the-jwks-and-paths-without-a-token)). So a tenant made at runtime needs no change to a trust file there. A product still names its tenants.
 - An external issuer whose tokens carry no `tid` (Phase A, for example Keycloak) must map to **exactly one** tenant in the trust list. That tenant is used. A product with many tenants on one external issuer uses Tutela tokens from token exchange instead (Phase B).
 - `org` is never taken from an external issuer's claim. It comes from Tutela membership.
 
@@ -1396,7 +1397,7 @@ A body may be up to 16 MiB, so a 4 MiB manifest fits after JSON escaping. `tutel
 
 | Port | Default | What | Auth |
 |---|---|---|---|
-| API | `TUTELA_LISTEN`, `0.0.0.0:8080` | HTTP and gRPC on one listener; a `content-type` of `application/grpc` picks gRPC | A bearer token on every request, also for an unknown path. Without one: 401 with `WWW-Authenticate` (HTTP), or `grpc-status: 16` (gRPC). |
+| API | `TUTELA_LISTEN`, `0.0.0.0:8080` | HTTP and gRPC on one listener; a `content-type` of `application/grpc` picks gRPC | A bearer token on every request, also for an unknown path, except the exact paths in the table below. Without one: 401 with `WWW-Authenticate` (HTTP), or `grpc-status: 16` (gRPC). |
 | Ops | `TUTELA_OPS_LISTEN`, `0.0.0.0:9090` | The routes below | None. Keep this port out of the public load balancer. |
 
 | Ops route | Answer |
@@ -1404,6 +1405,12 @@ A body may be up to 16 MiB, so a 4 MiB manifest fits after JSON escaping. `tutel
 | `GET /healthz` | 200 while the process answers. It never reads the database. |
 | `GET /readyz` | 200 when the database answers, the schema is at the migration this build knows, and no shutdown has started. Else 503. The body names the failed check. |
 | `GET /metrics` | The Prometheus text format, prefix `tutelad_`. Labels never hold a tenant, a token or a URL: a route label is the route pattern. |
+
+Paths of the API port that need no token ([ADR-0030](DECISIONS.md#adr-0030-tutelads-own-issuer-signing-keys-the-jwks-and-paths-without-a-token)):
+
+| Route | Answer |
+|---|---|
+| `GET /.well-known/jwks.json` | The JWKS of `tutelad`'s own issuer (`application/jwk-set+json`): every published key, the next one included, as ES256 public JWKs with `kid` (the RFC 7638 thumbprint), `alg` and `use: sig`. `Cache-Control: public, max-age=<TUTELA_JWKS_CACHE_SECS>`. Its URL is `<TUTELA_ISSUER>/.well-known/jwks.json`. |
 
 gRPC health (`grpc.health.v1.Health`) is on the API port, behind the same token check. It says `NOT_SERVING` as soon as a shutdown starts.
 
@@ -1670,7 +1677,7 @@ When a credential format or key changes:
 
 | Credential | Rule |
 |---|---|
-| Token signing keys (Phase B) | The JWKS holds the next, current and previous keys. Publish the next key at least **twice the JWKS cache time** before using it. Keep the previous key until every token it signed has expired (the max TTL plus 60 s skew). In an emergency a `kid` deny-list applies at once. |
+| Token signing keys (Phase B, built in `tutelad`: `tutela_store::rotate_signing_key` and `deny_signing_key`, [ADR-0030](DECISIONS.md#adr-0030-tutelads-own-issuer-signing-keys-the-jwks-and-paths-without-a-token)) | The JWKS holds the next, current and previous keys. Publish the next key at least **twice the JWKS cache time** before using it. Keep the previous key until every token it signed has expired (the max TTL plus 60 s skew). In an emergency a `kid` deny-list applies at once. |
 | API keys | `tutela keys rotate` makes a new key. The old key keeps working for an overlap the operator sets, then it is revoked (`tutela.key.revoked.v1`). |
 | Key pepper | Raise `TUTELA_KEY_PEPPER_VERSION` and set the new `TUTELA_KEY_PEPPER`. The previous pepper stays available (env name fixed in Phase A; `TUTELA_KEY_PEPPER_PREVIOUS` is proposed) until every old hash was re-hashed on its next successful use, or its key was rotated. |
 | Master key | `TUTELA_MASTER_KEY` and `TUTELA_MASTER_KEY_PREVIOUS`: unwrap data keys with either, wrap new data keys with the current one, and re-wrap old data keys in the background. The data itself is not re-encrypted (envelope encryption, `tutela-vault`). |

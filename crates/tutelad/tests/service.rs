@@ -286,6 +286,9 @@ impl Binary {
             .env("TUTELA_OPS_LISTEN", ops.to_string())
             .env("TUTELA_SHUTDOWN_DRAIN_SECS", "0")
             .env("TUTELA_DEV_MODE", if dev_mode { "1" } else { "0" })
+            .env("TUTELA_ISSUER", common::OWN_ISS)
+            .env("TUTELA_MASTER_KEY", common::MASTER_KEY)
+            .env("TUTELA_KEY_PEPPER", common::PEPPER)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::inherit())
             .spawn()
@@ -334,6 +337,9 @@ impl Binary {
         let mut out = Vec::new();
         while let Some(line) = lines.next_line().await.unwrap() {
             assert!(!line.contains(secret), "a token reached the log: {line}");
+            for key in [common::MASTER_KEY, common::PEPPER] {
+                assert!(!line.contains(key), "a secret reached the log: {line}");
+            }
             out.push(serde_json::from_str(&line).unwrap_or_else(|_| panic!("not JSON: {line}")));
         }
         out
@@ -417,6 +423,17 @@ async fn the_binary_verifies_a_token_against_a_served_jwks() {
     assert_eq!(body["tid"], tid);
     assert_eq!(body["iss"], iss);
     assert_eq!(body["rev"], 0);
+    // The binary made its first signing key on start, and publishes it
+    // without a token.
+    let jwks: Value = http()
+        .get(format!("http://{}/.well-known/jwks.json", bin.api))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(jwks["keys"].as_array().unwrap().len(), 1);
 
     let logs = bin.stop(&token).await;
     let served = logs
@@ -426,6 +443,49 @@ async fn the_binary_verifies_a_token_against_a_served_jwks() {
     assert_eq!(served["status"], 200);
     assert_eq!(served["span"]["tid"], tid);
     d.finish().await;
+}
+
+/// TM-22: without its master key, its pepper or its issuer the binary does
+/// not start, and says which variable is missing.
+#[tokio::test]
+async fn tm22_the_binary_refuses_to_start_without_its_secrets() {
+    let path = std::env::temp_dir().join(format!("tutelad-tm22-{}.toml", std::process::id()));
+    std::fs::write(
+        &path,
+        format!(
+            "[[issuer]]\niss = \"{ISS}\"\njwks_uri = \"{ISS}/jwks\"\nalgs = [\"ES256\"]\n\
+             tenants = [\"{TID}\"]\n"
+        ),
+    )
+    .unwrap();
+    let all = [
+        ("TUTELA_DATABASE_URL", NO_DB.to_owned()),
+        ("TUTELA_TRUST_FILE", path.display().to_string()),
+        ("TUTELA_LISTEN", "127.0.0.1:0".to_owned()),
+        ("TUTELA_OPS_LISTEN", "127.0.0.1:0".to_owned()),
+        ("TUTELA_ISSUER", common::OWN_ISS.to_owned()),
+        ("TUTELA_MASTER_KEY", common::MASTER_KEY.to_owned()),
+        ("TUTELA_KEY_PEPPER", common::PEPPER.to_owned()),
+    ];
+    for (missing, why) in [
+        ("TUTELA_MASTER_KEY", "TUTELA_MASTER_KEY is not set"),
+        ("TUTELA_KEY_PEPPER", "TUTELA_KEY_PEPPER is not set"),
+        ("TUTELA_ISSUER", "TUTELA_ISSUER is not set"),
+    ] {
+        let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_tutelad"))
+            .env_clear()
+            .envs(all.iter().filter(|(k, _)| *k != missing).cloned())
+            .output()
+            .await
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1), "{missing}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains(why), "{missing}: {err}");
+        for secret in [common::MASTER_KEY, common::PEPPER] {
+            assert!(!err.contains(secret), "{err}");
+        }
+    }
+    std::fs::remove_file(path).unwrap();
 }
 
 #[tokio::test]

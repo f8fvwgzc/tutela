@@ -169,6 +169,34 @@ impl Conn {
     }
 }
 
+impl Conn {
+    /// The signing keys, in a transaction of their own: they are the
+    /// deployment's, not a tenant's (ADR-0030). With no key that may sign,
+    /// one is made; a key sealed under a previous master key is re-wrapped.
+    pub(crate) async fn signing_keys(
+        &mut self,
+        vault: &tutela_vault::Vault,
+    ) -> Result<tutela_store::KeySet, DbError> {
+        let tx = self.0.transaction().await?;
+        let mut set = tutela_store::signing_keys(&tx).await?;
+        if set.signing(set.now).is_none() {
+            tutela_store::ensure_signing_key(&tx, vault).await?;
+            set = tutela_store::signing_keys(&tx).await?;
+        }
+        let current = vault.current_key();
+        if set
+            .keys
+            .iter()
+            .any(|k| vault.key_of(&k.sealed).is_ok_and(|id| id != current))
+        {
+            tutela_store::rewrap_signing_keys(&tx, vault).await?;
+            set = tutela_store::signing_keys(&tx).await?;
+        }
+        tx.commit().await?;
+        Ok(set)
+    }
+}
+
 /// A transaction inside one tenant. It reads as a
 /// [`tokio_postgres::Transaction`], so store calls take `&tx`. Dropping it
 /// rolls back.

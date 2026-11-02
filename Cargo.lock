@@ -2711,6 +2711,7 @@ dependencies = [
 name = "tutela-store"
 version = "0.0.0"
 dependencies = [
+ "aws-lc-rs",
  "base64 0.23.1",
  "ed25519-dalek",
  "serde",
@@ -2721,7 +2722,9 @@ dependencies = [
  "tokio-postgres",
  "tutela-contracts",
  "tutela-pdp",
+ "tutela-vault",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -2768,7 +2771,9 @@ dependencies = [
  "tutela-safenet",
  "tutela-sdk",
  "tutela-store",
+ "tutela-vault",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

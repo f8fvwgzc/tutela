@@ -139,6 +139,9 @@ pub struct Metrics {
     model_operations: Family<DecisionLabels, Counter>,
     revision_checks: Family<SweepLabels, Counter>,
     tenant_loads: Family<SweepLabels, Counter>,
+    key_refreshes: Family<SweepLabels, Counter>,
+    published_keys: Gauge,
+    token_operations: Family<DecisionLabels, Counter>,
 }
 
 impl Default for Metrics {
@@ -215,6 +218,24 @@ impl Metrics {
             "Whole-tenant loads from the database, by result",
             tenant_loads.clone(),
         );
+        let key_refreshes = Family::<SweepLabels, Counter>::default();
+        registry.register(
+            "signing_key_refreshes",
+            "Loads of the signing keys from the database, by result",
+            key_refreshes.clone(),
+        );
+        let published_keys = Gauge::default();
+        registry.register(
+            "signing_keys_published",
+            "Signing keys in the JWKS, the next one included",
+            published_keys.clone(),
+        );
+        let token_operations = Family::<DecisionLabels, Counter>::default();
+        registry.register(
+            "token_operations",
+            "Token exchanges, by the kind of token asked for and how they ended",
+            token_operations.clone(),
+        );
         Self {
             registry,
             requests,
@@ -228,7 +249,33 @@ impl Metrics {
             model_operations,
             revision_checks,
             tenant_loads,
+            key_refreshes,
+            published_keys,
+            token_operations,
         }
+    }
+
+    /// Counts one load of the signing keys.
+    pub fn count_key_refresh(&self, ok: bool) {
+        count_result(&self.key_refreshes, ok);
+    }
+
+    /// Records how many keys the JWKS holds.
+    pub fn set_published_keys(&self, n: usize) {
+        self.published_keys
+            .set(i64::try_from(n).unwrap_or(i64::MAX));
+    }
+
+    /// Counts one token exchange: the kind of token asked for (`access`,
+    /// `admin`, `delegated`) and how it ended. The labels never hold a
+    /// tenant, a principal or a token.
+    pub fn count_token(&self, operation: &'static str, outcome: &'static str) {
+        self.token_operations
+            .get_or_create(&DecisionLabels {
+                operation: operation.to_owned(),
+                outcome: outcome.to_owned(),
+            })
+            .inc();
     }
 
     /// Counts one question.

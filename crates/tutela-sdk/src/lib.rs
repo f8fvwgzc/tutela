@@ -355,6 +355,14 @@ impl Verifier {
         }
     }
 
+    /// Forgets the cached JWKS at `jwks_uri`, so the next token of that
+    /// issuer fetches it at once, past the refetch limit: the forced refetch
+    /// of an emergency rotation (TM-15). Call it when the issuer's key set is
+    /// known to have changed; it is not for a token's own request.
+    pub async fn forget_jwks(&self, jwks_uri: &str) {
+        self.keys.forget(jwks_uri).await;
+    }
+
     /// Verifies a bearer token.
     ///
     /// # Errors
