@@ -19,6 +19,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1.0.104"
 axum = { version = "0.8.9", features = ["http2"] }
+base64 = "0.23.1"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 deadpool-postgres = "0.14.2"
 prometheus-client = "0.25.2"
@@ -45,7 +46,6 @@ uuid = { version = "1.29.0", features = ["v7"] }
 
 [dev-dependencies]
 aws-lc-rs = { version = "1.18.2", default-features = false, features = ["aws-lc-sys", "alloc"] }
-base64 = "0.23.1"
 reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
 tokio = { version = "1.54.1", features = ["io-util", "process"] }
 

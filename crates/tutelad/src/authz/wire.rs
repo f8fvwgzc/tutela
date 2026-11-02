@@ -9,9 +9,9 @@ use serde::{Deserialize, Serialize};
 use tutela_contracts::claims::Actor;
 use tutela_contracts::decision::Decision;
 use tutela_contracts::keys::{ActionKey, FieldName, ResourceId, ResourceType};
-use tutela_contracts::principal::Principal;
+use tutela_contracts::principal::{Principal, PrincipalKind};
 use tutela_contracts::tenant::TenantKey;
-use tutela_pdp::{AttrValue, Attrs, CheckRequest, PathEntry, ResourceRef};
+use tutela_pdp::{AttrValue, Attrs, CheckRequest, ListFilter, PathEntry, ResourceRef};
 
 /// `subject`. `id` is optional here because a subject search leaves it out.
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -213,6 +213,101 @@ pub enum EvaluationsResult {
     },
 }
 
+/// `page` of a search request (AuthZEN 1.0 section 8).
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct Page {
+    /// The `next_token` of the page before.
+    pub token: Option<String>,
+    /// How many results. Missing or `0`: the default.
+    pub limit: Option<u64>,
+}
+
+/// The body of a search.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct SearchBody {
+    /// Who, or for a subject search only the kind.
+    pub subject: Option<Subject>,
+    /// What.
+    pub action: Option<Action>,
+    /// On what, or for a resource search only the type.
+    pub resource: Option<Resource>,
+    /// Extra input.
+    pub context: Option<Context>,
+    /// Which page.
+    pub page: Option<Page>,
+}
+
+/// `page` of a search response. `next_token` is empty on the last page.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct PageOut {
+    /// The next page's token.
+    pub next_token: String,
+    /// The results in this page.
+    pub count: usize,
+}
+
+/// `context.tutela` of a resource search.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct ResourceContext {
+    /// The revision that was used.
+    pub rev: u64,
+    /// The CONTRACTS.md 6.6 filter, for the product's own SQL.
+    pub filter: ListFilter,
+}
+
+/// `context` of a resource search.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct ResourceContextOut {
+    /// The details.
+    pub tutela: ResourceContext,
+}
+
+/// The answer of `POST /access/v1/search/resource`.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct ResourceResults {
+    /// The resources.
+    pub results: Vec<Entry>,
+    /// The page.
+    pub page: PageOut,
+    /// The revision and the filter.
+    pub context: ResourceContextOut,
+}
+
+/// One principal in a subject search.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct SubjectOut {
+    /// The kind.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// The principal string.
+    pub id: String,
+}
+
+/// `context.tutela` of a subject search.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct SubjectContext {
+    /// The revision that was used.
+    pub rev: u64,
+}
+
+/// `context` of a subject search.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct SubjectContextOut {
+    /// The details.
+    pub tutela: SubjectContext,
+}
+
+/// The answer of `POST /access/v1/search/subject`.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct SubjectResults {
+    /// The principals.
+    pub results: Vec<SubjectOut>,
+    /// The page.
+    pub page: PageOut,
+    /// The revision.
+    pub context: SubjectContextOut,
+}
+
 /// A request that does not parse. The text is short English with no values
 /// from the request, so it is safe to send and to log.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -377,7 +472,24 @@ pub fn field_names(names: &[String]) -> Result<Vec<FieldName>, Invalid> {
         .collect()
 }
 
-fn resource(r: Resource) -> Result<ResourceRef, Invalid> {
+/// A kind name.
+///
+/// # Errors
+///
+/// [`Invalid`] for an unknown kind.
+pub fn kind(s: &Subject) -> Result<PrincipalKind, Invalid> {
+    PrincipalKind::ALL
+        .into_iter()
+        .find(|k| k.as_str() == s.kind)
+        .ok_or(Invalid("`subject.type` is not a principal kind"))
+}
+
+/// A resource, parsed in full.
+///
+/// # Errors
+///
+/// [`Invalid`] when a field is missing or does not parse.
+pub fn resource(r: Resource) -> Result<ResourceRef, Invalid> {
     let type_name = type_name(&r.kind)?;
     let id = r.id.as_deref().ok_or(Invalid("`resource.id` is missing"))?;
     let id = ResourceId::parse(id).map_err(|_| Invalid("`resource.id` is not a resource id"))?;

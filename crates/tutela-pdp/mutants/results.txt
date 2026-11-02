@@ -1,6 +1,6 @@
 Planted bugs in tutela-pdp, each run against `cargo test -p tutela-pdp --lib`.
 Date: 2026-10-28. Commit: 773f8ba (clean tree). rustc 1.99.0 (b940084d7 2026-09-28).
-Every mutant must be caught. The sources are restored after each run.
+M27 to M35 (search) were run on 2026-11-02 with --only. Every mutant must be caught. The sources are restored after each run.
 Each line names the tests that failed (the first six).
 
 M01 eval.rs: caught by 2 test(s) - a service account (not only a user) can be the org Owner
@@ -55,3 +55,21 @@ M25 pdp.rs: caught by 1 test(s) - a field that decides access may be left out (r
       tests_check::a_field_that_decides_access_must_be_sent
 M26 pdp.rs: caught by 1 test(s) - a field integer above 2^53 - 1 is accepted
       tests_check::a_field_integer_must_fit_every_sdk
+M27 search.rs: caught by 3 test(s) - a resource search lists what a field value could still deny
+      tests_props::tm10_search_agrees_with_check, tests_props::tm10_the_search_test_compares_enough, tests_search::a_resource_behind_a_field_condition_is_not_named_and_the_filter_still_covers_it
+M28 search.rs: caught by 2 test(s) - a resource search: `not` of an unknown is true
+      tests_props::tm10_search_agrees_with_check, tests_props::tm10_the_search_test_compares_enough
+M29 search.rs: caught by 1 test(s) - a resource search lists a row with 33 ancestors
+      tests_props::tm10_search_agrees_with_check
+M30 search.rs: caught by 2 test(s) - a resource search: a scope counts as its own ancestor
+      tests_props::tm10_search_agrees_with_check, tests_props::tm10_the_search_test_compares_enough
+M31 search.rs: caught by 1 test(s) - a resource search stops at the last result, not the last scope looked at
+      tests_search::a_long_scan_ends_a_page_short_and_never_ends_the_list
+M32 search.rs: caught by 2 test(s) - a subject search forgets assignments on the resource itself
+      tests_props::tm10_search_agrees_with_check, tests_props::tm10_the_search_test_compares_enough
+M33 search.rs: caught by 3 test(s) - a subject search forgets group members
+      tests_props::tm10_search_agrees_with_check, tests_props::tm10_the_search_test_compares_enough, tests_search::a_subject_search_expands_groups_and_keeps_to_its_kind
+M34 search.rs: caught by 3 test(s) - a subject search lists every candidate without asking check
+      tests_props::tm10_search_agrees_with_check, tests_props::tm10_the_search_test_compares_enough, tests_search::a_subject_search_of_a_foreign_path_lists_no_one
+M35 search.rs: caught by 3 test(s) - a subject search mixes principal kinds
+      tests_props::tm10_search_agrees_with_check, tests_props::tm10_the_search_test_compares_enough, tests_search::a_subject_search_expands_groups_and_keeps_to_its_kind

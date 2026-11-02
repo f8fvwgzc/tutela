@@ -239,6 +239,14 @@ pub fn api_router(state: &AppState, grpc: Router, request_timeout: Duration) -> 
         .route("/access/v1/evaluation", post(authz::http::evaluation))
         .route("/access/v1/evaluations", post(authz::http::evaluations))
         .route(
+            "/access/v1/search/resource",
+            post(authz::http::search_resource),
+        )
+        .route(
+            "/access/v1/search/subject",
+            post(authz::http::search_subject),
+        )
+        .route(
             "/.well-known/authzen-configuration",
             get(authz::http::metadata),
         )

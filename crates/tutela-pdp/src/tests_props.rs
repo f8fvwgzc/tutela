@@ -10,6 +10,7 @@
 //!
 //! `check` is also compared with a reference evaluator (`testref`) that
 //! shares no code with it, and `write_check` with the field mask of `check`.
+//! The two searches are compared with `check` (`search_agrees`).
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -18,8 +19,9 @@ use proptest::prelude::*;
 use tutela_contracts::decision::{Decision, Effect, ReasonCode};
 use tutela_contracts::keys::{ActionKey, FieldName};
 use tutela_contracts::level::Level;
-use tutela_contracts::principal::Principal;
+use tutela_contracts::principal::{Principal, PrincipalKind};
 
+use crate::filter::{FilterExpr, ListFilter};
 use crate::model::{Model, diff};
 use crate::testgen::{
     DATA_FIELDS, Node, Paths, Rng, Tenant, World, has_not_over_comparison, principals, row_matches,
@@ -28,7 +30,8 @@ use crate::testgen::{
 use crate::testref::expected;
 use crate::tests_check::{agent, user};
 use crate::{
-    Attrs, CheckRequest, ListFilterRequest, Pdp, PdpError, ScopePathProblem, WriteCheckRequest,
+    Attrs, CheckRequest, ListFilterRequest, PathEntry, Pdp, PdpError, ScopePathProblem,
+    SubjectSearchRequest, WriteCheckRequest,
 };
 
 fn pdp_of(model: &Arc<Model>, tenants: &[&Tenant]) -> Pdp {
@@ -516,6 +519,163 @@ fn write_check_agrees(seed: u64, w: &World) {
     }
 }
 
+/// Every page of a resource search, with a small limit so that paging is
+/// part of what is tested. A resource never comes twice.
+fn all_resources(
+    pdp: &Pdp,
+    req: &ListFilterRequest,
+    paths: &Paths,
+) -> (ListFilter, Vec<PathEntry>) {
+    let mut out = Vec::new();
+    let mut after = None;
+    loop {
+        let page = pdp
+            .search_resources(req, paths, after.as_ref(), 3)
+            .unwrap_or_else(|e| panic!("search failed: {e}"));
+        out.extend(page.results);
+        after = page.next;
+        if after.is_none() {
+            let sorted: BTreeSet<_> = out.iter().collect();
+            assert_eq!(sorted.len(), out.len(), "a resource came twice");
+            return (page.filter, out);
+        }
+    }
+}
+
+fn all_subjects(pdp: &Pdp, req: &SubjectSearchRequest) -> Vec<Principal> {
+    let mut out = Vec::new();
+    let mut after = None;
+    loop {
+        let page = pdp
+            .search_subjects(req, after.as_ref(), 2)
+            .unwrap_or_else(|e| panic!("search failed: {e}"));
+        out.extend(page.results);
+        after = page.next;
+        if after.is_none() {
+            return out;
+        }
+    }
+}
+
+/// `true` if the filter's answer can depend on a field value.
+fn reads_a_field(e: &FilterExpr) -> bool {
+    match e {
+        FilterExpr::True
+        | FilterExpr::False
+        | FilterExpr::IdIn { .. }
+        | FilterExpr::Under { .. } => false,
+        FilterExpr::And { args } | FilterExpr::Or { args } => args.iter().any(reads_a_field),
+        FilterExpr::Not { arg } => reads_a_field(arg),
+        _ => true,
+    }
+}
+
+#[derive(Default)]
+struct SearchSeen {
+    listed: usize,
+    exact: usize,
+    hidden_by_a_field: usize,
+    subjects_listed: usize,
+    subjects_compared: usize,
+}
+
+/// A listed resource is one `check` allows, whatever its field values are.
+/// When the filter reads no field, the two agree in both directions.
+/// A subject search lists exactly the principals `check` allows.
+fn search_agrees(seed: u64, w: &World, seen: &mut SearchSeen) {
+    let pdp = pdp_of(&w.model, &w.tenants.iter().collect::<Vec<_>>());
+    let paths = Paths {
+        indexed: true,
+        ..Paths::of(&w.tenants)
+    };
+    for t in &w.tenants {
+        let rows: Vec<&Node> = t.rows().collect();
+        let values: Vec<Attrs> = rows.iter().take(6).map(|r| r.resource().attrs).collect();
+        for (p, actors) in askers() {
+            for action in &w.spec.actions() {
+                let action = action.as_str();
+                let (filter, listed) =
+                    all_resources(&pdp, &list_req(t, &p, &actors, action), &paths);
+                let any_field = filter.condition.as_ref().is_some_and(reads_a_field);
+                for row in &rows {
+                    let req = check_req(t, &p, &actors, action, row);
+                    let allowed = is_allowed(decide(&pdp, &req).as_ref());
+                    if listed.contains(&row.entry) {
+                        seen.listed += 1;
+                        assert!(
+                            allowed,
+                            "seed {seed}: search names {} but check denies {p} {actors:?} {action}",
+                            row.entry
+                        );
+                        for attrs in &values {
+                            let mut other = req.clone();
+                            other.resource.attrs = attrs.clone();
+                            assert!(
+                                is_allowed(decide(&pdp, &other).as_ref()),
+                                "seed {seed}: search names {} but other field values deny it",
+                                row.entry
+                            );
+                        }
+                    } else if any_field {
+                        seen.hidden_by_a_field += usize::from(allowed);
+                    } else {
+                        seen.exact += 1;
+                        assert!(
+                            !allowed,
+                            "seed {seed}: search leaves out {}, which check allows for {p} {actors:?} {action}",
+                            row.entry
+                        );
+                    }
+                }
+            }
+        }
+        for row in rows
+            .iter()
+            .filter(|r| r.path.len() <= crate::MAX_PATH)
+            .take(12)
+        {
+            for action in &w.spec.actions() {
+                for kind in [
+                    PrincipalKind::User,
+                    PrincipalKind::Agent,
+                    PrincipalKind::ServiceAccount,
+                ] {
+                    let listed = all_subjects(
+                        &pdp,
+                        &SubjectSearchRequest {
+                            tenant: t.key.clone(),
+                            kind,
+                            action: ActionKey::parse(action).unwrap(),
+                            resource: row.resource(),
+                            at_least_revision: None,
+                        },
+                    );
+                    seen.subjects_listed += listed.len();
+                    for p in &listed {
+                        assert_eq!(p.kind(), kind);
+                        let d = decide(&pdp, &check_req(t, p, &[], action, row));
+                        assert!(
+                            is_allowed(d.as_ref()),
+                            "seed {seed}: search names {p}, and check denies {action} on {}",
+                            row.entry
+                        );
+                    }
+                    for p in principals().iter().filter(|p| p.kind() == kind) {
+                        seen.subjects_compared += 1;
+                        let d = decide(&pdp, &check_req(t, p, &[], action, row));
+                        assert_eq!(
+                            listed.contains(p),
+                            is_allowed(d.as_ref()),
+                            "seed {seed}: search and check disagree on {p} {action} {}",
+                            row.entry
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 48, ..ProptestConfig::default() })]
 
@@ -541,6 +701,11 @@ proptest! {
     }
 
     #[test]
+    fn tm10_search_agrees_with_check(seed in any::<u64>()) {
+        search_agrees(seed, &world(seed), &mut SearchSeen::default());
+    }
+
+    #[test]
     fn tm05_no_cross_tenant_grant(seed in any::<u64>()) {
         no_cross_tenant(seed, &world(seed));
     }
@@ -560,6 +725,20 @@ proptest! {
 /// of the week-1 spike is hit: deep paths, private inside private, groups,
 /// gone roles, conditions with `not` on null fields, the agent overlap, the
 /// org owner and assignments on the row itself.
+/// The search test means nothing if every world is empty.
+#[test]
+fn tm10_the_search_test_compares_enough() {
+    let mut seen = SearchSeen::default();
+    for seed in 0..12 {
+        search_agrees(seed, &world(seed), &mut seen);
+    }
+    assert!(seen.listed > 200, "{}", seen.listed);
+    assert!(seen.exact > 200, "{}", seen.exact);
+    assert!(seen.hidden_by_a_field > 0, "{}", seen.hidden_by_a_field);
+    assert!(seen.subjects_listed > 50, "{}", seen.subjects_listed);
+    assert!(seen.subjects_compared > 500, "{}", seen.subjects_compared);
+}
+
 #[test]
 fn tm10_the_differential_test_hits_every_case() {
     let mut seen = Seen::default();

@@ -10,7 +10,10 @@
 
 pub mod grpc;
 pub mod http;
+mod search;
 pub mod wire;
+
+pub use search::{search_resource, search_subject};
 
 use axum::http::StatusCode;
 use tutela_contracts::principal::{Principal, PrincipalKind};
@@ -50,6 +53,19 @@ fn may_ask(id: &Identity, subject: &Principal, actors: &[Principal]) -> Result<(
     allowed.then_some(()).ok_or_else(Problem::forbidden)
 }
 
+/// May this token list who holds a permission? That is a question about
+/// many principals, so a service only.
+fn may_list_subjects(id: &Identity) -> Result<(), Problem> {
+    let service = matches!(
+        id,
+        Identity::Access(c) if matches!(
+            c.sub.kind(),
+            PrincipalKind::ServiceAccount | PrincipalKind::Key
+        )
+    );
+    service.then_some(()).ok_or_else(Problem::forbidden)
+}
+
 /// The lowest revision that may answer: what the caller asked for, and the
 /// token's `rev` (CONTRACTS.md 4.2).
 fn floor(id: &Identity, asked: Option<u64>) -> Option<u64> {
@@ -81,8 +97,9 @@ impl From<Refused> for Problem {
     }
 }
 
-/// CONTRACTS.md 6.8: the bundle errors are 503, the rest 400. The detail is
-/// the evaluator's own short text, which holds no field values.
+/// CONTRACTS.md 6.8: the bundle errors and a scope that cannot be placed are
+/// 503, the rest 400. The detail is the evaluator's own short text, which
+/// holds no field values.
 fn pdp_problem(e: &PdpError) -> Problem {
     match e {
         PdpError::StaleBundle { .. } => Problem::stale("stale"),
@@ -92,6 +109,9 @@ fn pdp_problem(e: &PdpError) -> Problem {
         PdpError::UnknownType(_) | PdpError::UnknownAction(_) => {
             Problem::invalid("unknown_key", e.to_string())
         }
+        // The tenant's scopes cannot be placed. Its text names a scope.
+        PdpError::ScopePath { .. } => Problem::stale("unavailable"),
+        PdpError::FilterTooLarge(_) => Problem::invalid("filter_too_large", e.to_string()),
         _ => Problem::invalid("invalid_request", e.to_string()),
     }
 }
