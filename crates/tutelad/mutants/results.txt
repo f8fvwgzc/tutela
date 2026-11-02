@@ -1,0 +1,13 @@
+Planted bugs in the service, each run against the tests named in mutants.py.
+Date: 2026-11-02. Every mutant must be caught.
+
+S01: caught by 2 test(s) - a widening publish needs no token
+      tm08_a_widening_publish_is_refused_without_an_approval_token, tm08_a_rollback_is_a_new_version_and_passes_the_same_checks
+S02: caught by 2 test(s) - a token for the whole app approves one tenant's change
+      tm08_a_rollback_is_a_new_version_and_passes_the_same_checks, tm08_a_widening_publish_is_refused_without_an_approval_token
+S03: caught by 2 test(s) - anyone in the tenant may publish
+      who_may_look_at_or_change_a_model, an_org_admin_of_part_of_a_tenant_does_not_change_the_whole_of_it
+S04: caught by 1 test(s) - the keys at one org are enough for a tenant of two
+      an_org_admin_of_part_of_a_tenant_does_not_change_the_whole_of_it
+S06: caught by 1 test(s) - an app publish overwrites a tenant's own model
+      tests_pg::tm08_a_tenant_keeps_its_own_model_and_its_history_is_never_rewritten

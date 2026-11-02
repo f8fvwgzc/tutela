@@ -2711,6 +2711,10 @@ dependencies = [
 name = "tutela-store"
 version = "0.0.0"
 dependencies = [
+ "base64 0.23.1",
+ "ed25519-dalek",
+ "serde",
+ "serde_json",
  "sha2",
  "thiserror",
  "tokio",
@@ -2740,6 +2744,7 @@ dependencies = [
  "base64 0.23.1",
  "clap",
  "deadpool-postgres",
+ "ed25519-dalek",
  "prometheus-client",
  "prost",
  "protox",

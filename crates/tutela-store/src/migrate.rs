@@ -22,6 +22,11 @@ const MIGRATIONS: &[(i32, &str, &str)] = &[
         "assignment_expiry",
         include_str!("../migrations/0003_assignment_expiry.sql"),
     ),
+    (
+        4,
+        "model_versions",
+        include_str!("../migrations/0004_model_versions.sql"),
+    ),
 ];
 
 /// One lock id for every migrator of this schema (`pg_advisory_xact_lock`).

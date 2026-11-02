@@ -24,6 +24,7 @@ pub mod cache;
 pub mod config;
 pub mod db;
 pub mod expiry;
+pub mod models;
 pub mod server;
 pub mod telemetry;
 pub mod tenant;

@@ -1251,6 +1251,58 @@ A verified token for a tenant that is not in the directory gets 403 `unknown_ten
 - `tutelad_decisions_total` counts it as `operation="write_check"`.
 - gRPC: `WriteCheck`. The answer holds `decision`, `rev` and `decision_json`, which is `context.tutela` as JSON text. A move's shape grows inside v1, so it stays one contract with the JSON.
 
+### 7.10 Model versions
+
+**Status: Phase B, built.** Every published model is a kept, numbered version of its tenant ([ADR-0026](DECISIONS.md#adr-0026-a-tenant-owns-its-model-versions)). A publish here changes one tenant. HTTP only: the gRPC form comes with `tutela.admin.v1` (part 3). `tutela apply` against `tutelad` (part 4) calls these routes.
+
+**Who may ask.** The rules of 7.1 on tokens apply, and these need admin keys **at every org of the tenant**, read from data that has just been checked. A delegated token, an agent and an external token never pass: 403 `forbidden`. A service needs the keys like anyone else.
+
+| To | Needs at every org |
+|---|---|
+| Look: `GET` | `org:read_audit` |
+| Change: `POST /v1/models/publish` | `org:manage_access` and `org:manage_fields` |
+
+| Route | Does |
+|---|---|
+| `GET /v1/models` | The active model and a page of versions, newest first. Query: `before`, `limit` (at most 100). The texts are left out. |
+| `GET /v1/models/{version}` | One version, with its text. 404 for a version this tenant does not have. |
+| `POST /v1/models/publish` | A new version. |
+
+```json
+{ "active": { "version": 3, "digest": "9f86…", "own": true },
+  "versions": [ { "version": 3, "rev": 44, "digest": "9f86…", "class": "narrowing", "diff": "NARROWING …",
+                  "author": "user:usr_…", "approvers": [], "origin": "tenant", "restores": 1,
+                  "published_at": "2026-11-02T10:00:00.000Z" } ],
+  "next_before": 3 }
+```
+
+- `active.version` is the tenant's newest version number; 0 until it has one. `own` is `true` when the tenant published that model itself, and `false` when it follows the app's manifest. `origin` is `tenant` or `app`.
+- A version's `source` can be missing: only for one from before migration 4 that is not the current manifest.
+
+Publish:
+
+```json
+{ "source": "version = 1\n…", "expected_version": 3, "approval": "tutela-approval-v1.…" }
+```
+
+- `source` is the new `tutela.resources.toml`. To go back, send `"restore": <version>` instead: **a rollback is a new version** with the old text, and passes every check a publish passes, because a rollback can widen too. History is never changed; the database refuses it for every role.
+- `expected_version` is the `active.version` the caller compared against. Another publish in between is 409 `version_conflict`.
+- A widening change needs `approval`, a token of [MANIFEST.md §12](MANIFEST.md#12-applying-tutela-apply-and-approval-tokens) with `tid` set to this tenant, from `active.digest` to the SHA-256 of the new text. Without a valid one: 403 `approval_required`. A token with no `tid`, or for another tenant, approves nothing here.
+- The first publish of a tenant with no version writes two: the manifest it ran on as version 1, then the new one.
+
+```json
+{ "version": 4, "rev": 45, "digest": "60303…", "class": "widening", "restores": 1 }
+```
+
+| Status | When |
+|---|---|
+| 400 | `invalid_request`, `invalid_manifest` (the detail lists the compiler's problems), `app_mismatch`. |
+| 403 | `forbidden`, `approval_required`, `unknown_tenant`. |
+| 404 | `not_found`. |
+| 409 | `version_conflict`, `no_change` (this text is the active model), `no_source` (a version with no kept text). |
+
+A body may be up to 16 MiB, so a 4 MiB manifest fits after JSON escaping. `tutelad_model_operations_total` counts each call by `operation` and `outcome`: `ok`, `forbidden`, `refused`, `conflict`, `stale`, `invalid` or `error`.
+
 ### 7.9 Ports and operations
 
 **Status: Phase B, built.** `tutelad` listens on two ports.

@@ -151,6 +151,18 @@ impl Pdp {
         self.tenants.get(tenant).map(|b| b.rev)
     }
 
+    /// The orgs of a loaded tenant, sorted. Empty for an unknown tenant.
+    #[must_use]
+    pub fn orgs(&self, tenant: &TenantKey) -> Vec<OrgId> {
+        let mut orgs: Vec<OrgId> = self
+            .tenants
+            .get(tenant)
+            .map(|b| b.index.orgs.iter().copied().collect())
+            .unwrap_or_default();
+        orgs.sort_unstable();
+        orgs
+    }
+
     pub(crate) fn bundle(
         &self,
         tenant: &TenantKey,

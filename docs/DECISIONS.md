@@ -1008,3 +1008,36 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 - **A pending-move table in Tutela.** One more store of state for what the product already holds, and an approval that can go stale inside it.
 - **Enumerate the scopes below the moved item.** It needs a provider in `write_check`, covers only registered scopes, and rows are never registered.
 
+---
+
+## ADR-0026: A tenant owns its model versions
+
+**Status:** Accepted, 2026-11-02. Built in Phase B, part 2b. It changes [ADR-0014](#adr-0014-tutela-store-in-phase-a-the-schema-row-level-security-and-checked-writes) item 7 for `tutelad`, and adds to [ADR-0015](#adr-0015-approval-tokens-for-tutela-apply-in-library-mode).
+
+**Context.** `tutela_store::publish_manifest` replaces `app_manifest`, one row for the whole schema, and bumps every tenant. That is right for library mode, where one product owns the database. The ROADMAP notes planned to call it from the service, with a grant on `app_manifest`. But `tutelad` is multi-tenant, and a publish is made with a tenant's token. A tenant admin's publish would change every other tenant's permissions: the one thing the service exists to stop. Two-person publish "optional per tenant" would mean nothing, because a tenant with it off could change a tenant with it on. The docs lean the same way: PERMISSION-MODEL.md 4 says a tenant has one permission model, 17.8 prints a diff "against tenant", and the Phase B goal is that tenants change roles at runtime. The ROADMAP notes name this option.
+
+**Decision.**
+
+1. **A publish through `tutelad` changes one tenant.** It writes one row and bumps one revision, inside that tenant's row-level security, in one transaction. So it needs **no grant on `app_manifest`**, and `grant_service` gives none: this is the narrowest grant that works. `publish_manifest` stays out of every request, so its advisory lock and its lock per tenant never meet a request's transaction. **This departs from the ROADMAP note** that planned a grant.
+2. **Versions live in `model_revision`**, the table PERMISSION-MODEL.md 18 already gives them, with new columns `version`, `source`, `origin` and `restores` (migration 4). `version` counts per tenant from 1. Migration 4 numbers the rows that exist; only the current manifest's text is known, so an older row cannot be restored.
+3. **A tenant's active model** is its newest row when that row has `origin = tenant`; otherwise the app's manifest. So a tenant follows the app until it publishes for itself, and `tutela apply` in library mode keeps working unchanged.
+4. **`publish_manifest` leaves a tenant with its own model alone.** It bumps the revision and writes no row. Otherwise an operator's apply could widen a tenant that narrowed its own model, with nobody in that tenant seeing the change. There is no way yet to go back to following the app.
+5. **History is never rewritten.** A trigger refuses `UPDATE` and `DELETE` on `model_revision` for every role, the owner too. A rollback is a new version with the old text and `restores` set, and passes every check of a publish.
+6. **What came before is kept.** A tenant made after the last app publish has no row, so its first publish records the manifest it ran on as version 1.
+7. **Approval tokens stay** (ADR-0015), with a new optional `tid`. `tutelad` needs a token bound to this tenant: two tenants can share the same two manifests, and the approver looked at one of them. `tutela apply` refuses a token with a `tid`, which approves one tenant and not the app. The token code moved to `tutela_store::approval`, so the CLI and the service share it, and the service role may read `approver_key`. The keys stay the operator's, as ADR-0015 has them. `tutela approve` gets `--tenant`.
+8. **Who may publish.** `manage_access` and `manage_fields`, on `org`, at **every org of the tenant**: a model covers them all, so the admin of one org must not change another's. Looking needs `read_audit` the same way. All of it on data that has just been checked. "Nobody grants what they do not hold" (PERMISSION-MODEL.md 15.1 step 1) needs no check per key here: a manifest's rules sit at the org root, and a change that gives anyone more needs an approval token anyway.
+9. **The tag of a compiled model stays its digest**, and a replica keeps the last 32 models. The compile runs outside the lock, so one tenant's large model does not stop another's load.
+10. **HTTP only for now.** These are admin calls, and `tutela.admin.v1` is part 3.
+
+**Consequences.**
+- Part 4's `tutela apply` calls `POST /v1/models/publish` per tenant, with `expected_version`.
+- The routes take a token with the service's own audience, `tutela-authz`. THREAT-MODEL.md TM-01 and CONTRACTS.md 4.4 want `aud=tutela-admin` with step-up MFA for the Console. Nothing issues such a token before part 3, and the keys above are the stronger check. **Part 3 or 4 must add that audience to these routes.**
+- A tenant has no way to read the model's text unless it holds `read_audit`. The permission map stays the UI's view.
+- Each tenant row holds the whole text, so a large manifest costs its size once per tenant per app publish.
+
+**Alternatives considered.**
+- **Keep one model and let tenants call `publish_manifest`.** It is what the note planned. It lets one tenant change the others, and any test of that endpoint would have to call that a feature.
+- **Keep one model, and let only an operator publish.** `tutelad` has no operator identity, and PERMISSION-MODEL.md 15 has tenants publish.
+- **A new table for versions.** Two records of the same event.
+- **Delete a tenant's model to go back to the app.** That rewrites history.
+

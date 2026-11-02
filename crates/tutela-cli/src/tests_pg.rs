@@ -161,6 +161,7 @@ fn token(key: &ed25519_dalek::SigningKey, kid: &str, from: &str, to: &str) -> St
             kid: kid.into(),
             iat: NOW - 10,
             exp: NOW + 3_600,
+            tid: None,
         },
     )
     .unwrap()

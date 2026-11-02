@@ -168,6 +168,7 @@ Phase B: parts 1 and 2a are merged: tenants, the bindings store, the check API o
 | The check API in `tutelad`: evaluation, search and the permission map over HTTP and gRPC, from a snapshot per tenant that fails closed ([ADR-0021](docs/DECISIONS.md#adr-0021-the-check-api-one-code-path-a-snapshot-per-tenant-and-a-revision-lease), [ADR-0022](docs/DECISIONS.md#adr-0022-the-searches-live-next-to-the-evaluator), [ADR-0023](docs/DECISIONS.md#adr-0023-the-permission-map-and-a-tag-that-covers-the-answer)) | Done (Phase B). Nothing in production uses it yet |
 | Two real `tutelad` processes on one Postgres: a revoked role stops within 1.5 s (worst measured 1.010 s), and a database outage fails closed | Tested (Phase B) |
 | `write_check` over the API, with moves and links across scopes checked against boundary rules and compared before and after ([ADR-0025](docs/DECISIONS.md#adr-0025-moves-and-links-in-write_check)) | Done (Phase B) |
+| Model versions: each tenant's published models kept and numbered, with rollback as a new publish and widening refused without an approval token ([ADR-0026](docs/DECISIONS.md#adr-0026-a-tenant-owns-its-model-versions)) | Done (Phase B) |
 | Signed bundles for offline checks | Not built: part 3 ([ADR-0024](docs/DECISIONS.md#adr-0024-signed-bundles-wait-for-part-3)) |
 | Everything else | Planned, see [docs/ROADMAP.md](docs/ROADMAP.md) |
 

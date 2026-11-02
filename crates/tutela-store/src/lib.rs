@@ -29,6 +29,7 @@
 //!
 //! [`docs/PERMISSION-MODEL.md`]: https://github.com/f8fvwgzc/tutela/blob/main/docs/PERMISSION-MODEL.md
 
+pub mod approval;
 mod approvers;
 mod bindings;
 mod connect;
@@ -36,6 +37,7 @@ mod isolation;
 mod load;
 mod manifest;
 mod migrate;
+mod models;
 mod write;
 
 #[cfg(test)]
@@ -59,6 +61,10 @@ pub use isolation::{check_isolation, grant_service};
 pub use load::{ScopePathSnapshot, TenantBundle, load, rev};
 pub use manifest::{Publish, StoredManifest, applied_manifest, digest, manifest, publish_manifest};
 pub use migrate::{applied as applied_migration, latest as latest_migration, migrate};
+pub use models::{
+    ActiveModel, MAX_VERSION_PAGE, ModelVersion, TenantPublish, active_model, model_version,
+    model_versions, publish_tenant_model,
+};
 pub use tokio_postgres;
 pub use write::{
     Expired, add_member, add_org, assign, assign_until, create_group, create_tenant,

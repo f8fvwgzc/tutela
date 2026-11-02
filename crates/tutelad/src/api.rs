@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use axum::extract::{Extension, Request, State};
+use axum::extract::{DefaultBodyLimit, Extension, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -21,6 +21,7 @@ use tutela_store::{StoreError, StoreErrorKind};
 use crate::authz;
 use crate::cache::TenantCache;
 use crate::db::{Db, DbError};
+use crate::models;
 use crate::telemetry::{Metrics, observe};
 use crate::tenant::Tenant;
 
@@ -248,6 +249,13 @@ pub fn api_router(state: &AppState, grpc: Router, request_timeout: Duration) -> 
         )
         .route("/v1/authz/permissions", post(authz::http::permissions))
         .route("/v1/authz/write-check", post(authz::http::write_check))
+        .route("/v1/models", get(models::http::versions))
+        .route("/v1/models/{version}", get(models::http::version))
+        .route(
+            "/v1/models/publish",
+            post(models::http::publish)
+                .layer(DefaultBodyLimit::max(models::http::MODEL_BODY_LIMIT)),
+        )
         .route(
             "/.well-known/authzen-configuration",
             get(authz::http::metadata),

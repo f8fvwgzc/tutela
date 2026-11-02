@@ -4,7 +4,8 @@
 //! (ARCHITECTURE.md, library mode). The store keeps the applied text and
 //! its digest; [`publish_manifest`] replaces it and, in the same
 //! transaction, bumps every tenant's revision and records the change in
-//! each tenant's `model_revision` (PERMISSION-MODEL.md 15, 16).
+//! each tenant's `model_revision` (PERMISSION-MODEL.md 15, 16). A tenant
+//! that published its own model through `tutelad` keeps it (ADR-0026).
 
 use sha2::{Digest, Sha256};
 use tokio_postgres::Transaction;
@@ -180,6 +181,19 @@ pub async fn publish_manifest(
             .parse()
             .map_err(|_| StoreError::corrupt("issuer"))?;
         set_tenant(tx, &tid).await?;
+        // A tenant that published its own model keeps it (ADR-0026): the
+        // revision moves, the model does not.
+        let head: Option<(i64, String)> = tx
+            .query_opt(
+                "SELECT version, origin FROM tutela.model_revision WHERE tenant_id = $1 \
+                 ORDER BY version DESC LIMIT 1",
+                &[&tid.to_string()],
+            )
+            .await
+            .db()?
+            .map(|r| Ok((r.try_get(0).db()?, r.try_get(1).db()?)))
+            .transpose()
+            .map_err(|e: StoreError| e)?;
         let rev: i64 = tx
             .query_opt(
                 "UPDATE tutela.tenant_rev SET rev = rev + 1 WHERE tenant_id = $1 RETURNING rev",
@@ -190,24 +204,29 @@ pub async fn publish_manifest(
             .ok_or(StoreError::corrupt("tenant revision row"))?
             .try_get(0)
             .db()?;
-        tx.execute(
-            "INSERT INTO tutela.model_revision (tenant_id, rev, parent_rev, app, author, \
-             approvers, diff, class, state, published_at, bundle_digest) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'published', now(), $9)",
-            &[
-                &tid.to_string(),
-                &rev,
-                &(rev - 1),
-                &app,
-                &p.author,
-                &p.approvers,
-                &p.diff,
-                &class_text(p.class),
-                &digest,
-            ],
-        )
-        .await
-        .db()?;
+        if head.as_ref().is_none_or(|(_, origin)| origin != "tenant") {
+            let number = head.map_or(1, |(v, _)| v.saturating_add(1));
+            tx.execute(
+                "INSERT INTO tutela.model_revision (tenant_id, rev, parent_rev, app, author, \
+                 approvers, diff, class, state, published_at, bundle_digest, version, source) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'published', now(), $9, $10, $11)",
+                &[
+                    &tid.to_string(),
+                    &rev,
+                    &(rev - 1),
+                    &app,
+                    &p.author,
+                    &p.approvers,
+                    &p.diff,
+                    &class_text(p.class),
+                    &digest,
+                    &number,
+                    &p.source,
+                ],
+            )
+            .await
+            .db()?;
+        }
         out.push((TenantKey::new(iss, tid), to_rev(rev)?));
     }
     // A manifest is the one write that spans tenants. Leave none entered.
@@ -218,7 +237,7 @@ pub async fn publish_manifest(
 }
 
 /// The stored class: `narrowing`, `neutral` or `widening` (PERMISSION-MODEL.md 18).
-const fn class_text(c: Class) -> &'static str {
+pub(crate) const fn class_text(c: Class) -> &'static str {
     match c {
         Class::Narrowing => "narrowing",
         Class::Neutral => "neutral",
