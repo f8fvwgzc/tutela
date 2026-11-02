@@ -49,6 +49,8 @@ HOOKS_SRC = "crates/tutelad/src/webhooks.rs"
 HOOKS_STORE = "crates/tutela-store/src/webhooks.rs"
 HOOKS = ["-p", "tutelad", "--test", "webhooks"]
 HOOKS_ALL = ["-p", "tutelad", "--test", "webhooks", "--lib"]
+STREAM_SRC = "crates/tutelad/src/stream.rs"
+SSE = ["-p", "tutelad", "--test", "sse"]
 
 # (id, file, what it breaks, old text, new text, cargo test arguments).
 # `old` must occur once.
@@ -322,6 +324,39 @@ MUTANTS = [
      "        if let (Some(p), Some(v), Some(true)) = (previous, previous_version, overlapping) {\n",
      "        if let (Some(p), Some(v), Some(false)) = (previous, previous_version, overlapping) {\n",
      HOOKS),
+    # SSE GET /v1/events (ADR-0037).
+    ("X01", STREAM_SRC, "a stream joins another tenant's feed",
+     "        if let Some(tx) = feeds.get(tenant.key()) {\n",
+     "        if let Some(tx) = feeds.values().next() {\n",
+     SSE),
+    ("X02", STREAM_SRC, "a person may listen to the tenant's events",
+     "                PrincipalKind::ServiceAccount | PrincipalKind::Key\n",
+     "                PrincipalKind::ServiceAccount | PrincipalKind::Key | PrincipalKind::User\n",
+     SSE),
+    ("X03", STREAM_SRC, "a resumed stream skips what it missed",
+     "                    self.queue.extend(first);\n                    self.phase = Phase::Replay;\n",
+     "                    self.queue.extend(first);\n                    self.phase = Phase::Live;\n",
+     SSE),
+    ("X04", STREAM_SRC, "an unknown Last-Event-ID resumes with no reset",
+     "    if lost {\n        first.push(reset());\n    }\n",
+     "",
+     SSE),
+    ("X05", STREAM_SRC, "a slow client is never reset",
+     "                        Some(Err(broadcast::error::RecvError::Lagged(_))) => {\n                            self.queue.push_back(reset());\n                            self.phase = Phase::End;\n                        }\n",
+     "                        Some(Err(broadcast::error::RecvError::Lagged(_))) => {}\n",
+     SSE),
+    ("X06", STREAM_SRC, "a replica opens streams without bound",
+     "    if hub.open.fetch_add(1, Ordering::SeqCst) >= hub.settings.max_streams {\n",
+     "    if false && hub.open.fetch_add(1, Ordering::SeqCst) >= hub.settings.max_streams {\n",
+     SSE),
+    ("X07", STREAM_SRC, "a denied kid is never pushed after the first message",
+     "            if denied.as_ref() != Some(&kids) {\n",
+     "            if denied.is_none() {\n",
+     SSE),
+    ("X08", STREAM_SRC, "a stream outlives its age limit",
+     "        until: now + left.min(settings.max_age),\n",
+     "        until: now + left,\n",
+     SSE),
 ]
 
 

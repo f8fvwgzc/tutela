@@ -165,3 +165,10 @@ These matter to whoever runs `tutelad`, and to a product that verifies its token
 - **A receiver** (attache, texc-symphony, a product) checks `webhook-signature` in constant time over `<webhook-id>.<webhook-timestamp>.<body>` with the decoded `whsec_` secret, refuses a timestamp more than 5 minutes off, dedupes by `webhook-id`, and answers 2xx at once. During a rotation the header holds two signatures; accept either.
 - **`tutela-safenet`:** `Client::check(url)` checks a URL and its DNS answer without a request.
 
+## Event stream (part 3b)
+
+- **`GET /v1/events`** ([ADR-0037](DECISIONS.md#adr-0037-the-event-stream-services-only-one-feed-per-tenant-bounded), CONTRACTS.md 8.6): a product backend listens with its service token (`sa` or `key`) and feeds its `tutela-sdk` verifier: `tutela_sdk::events::apply_event` for each event, `tutela_sdk::events::apply_denied_kids` for each `denied_kids` message. Reconnect with `Last-Event-ID` when a stream ends; reload on `reset`.
+- **For texc-symphony and attache, when they bump:** listening is how a revoked session, a disabled person or a quarantined agent is refused at once instead of when its token expires.
+- **New settings:** `TUTELA_EVENTS_POLL_MS` (default 500), `TUTELA_SSE_MAX_STREAMS` (1000), `TUTELA_SSE_MAX_SECS` (900), `TUTELA_SSE_BUFFER` (256).
+- **`tutela-sdk`:** new module `events`.
+

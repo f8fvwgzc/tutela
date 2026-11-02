@@ -135,6 +135,7 @@ Done:
 | Local hash-chained audit log: one chain per tenant in the change's transaction, `seq` from 1 with no gap, append-only in the database, a verifier that finds the first broken link; records for every token issued or refused, provisioning, publishes and their refusals, proposals, the two-person setting, impact, explain, simulate, write checks, the expiry sweep and signing keys; `details` added to audit.v1 | Done (part 3b) | [ADR-0034](DECISIONS.md#adr-0034-the-local-audit-log-one-chain-per-tenant-written-with-the-change) |
 | Transactional outbox: events in the change's transaction, numbered per tenant in commit order with no gap, a stable id; `permissions.changed`, `model.published`, `user.created`, `session.revoked`, `principal.disabled`, `user.disabled` and the new `principal.enabled`; a one-line hook for part 3c's org lifecycle events | Done (part 3b) | [ADR-0035](DECISIONS.md#adr-0035-the-outbox-events-numbered-per-tenant-in-commit-order) |
 | Webhook delivery from the outbox: Standard Webhooks signatures (the spec's test vector passes), `tutela-safenet` at registration (DNS answer included) and at each send, a lease so two replicas never send one event at once, order per subject, retries with backoff and jitter for 24 hours, then dead and sent again by hand, secret rotation with an overlap, secrets sealed by `tutela-vault`. Registration is a function; its route is part 3c's | Done (part 3b) | [ADR-0036](DECISIONS.md#adr-0036-webhooks-delivered-from-the-outbox-registered-by-part-3c) |
+| SSE `GET /v1/events` for a service of the tenant: events, the `kid` deny-list (`denied_kids`) and revision changes (`rev`) pushed, resume by `Last-Event-ID` with `reset`, one feed per tenant per replica, bounded streams (count, age, buffer), ended on revocation and shutdown; `tutela_sdk::events` applies them to a verifier | Done (part 3b) | [ADR-0037](DECISIONS.md#adr-0037-the-event-stream-services-only-one-feed-per-tenant-bounded) |
 
 Not started:
 
@@ -142,7 +143,6 @@ Not started:
 |---|---|---|
 | Signed bundles for PDP caches and offline checks | 3b | After SSE ([ADR-0024](DECISIONS.md#adr-0024-signed-bundles-wait-for-part-3)). Their `expires_at` must honour `next_expiry`. |
 | `tutela apply` against `tutelad`, `tutela apps create`, `tutela keys rotate` | 4 | `tutela apply` calls `POST /v1/models/publish`, per tenant. |
-| Webhooks, SSE `/v1/events` | 3b | |
 | `tutela.admin.v1`, agent principal management, org lifecycle events, soft-delete of tenants | 3c | `grant_service` gives no write on `tenant` yet. The store calls for agents and revocation exist (part 3a). |
 | A test of token exchange against a real Keycloak ([#87](https://github.com/f8fvwgzc/tutela/issues/87)) | open | No image could be pulled; tested against a local signer of Keycloak-shaped tokens. |
 | Client authentication at the token endpoint | 4 | With apps (`tutela apps create`): bind `azp` to the client (ADR-0031). |

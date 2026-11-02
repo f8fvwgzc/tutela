@@ -96,6 +96,10 @@ pub struct Config {
     /// deliveries are kept, at least two days (retries last 24 hours). An SSE
     /// client that resumes from an older event gets `reset`.
     pub event_retention: Duration,
+    /// `TUTELA_EVENTS_POLL_MS`, `TUTELA_SSE_MAX_STREAMS`,
+    /// `TUTELA_SSE_MAX_SECS` and `TUTELA_SSE_BUFFER`: how `GET /v1/events`
+    /// streams behave (ADR-0037).
+    pub streams: crate::stream::StreamSettings,
 }
 
 /// The secrets `tutelad` needs at start-up. `Debug` shows none of them.
@@ -328,6 +332,17 @@ impl Config {
         );
         let webhook_poll = Duration::from_millis(parsed(&get, "TUTELA_WEBHOOK_POLL_MS", "1000")?);
         let event_retention = seconds(&get, "TUTELA_EVENT_RETENTION_SECS", "604800")?;
+        let streams = crate::stream::StreamSettings {
+            poll: Duration::from_millis(parsed(&get, "TUTELA_EVENTS_POLL_MS", "500")?),
+            max_streams: parsed(&get, "TUTELA_SSE_MAX_STREAMS", "1000")?,
+            max_age: seconds(&get, "TUTELA_SSE_MAX_SECS", "900")?,
+            buffer: parsed(&get, "TUTELA_SSE_BUFFER", "256")?,
+            ..crate::stream::StreamSettings::default()
+        };
+        ensure!(
+            !streams.poll.is_zero() && !streams.max_age.is_zero() && streams.buffer > 0,
+            "TUTELA_EVENTS_POLL_MS, TUTELA_SSE_MAX_SECS and TUTELA_SSE_BUFFER must be at least 1"
+        );
         ensure!(
             event_retention >= Duration::from_secs(2 * 24 * 3600),
             "TUTELA_EVENT_RETENTION_SECS must be at least 172800 (two days)"
@@ -356,6 +371,7 @@ impl Config {
             delegated_ttl,
             webhook_poll,
             event_retention,
+            streams,
         })
     }
 

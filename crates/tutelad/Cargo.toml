@@ -23,6 +23,7 @@ axum = { version = "0.8.9", features = ["http2"] }
 base64 = "0.23.1"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 deadpool-postgres = "0.14.2"
+futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
 prometheus-client = "0.25.2"
 prost = "0.14.4"
 serde = { version = "1.0.229", features = ["derive"] }

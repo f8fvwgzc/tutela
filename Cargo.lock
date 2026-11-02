@@ -2748,6 +2748,7 @@ dependencies = [
  "clap",
  "deadpool-postgres",
  "ed25519-dalek",
+ "futures-util",
  "prometheus-client",
  "prost",
  "protox",

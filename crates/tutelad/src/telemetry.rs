@@ -144,6 +144,8 @@ pub struct Metrics {
     token_operations: Family<DecisionLabels, Counter>,
     audit_records: Family<DecisionLabels, Counter>,
     webhook_deliveries: Family<SweepLabels, Counter>,
+    streams: Family<SweepLabels, Counter>,
+    open_streams: Gauge,
 }
 
 impl Default for Metrics {
@@ -250,6 +252,18 @@ impl Metrics {
             "Webhook attempts, by result: delivered, retry, dead, or blocked (not a public address)",
             webhook_deliveries.clone(),
         );
+        let streams = Family::<SweepLabels, Counter>::default();
+        registry.register(
+            "event_streams",
+            "Requests for GET /v1/events, by result: opened, forbidden, invalid, full",
+            streams.clone(),
+        );
+        let open_streams = Gauge::default();
+        registry.register(
+            "event_streams_open",
+            "Event streams open on this replica",
+            open_streams.clone(),
+        );
         Self {
             registry,
             requests,
@@ -268,7 +282,24 @@ impl Metrics {
             token_operations,
             audit_records,
             webhook_deliveries,
+            streams,
+            open_streams,
         }
+    }
+
+    /// Counts one request for an event stream: `opened`, `forbidden`,
+    /// `invalid` or `full`.
+    pub fn count_stream(&self, result: &'static str) {
+        self.streams
+            .get_or_create(&SweepLabels {
+                result: result.to_owned(),
+            })
+            .inc();
+    }
+
+    /// Records how many event streams are open, read at scrape time.
+    pub fn set_open_streams(&self, n: usize) {
+        self.open_streams.set(i64::try_from(n).unwrap_or(i64::MAX));
     }
 
     /// Counts one webhook attempt: `delivered`, `retry`, `dead` or

@@ -53,6 +53,7 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0034](#adr-0034-the-local-audit-log-one-chain-per-tenant-written-with-the-change) | The local audit log: one chain per tenant, written with the change | Accepted |
 | [0035](#adr-0035-the-outbox-events-numbered-per-tenant-in-commit-order) | The outbox: events numbered per tenant, in commit order | Accepted |
 | [0036](#adr-0036-webhooks-delivered-from-the-outbox-registered-by-part-3c) | Webhooks: delivered from the outbox, registered by part 3c | Accepted |
+| [0037](#adr-0037-the-event-stream-services-only-one-feed-per-tenant-bounded) | The event stream: services only, one feed per tenant, bounded | Accepted |
 
 ---
 
@@ -1394,4 +1395,36 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 - **Hold a row lock while sending.** A database connection per open request, for up to 15 s each.
 - **Make delivery rows in the change's transaction.** The change would read every webhook of its tenant and grow with them; handing events out afterwards keeps the change's transaction small.
 - **Registration now, on an HTTP route of its own.** It would fix the admin rule for webhooks before `tutela.admin.v1` fixes it for everything else.
+
+---
+
+## ADR-0037: The event stream: services only, one feed per tenant, bounded
+
+**Status:** Accepted, 2026-11-02. Built in Phase B, part 3b. It builds CONTRACTS.md 8.6, the push of the `kid` deny-list TM-15 asks for (CONTRACTS.md open point 1), and the push of revisions.
+
+**Context.** CONTRACTS.md 8.6 fixes the message format, `Last-Event-ID`, `reset`, the tenant scope and the `types` filter. It does not say who may listen, how a deny-list or a revision reaches an SDK, or how a slow client is kept from holding memory or a database connection. ADR-0030 left the `kid` deny-list over SSE to this part; ADR-0021 and ADR-0031 left a push that lets a cache stop waiting for its lease.
+
+**Decision.**
+
+1. **Only a service listens:** an access token of the service's own audience whose subject is an `sa` or a `key` of the tenant. A stream names every principal of the tenant that was revoked or disabled, so it is a question about other principals, as `search/subject` is (ADR-0022 item 6). A person, an agent, a delegated token and an external token get 403; an admin token is refused by the verifier (401). A browser listens through its product's backend, which holds the service token (8.6).
+2. **Messages.** Each event: `id:` its id, `event:` its type, `data:` the CloudEvent on one line. Three control messages, with no `id:` so they never move a client's `Last-Event-ID`:
+   - `event: denied_kids`, `data: {"iss", "jwks_uri", "kids"}`: the whole `kid` deny-list of `tutelad`'s own issuer (`KeyRing::denied()`), first and again whenever it changes. A receiver puts every `kid` on its deny-list and forgets the cached JWKS at `jwks_uri` (`Verifier::forget_jwks`): the forced refetch of TM-15. The whole list each time, so a missed message changes nothing. **This answers CONTRACTS.md open point 1** for SSE; it is not an event type, because signing keys belong to the deployment, not to a tenant, and an event per tenant per denial would add nothing.
+   - `event: rev`, `data: {"rev"}`: the tenant's revision, first and whenever it moves, the expiry sweep included. A cache that sees a newer one reloads at once instead of at the end of its lease.
+   - `event: reset`, `data: {}`: the client's `Last-Event-ID` is not one this tenant still has (pruned, or never its own); reload. It also ends a stream that fell behind (item 5).
+3. **Resume** from `Last-Event-ID`: the stream reads what came after it from the outbox, a page at a time, then follows the feed. Because events are numbered with no gap (ADR-0035), a stream that sees a jump in numbers knows it missed something and reads the gap from the outbox first.
+4. **One feed per tenant per replica.** The first stream of a tenant starts a feed that reads the outbox, the revision and the deny-list every `TUTELA_EVENTS_POLL_MS` (default 500) and hands them to every stream of the tenant through a bounded channel; the feed stops with its last stream. So the database load grows with the active tenants, not with the streams, and no stream holds a connection.
+5. **Bounds.** At most `TUTELA_SSE_MAX_STREAMS` streams per replica (default 1000; then 503). A stream lasts at most `TUTELA_SSE_MAX_SECS` (default 900) and never past its token's `exp`; the client reconnects with a fresh token and its `Last-Event-ID`. A stream that falls more than `TUTELA_SSE_BUFFER` messages (default 256) behind gets `reset` and ends, so a slow or stuck client holds a bounded buffer. Every 5 s a stream checks that its token's principal was not revoked or disabled, and ends if it was. A shutdown ends every stream first, so clients move to another replica while requests drain.
+6. **The SDK side** (`tutela_sdk::events`): `apply_event` moves a verifier's `EpochBook` on `session.revoked`, `principal.disabled` and the new `principal.enabled` (ADR-0035); `apply_denied_kids` applies a `denied_kids` message. A product's revocation delay is then the time to receive the event, as TM-13 says.
+7. **Metrics:** `tutelad_event_streams{result}` (`opened`, `forbidden`, `invalid`, `full`) and `tutelad_event_streams_open`.
+
+**Consequences.**
+- Revocation reaches a product's SDK within one poll (half a second) instead of the token's life.
+- `tutelad`'s own replicas still use their lease (ADR-0021); a replica that wants the push can listen to another replica's stream later. The stream is there; the lease stays the safety net.
+- A deny-list change made on another replica reaches a stream within `TUTELA_KEY_REFRESH_SECS` plus one poll.
+
+**Alternatives considered.**
+- **Let a person listen to events about itself.** A filter per principal on every message; nothing needs it yet.
+- **A `tutela.signing_key.revoked.v1` event in every tenant's outbox.** A deployment-wide fact copied into every tenant, and webhooks would carry it to outside receivers that have no use for it.
+- **A query per stream per poll.** The load would grow with streams; one feed per tenant keeps it per tenant.
+- **`LISTEN`/`NOTIFY`** to wake feeds. Lower delay, but a connection outside the pool per replica, and the poll is still needed when a notification is lost (ADR-0021).
 

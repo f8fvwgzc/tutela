@@ -172,6 +172,8 @@ impl Server {
 
         tracing::info!(drain_ms = drain.as_millis() as u64, "shutting down");
         state.stopping.store(true, Ordering::SeqCst);
+        // Event streams end first: their clients go to another replica.
+        state.events.close();
         health
             .set_service_status("", ServingStatus::NotServing)
             .await;
@@ -241,6 +243,7 @@ pub fn state(config: &Config) -> anyhow::Result<AppState> {
     let db = Db::connect(&config.database_url, config.pool_size)?;
     let metrics = Arc::new(Metrics::new());
     let keys = Arc::new(config.key_ring()?);
+    let events_keys = Arc::clone(&keys);
     let other: Arc<dyn tutela_sdk::JwksSource> = Arc::new(config.jwks_source()?);
     let clock: Arc<dyn tutela_sdk::Clock> = Arc::new(tutela_sdk::SystemClock);
     Ok(AppState {
@@ -256,6 +259,11 @@ pub fn state(config: &Config) -> anyhow::Result<AppState> {
             db.clone(),
             config.limits,
             Arc::clone(&metrics),
+        )),
+        events: Arc::new(crate::stream::Hub::new(
+            db.clone(),
+            Arc::clone(&events_keys),
+            config.streams,
         )),
         db,
         metrics,
