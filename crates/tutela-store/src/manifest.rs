@@ -179,6 +179,10 @@ pub async fn publish_manifest(
         .db()?;
         out.push((TenantKey::new(iss, tid), to_rev(rev)?));
     }
+    // A manifest is the one write that spans tenants. Leave none entered.
+    tx.execute("SELECT set_config('tutela.tenant_id', '', true)", &[])
+        .await
+        .db()?;
     Ok(out)
 }
 

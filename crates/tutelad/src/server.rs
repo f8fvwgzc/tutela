@@ -180,9 +180,19 @@ pub fn state(config: &Config) -> anyhow::Result<AppState> {
 ///
 /// # Errors
 ///
-/// A failed start, or a failed shutdown.
+/// A failed start, a role or a schema that does not isolate tenants, or a
+/// failed shutdown.
 pub async fn run(config: Config, shutdown: impl Future<Output = ()> + Send) -> anyhow::Result<()> {
     let state = state(&config)?;
+    // A database that is down may come up later. A role that can bypass
+    // row-level security never gets to serve.
+    match state.db.check_ready().await {
+        Err(e) if e.is_unsafe() => {
+            return Err(e).context("refusing to serve");
+        }
+        Err(e) => tracing::warn!(reason = %e, "starting, not ready yet"),
+        Ok(()) => {}
+    }
     let server = Server::bind(&config, state).await?;
     tracing::info!(
         api = %server.api_addr()?,
@@ -191,4 +201,24 @@ pub async fn run(config: Config, shutdown: impl Future<Output = ()> + Send) -> a
         "serving"
     );
     server.serve(shutdown).await
+}
+
+/// `tutelad migrate`: applies the migrations and gives the service role its
+/// grants. This is the deploy step that runs as the owner, apart from the
+/// service, and it needs no other setting.
+///
+/// # Errors
+///
+/// A bad variable, or a failed migration or grant.
+pub async fn migrate(var: impl Fn(&str) -> Option<String>) -> anyhow::Result<()> {
+    let get = |name: &str| var(name).filter(|v| !v.is_empty());
+    let url = get("TUTELA_OWNER_DATABASE_URL").context("TUTELA_OWNER_DATABASE_URL is not set")?;
+    let role = get("TUTELA_SERVICE_ROLE").context("TUTELA_SERVICE_ROLE is not set")?;
+    let applied = Db::connect(&url, 1)?.migrate(&role).await?;
+    tracing::info!(
+        applied = ?applied,
+        latest = tutela_store::latest_migration(),
+        "the schema is current"
+    );
+    Ok(())
 }

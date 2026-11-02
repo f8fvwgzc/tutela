@@ -12,9 +12,9 @@
 //! example a move and its new scope path). In that transaction each function:
 //!
 //! 1. checks the tenant key and sets `tutela.tenant_id` with
-//!    `set_config(..., true)` (the same as `SET LOCAL`); every tenant table
-//!    has `FORCE ROW LEVEL SECURITY`, so no other tenant's row is read or
-//!    written;
+//!    `set_config(..., true)` (the same as `SET LOCAL`), as [`enter`] does;
+//!    every tenant table has `FORCE ROW LEVEL SECURITY`, so no other
+//!    tenant's row is read or written;
 //! 2. for a write, bumps the tenant revision first (this locks the
 //!    tenant's revision row, so writes to one tenant are serialized), then
 //!    makes the change;
@@ -31,6 +31,7 @@
 
 mod approvers;
 mod connect;
+mod isolation;
 mod load;
 mod manifest;
 mod migrate;
@@ -49,6 +50,7 @@ use tutela_pdp::{LoadError, PathEntry, Pdp, TenantData};
 
 pub use approvers::{Approver, add_approver, approver, approver_id, approvers, revoke_approver};
 pub use connect::{Transport, database_config};
+pub use isolation::{check_isolation, grant_service};
 pub use load::{ScopePathSnapshot, TenantBundle, load, rev};
 pub use manifest::{Publish, StoredManifest, digest, manifest, publish_manifest};
 pub use migrate::{applied as applied_migration, latest as latest_migration, migrate};
@@ -83,6 +85,12 @@ pub enum StoreErrorKind {
     Corrupt,
     /// The revision is past the JSON integer range.
     RevOutOfRange,
+    /// The role or the schema does not isolate tenants
+    /// ([`check_isolation`]). The text says which rule failed.
+    Isolation,
+    /// This transaction already entered another tenant. A transaction
+    /// belongs to one tenant, so a bug that passes the wrong key fails here.
+    TenantMismatch,
 }
 
 /// Why a store call failed. A failed call leaves the caller's transaction in a
@@ -111,6 +119,10 @@ enum Repr {
     Corrupt(&'static str),
     #[error("the tenant revision is out of range")]
     RevOutOfRange,
+    #[error("tenant isolation is not in force: {0}")]
+    Isolation(&'static str),
+    #[error("this transaction belongs to another tenant")]
+    TenantMismatch,
 }
 
 impl StoreError {
@@ -127,17 +139,24 @@ impl StoreError {
             Repr::Refused(_) => StoreErrorKind::Refused,
             Repr::Corrupt(_) => StoreErrorKind::Corrupt,
             Repr::RevOutOfRange => StoreErrorKind::RevOutOfRange,
+            Repr::Isolation(_) => StoreErrorKind::Isolation,
+            Repr::TenantMismatch => StoreErrorKind::TenantMismatch,
         }
     }
 
     /// The short text of a [`NotFound`](StoreErrorKind::NotFound),
     /// [`Exists`](StoreErrorKind::Exists),
-    /// [`Invalid`](StoreErrorKind::Invalid) or
-    /// [`Corrupt`](StoreErrorKind::Corrupt) error.
+    /// [`Invalid`](StoreErrorKind::Invalid),
+    /// [`Corrupt`](StoreErrorKind::Corrupt) or
+    /// [`Isolation`](StoreErrorKind::Isolation) error.
     #[must_use]
     pub const fn detail(&self) -> Option<&'static str> {
         match self.0 {
-            Repr::NotFound(d) | Repr::Exists(d) | Repr::Invalid(d) | Repr::Corrupt(d) => Some(d),
+            Repr::NotFound(d)
+            | Repr::Exists(d)
+            | Repr::Invalid(d)
+            | Repr::Corrupt(d)
+            | Repr::Isolation(d) => Some(d),
             _ => None,
         }
     }
@@ -189,6 +208,10 @@ impl StoreError {
     const fn schema_too_new(version: i32) -> Self {
         Self(Repr::SchemaTooNew(version))
     }
+
+    const fn isolation(detail: &'static str) -> Self {
+        Self(Repr::Isolation(detail))
+    }
 }
 
 impl From<LoadError> for StoreError {
@@ -222,21 +245,36 @@ fn new_rule_id(prefix: &str) -> Result<tutela_contracts::decision::RuleId, Store
         .map_err(|_| StoreError::corrupt("rule id"))
 }
 
-/// Checks the tenant key against the directory and sets `tutela.tenant_id`
-/// for the rest of the transaction.
-async fn enter(tx: &Transaction<'_>, tenant: &TenantKey) -> Result<(), StoreError> {
+/// Enters a tenant: checks the tenant key against the directory and sets
+/// `tutela.tenant_id` for the rest of the transaction (`SET LOCAL`). Every
+/// other call here does this first. A caller that runs its own statements
+/// calls this at the start of the transaction.
+///
+/// A transaction belongs to one tenant. Entering a second one fails, so a
+/// bug that passes the wrong key is an error and never a switch.
+///
+/// # Errors
+///
+/// [`UnknownTenant`](StoreErrorKind::UnknownTenant) for an unknown (iss,
+/// tid), [`TenantMismatch`](StoreErrorKind::TenantMismatch) when this
+/// transaction already entered another tenant, or a database error.
+pub async fn enter(tx: &Transaction<'_>, tenant: &TenantKey) -> Result<(), StoreError> {
     let tid = tenant.tid.to_string();
-    let known = tx
+    let row = tx
         .query_opt(
-            "SELECT 1 FROM tutela.tenant WHERE tenant_id = $1 AND iss = $2",
+            "SELECT current_setting('tutela.tenant_id', true) \
+             FROM tutela.tenant WHERE tenant_id = $1 AND iss = $2",
             &[&tid, &tenant.iss.as_str()],
         )
         .await
-        .db()?;
-    if known.is_none() {
-        return Err(StoreError::unknown_tenant());
+        .db()?
+        .ok_or(StoreError::unknown_tenant())?;
+    let current: Option<&str> = row.try_get(0).db()?;
+    match current.filter(|c| !c.is_empty()) {
+        Some(c) if c == tid => Ok(()),
+        Some(_) => Err(StoreError(Repr::TenantMismatch)),
+        None => set_tenant(tx, &tenant.tid).await,
     }
-    set_tenant(tx, &tenant.tid).await
 }
 
 /// Sets `tutela.tenant_id` for the rest of the transaction.

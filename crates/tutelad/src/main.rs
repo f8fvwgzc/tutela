@@ -2,16 +2,28 @@
 
 use std::process::ExitCode;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 /// The Tutela service.
 #[derive(Debug, Parser)]
 #[command(name = "tutelad", version, about)]
-struct Args {}
+struct Args {
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Serve (the default).
+    Serve,
+    /// As the owner role, apply the migrations and give the service role its
+    /// grants. Reads TUTELA_OWNER_DATABASE_URL and TUTELA_SERVICE_ROLE.
+    Migrate,
+}
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    Args::parse();
+    let args = Args::parse();
     // Every Tutela binary installs the one crypto provider itself.
     if tutela_safenet::rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
@@ -20,24 +32,30 @@ async fn main() -> ExitCode {
         eprintln!("tutelad: a crypto provider is already installed");
         return ExitCode::FAILURE;
     }
-    let config = match tutelad::Config::from_env() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("tutelad: {e:#}");
-            return ExitCode::FAILURE;
-        }
+    let result = match args.command {
+        Some(Command::Migrate) => migrate().await,
+        Some(Command::Serve) | None => serve().await,
     };
-    if let Err(e) = tutelad::telemetry::init_logs(&config.log) {
-        eprintln!("tutelad: {e:#}");
-        return ExitCode::FAILURE;
-    }
-    match tutelad::run(config, shutdown_signal()).await {
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
+            // The log writer may not be installed yet, so stderr too.
+            eprintln!("tutelad: {e:#}");
             tracing::error!(error = %format!("{e:#}"), "tutelad failed");
             ExitCode::FAILURE
         }
     }
+}
+
+async fn serve() -> anyhow::Result<()> {
+    let config = tutelad::Config::from_env()?;
+    tutelad::telemetry::init_logs(&config.log)?;
+    tutelad::run(config, shutdown_signal()).await
+}
+
+async fn migrate() -> anyhow::Result<()> {
+    tutelad::telemetry::init_logs("info")?;
+    tutelad::server::migrate(|name| std::env::var(name).ok()).await
 }
 
 /// Resolves on SIGTERM or Ctrl-C. If the handlers cannot be installed, the

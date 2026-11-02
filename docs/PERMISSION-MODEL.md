@@ -725,6 +725,7 @@ Details in [THREAT-MODEL.md](THREAT-MODEL.md) and [ARCHITECTURE.md](ARCHITECTURE
 - `tenant_id` on every row, `FORCE ROW LEVEL SECURITY`, the tenant set with `SET LOCAL` per transaction from the verified token, app roles never own tables.
 - A test with no tenant set must return zero rows.
 - A cross-tenant read must fail at RLS even with an injected code bug (Phase B exit test).
+- Built in `tutelad`: both tests pass on a real Postgres, and the service refuses to run on a role or a schema that does not isolate tenants ([ADR-0019](DECISIONS.md#adr-0019-tenants-in-tutelad-the-tenant-comes-from-the-token-and-rls-is-checked)).
 
 ---
 

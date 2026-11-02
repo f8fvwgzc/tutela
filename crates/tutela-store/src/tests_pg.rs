@@ -835,6 +835,32 @@ async fn publishing_a_manifest_bumps_every_tenant_and_records_the_change() {
     db.finish().await;
 }
 
+/// A transaction belongs to one tenant: a store call with another key
+/// fails, and never switches the transaction.
+#[tokio::test]
+async fn a_transaction_refuses_a_second_tenant() {
+    let Some(mut db) = db().await else { return };
+    let (a, _) = tenant(&mut db.client).await;
+    let (b, _) = tenant(&mut db.client).await;
+    let tx = db.client.transaction().await.unwrap();
+    crate::enter(&tx, &a).await.unwrap();
+    crate::enter(&tx, &a).await.unwrap();
+    assert_eq!(
+        kind(crate::load(&tx, &b).await),
+        Some(StoreErrorKind::TenantMismatch)
+    );
+    assert_eq!(
+        kind(crate::add_org(&tx, &b).await),
+        Some(StoreErrorKind::TenantMismatch)
+    );
+    drop(tx);
+    // A later transaction on the same connection is free again.
+    let tx = db.client.transaction().await.unwrap();
+    assert_eq!(crate::rev(&tx, &b).await.unwrap(), 1);
+    drop(tx);
+    db.finish().await;
+}
+
 /// A driver error stays in `source()`, its SQLSTATE is readable, and no
 /// driver type is in the public error (#43).
 #[tokio::test]

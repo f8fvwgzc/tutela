@@ -35,6 +35,7 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0016](#adr-0016-the-list-query-grouped-terms-hashed-scope-tests-and-lower-filter-limits) | The list query: grouped terms, hashed scope tests and lower filter limits | Accepted |
 | [0017](#adr-0017-opaque-public-errors-for-the-crates-that-touch-the-outside-world) | Opaque public errors for the crates that touch the outside world | Accepted |
 | [0018](#adr-0018-tutelad-the-stack-the-two-ports-and-the-config) | `tutelad`: the stack, the two ports and the config | Accepted |
+| [0019](#adr-0019-tenants-in-tutelad-the-tenant-comes-from-the-token-and-rls-is-checked) | Tenants in `tutelad`: the tenant comes from the token, and RLS is checked | Accepted |
 
 ---
 
@@ -733,3 +734,45 @@ Our public errors were `#[non_exhaustive]` enums with public variants, so every 
 - **gRPC health on the ops port.** It would prove nothing about gRPC on the API port. Health behind the token check proves `AuthLayer` with `Protocol::Grpc` over real HTTP/2.
 - **Add tonic with the first real gRPC service.** Then part 2 would have to solve the shared listener and the second auth layer together with the API.
 - **`sqlx`.** The store is built on `tokio-postgres`, and every call takes its `Transaction`.
+
+---
+
+## ADR-0019: Tenants in `tutelad`: the tenant comes from the token, and RLS is checked
+
+**Status:** Accepted, 2026-11-02. Built in Phase B ([#51](https://github.com/f8fvwgzc/tutela/issues/51)). It builds on ADR-0014, which it does not change.
+
+**Context.** ADR-0014 put forced row-level security on every tenant table. That stops a code bug only when three other things hold: the role cannot bypass it, the tenant comes from the verified token, and the setting never outlives its transaction. TM-14 lists how each one goes wrong. The Service gate wants two checks proved: a query with no tenant set returns zero rows, and a cross-tenant read fails at RLS even with an injected code bug.
+
+**Decision.**
+
+1. **The type system carries the tenant.** `tutelad::tenant::Tenant` has a private field and one constructor, `Tenant::of(&Identity)`. It does not deserialize and has no `From`. A handler takes it as an argument, and the extractor reads the `Identity` that `AuthLayer` verified. So a header, a query or a body cannot become a tenant. A `compile_fail` test holds this.
+2. **A handler has one way to the database.** `Db::conn()` gives a `Conn` with no query methods. `Conn::begin(&Tenant)` starts a transaction and calls `tutela_store::enter`, which checks `(iss, tid)` against the directory and runs `set_config('tutela.tenant_id', ..., true)`, the same as `SET LOCAL`. `TenantTx` derefs to the driver's `Transaction`, so every store call takes `&tx`.
+3. **A transaction belongs to one tenant.** `tutela_store::enter` refuses a second tenant (`TenantMismatch`). Before, a store call with another key switched the transaction, so a bug that passed the wrong key would have read the wrong tenant, past RLS. `publish_manifest` is the one write that spans tenants: it sets each in turn and leaves none set.
+4. **The service role owns nothing.** `tutela_store::grant_service` gives it read and write on the tables with forced RLS, found in the catalog, and read on `tenant`, `app_manifest` and `schema_migration`. It has no access to `approver_key`, no write to the tenant directory or the manifest, and no `CREATE`. A later part that needs more adds it here on purpose.
+5. **`tutelad migrate` is the deploy step.** It reads `TUTELA_OWNER_DATABASE_URL` and `TUTELA_SERVICE_ROLE`, runs the migrations and grants, and needs nothing else. A migration cannot create the role: a library-mode owner usually lacks `CREATEROLE`, and `tutela-store`'s migrations must run there too. The operator creates the role once.
+6. **Isolation is checked, not assumed.** `tutela_store::check_isolation` reads the catalogs:
+   - the role is not a superuser, has no `BYPASSRLS`, owns nothing, is not a member of an owner, and cannot create objects;
+   - every table with a `tenant_id` column, except the directory, has RLS, `FORCE` and a policy;
+   - there is no `SECURITY DEFINER` function and no owner-rights view.
+
+   `tutelad` refuses to start when this fails. It runs the check again in readiness and stops every query if a later check fails. If the database is down at start-up, the service starts not ready, and no query runs until the check has passed.
+7. **Recycling clears the session.** `RecyclingMethod::Clean` runs `RESET ALL` on every reuse, so even a bug that sets the tenant for the session does not reach the next request. Readiness also checks that a fresh connection has no tenant set.
+8. **The errors say nothing.** An unknown tenant is 403 `unknown_tenant`. Everything else is 503 `unavailable`. The log gets the kind and the SQLSTATE, not the server's message, which can hold a value from a row.
+
+**How the gate is proved** (`crates/tutelad/tests/rls.rs`, real Postgres, a role that owns nothing):
+- **No tenant set:** every tenant table the catalog lists returns zero rows, in and out of a transaction, even with a filter that names a tenant. A superuser sees rows for both tenants on the same tables, so the zero means something. A new tenant table with no seed rows fails the test.
+- **Injected bug:** a real handler behind the real token check and pool runs a query with no tenant filter, and one that names another tenant from the request. It gets its own rows and none of the other's. The test then turns RLS off on that table, and the same request with the same token returns the other tenant's row. So RLS stopped it, not code. The test goes around the application's filter: the store's `WHERE tenant_id = $1` is not in that query.
+- Every table is checked the same way, and so are writes: another tenant's id on a new row is refused with SQLSTATE `42501`, and an update or a delete of its rows reaches nothing.
+
+Planting bugs confirms the tests can fail: an open policy, no `FORCE`, `RecyclingMethod::Fast`, and no mismatch check each fail the tests that should catch them.
+
+**Consequences.**
+- A superuser or a `BYPASSRLS` role still sees everything (ADR-0014). The difference is that `tutelad` now refuses to run as one.
+- The tenant directory stays free of RLS. Any role with `SELECT` can list tenant ids and issuers, which hold no tenant data, so that a request can be checked before a tenant is set.
+- RLS trusts `tutela.tenant_id`. Code that can run arbitrary SQL could call `set_config`. Bound parameters keep SQL injection out; RLS is the second wall, not the first.
+- Soft-delete of tenants is not built. It comes with the admin API (`tutela.admin.v1`).
+
+**Alternatives considered.**
+- **Set the tenant in a tower layer.** A layer cannot hold a transaction open across a handler without boxing it, and a handler that opened its own would miss it. `Conn::begin` puts it where the transaction starts.
+- **Run the migrations at start-up.** The service would need the owner's credentials, and TM-14 wants them apart.
+- **Put the check in CI only.** TM-14 asks for a CI check. Running it in the service as well also covers a role changed in production.

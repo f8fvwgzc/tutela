@@ -16,9 +16,11 @@ use tower_http::timeout::TimeoutLayer;
 use tutela_sdk::Identity;
 use tutela_sdk::Verifier;
 use tutela_sdk::http::{AuthLayer, Protocol};
+use tutela_store::{StoreError, StoreErrorKind};
 
-use crate::db::Db;
+use crate::db::{Db, DbError};
 use crate::telemetry::{Metrics, observe};
+use crate::tenant::Tenant;
 
 /// How long `/readyz` waits for the database.
 const READY_TIMEOUT: Duration = Duration::from_secs(2);
@@ -67,6 +69,38 @@ impl IntoResponse for Problem {
     }
 }
 
+impl From<DbError> for Problem {
+    /// An unknown tenant is the caller's to fix. Anything else fails closed
+    /// with the same 503. The log gets the kind and the SQLSTATE only: the
+    /// server's message may hold a value from a row.
+    fn from(e: DbError) -> Self {
+        if e.store_kind() == Some(StoreErrorKind::UnknownTenant) {
+            return Self {
+                status: StatusCode::FORBIDDEN,
+                code: "unknown_tenant",
+                title: "this tenant is not known here",
+            };
+        }
+        tracing::error!(
+            error = %e,
+            kind = ?e.store_kind(),
+            sqlstate = e.sqlstate(),
+            "a database call failed"
+        );
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code: "unavailable",
+            title: "the service cannot answer now",
+        }
+    }
+}
+
+impl From<StoreError> for Problem {
+    fn from(e: StoreError) -> Self {
+        DbError::from(e).into()
+    }
+}
+
 /// The answer of `GET /v1/whoami` (CONTRACTS.md 7.7).
 #[derive(Debug, Serialize)]
 struct WhoAmI {
@@ -74,36 +108,41 @@ struct WhoAmI {
     tid: String,
     sub: String,
     kind: &'static str,
+    rev: u64,
 }
 
-fn who(id: &Identity) -> WhoAmI {
-    let tenant = id.tenant();
-    let (sub, kind) = match id {
-        Identity::Access(c) => (c.sub.to_string(), "access"),
-        Identity::Delegated(c) => (c.sub.to_string(), "delegated"),
-        Identity::External(t) => (t.sub.clone(), "external"),
-        // `Identity` is non-exhaustive: an unknown kind is refused.
-        _ => (String::new(), "unknown"),
-    };
-    WhoAmI {
-        iss: tenant.iss.to_string(),
-        tid: tenant.tid.to_string(),
+/// The subject and kind of a token. `None` for a kind this build does not
+/// know: `Identity` is non-exhaustive.
+fn subject(id: &Identity) -> Option<(String, &'static str)> {
+    match id {
+        Identity::Access(c) => Some((c.sub.to_string(), "access")),
+        Identity::Delegated(c) => Some((c.sub.to_string(), "delegated")),
+        Identity::External(t) => Some((t.sub.clone(), "external")),
+        _ => None,
+    }
+}
+
+async fn whoami(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    tenant: Tenant,
+) -> Result<Json<WhoAmI>, Problem> {
+    let (sub, kind) = subject(&id).ok_or(Problem {
+        status: StatusCode::UNAUTHORIZED,
+        code: "invalid_token",
+        title: "a valid bearer token is required",
+    })?;
+    let mut conn = state.db.conn().await?;
+    let tx = conn.begin(&tenant).await?;
+    let rev = tutela_store::rev(&tx, tenant.key()).await?;
+    tx.commit().await?;
+    Ok(Json(WhoAmI {
+        iss: tenant.key().iss.to_string(),
+        tid: tenant.key().tid.to_string(),
         sub,
         kind,
-    }
-}
-
-async fn whoami(Extension(id): Extension<Identity>) -> Response {
-    let me = who(&id);
-    if me.kind == "unknown" {
-        return Problem {
-            status: StatusCode::UNAUTHORIZED,
-            code: "invalid_token",
-            title: "the token is not valid",
-        }
-        .into_response();
-    }
-    Json(me).into_response()
+        rev,
+    }))
 }
 
 async fn not_found() -> Problem {
@@ -197,8 +236,7 @@ async fn readyz(State(state): State<AppState>) -> Response {
     let database = match tokio::time::timeout(READY_TIMEOUT, state.db.check_ready()).await {
         Ok(Ok(())) => "ok",
         Ok(Err(e)) => {
-            // The chain may hold a value from the server, so only the kind
-            // goes to the log.
+            // Its own text only: a cause may hold a value from the server.
             tracing::warn!(reason = %e, "not ready");
             "failed"
         }

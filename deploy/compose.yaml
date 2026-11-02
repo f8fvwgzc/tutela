@@ -5,7 +5,10 @@
 #   TUTELAD_TAG=<release> docker compose -f deploy/compose.yaml up
 #
 # TUTELA_DATABASE_URL names a role that owns nothing. Migrations run as the
-# owner role, apart from this service (docs/THREAT-MODEL.md TM-14).
+# owner role, apart from this service (docs/THREAT-MODEL.md TM-14). Run this as
+# a deploy step, before the service starts:
+#
+#   TUTELA_OWNER_DATABASE_URL=... TUTELA_SERVICE_ROLE=tutela_service tutelad migrate
 #
 # The image is not published yet (issue #49).
 services:

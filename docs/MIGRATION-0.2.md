@@ -91,6 +91,12 @@ Sites to change at the bump ([#44](https://github.com/f8fvwgzc/tutela/issues/44)
 
 A `SafenetError` of kind `Http` also needs the chain now: its own text no longer holds the reason.
 
+## A transaction belongs to one tenant
+
+`tutela_store` calls now refuse a second tenant in one transaction, with `StoreErrorKind::TenantMismatch`. Before, a call with another tenant's key switched the transaction to that tenant, so a bug that passed the wrong key read the wrong tenant's rows. Use one transaction per tenant. `publish_manifest` still spans every tenant, and leaves none entered.
+
+`tutela_store::enter` is public, for a caller that runs its own statements. `check_isolation` and `grant_service` are new; a product in library mode can use them for its runtime role.
+
 ## Other changes
 
 - `tutela_contracts::error_chain` is new and public.
