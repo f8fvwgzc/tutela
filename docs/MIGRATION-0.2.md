@@ -134,3 +134,10 @@ These matter to whoever runs `tutelad`, and to a product that verifies its token
 - **`TUTELA_ADMIN_ACR`**: the `acr` values your IdP gives after step-up MFA, comma-separated. Unset, no admin token is issued. Set it to what Keycloak's step-up gives (an ACR-to-LoA mapping or a client policy).
 - **gRPC `Explain` and `Simulate`** are for services only.
 
+## Delegated agent tokens (part 3a)
+
+- **`tutelad` issues them** by token exchange with an `actor_token` ([CONTRACTS.md 4.8](CONTRACTS.md#48-token-exchange-phase-b-built), [ADR-0033](DECISIONS.md#adr-0033-delegated-agent-tokens-from-token-exchange)), and accepts them on its own API: `verifier_config` now has delegation on.
+- **For attache, when it bumps:** register each agent in its tenant (`tutela_store::register_agent`, with the workload's SPIFFE id on `/ns/<namespace>/svc/<service>` for a workload agent; `tutela.admin.v1` gives this an API in part 3c). Ask for a delegated token with the person's token as `subject_token`, the agent's token as `actor_token` (an access token of the agent from an issuer `tutelad` trusts, or the embassy's JWT-SVID, its issuer marked `workloads = true` in `tutelad`'s trust file), the target `audience`, `run_id`, `node_id` and `cap`. Quarantine is `set_disabled` on the agent: its tokens stop at the next exchange and on `tutelad` within a second; products learn of it from `tutela.principal.disabled.v1` (part 3b).
+- **For texc-symphony, when it bumps:** turn delegation on in the `tutela-sdk` verifier (`delegation: true`, `delegation_aware: true`), and register `symphony` in `tutelad`'s trust file as `[[audience]] name = "symphony"`, `delegation_aware = true`. For the next hop, exchange the delegated token you received for the next audience (no `actor_token`); never forward it.
+- **`IssuerEntry` in the trust file** has a new key, `workloads` (only with `external = true`). `TUTELA_DELEGATED_TTL_SECS` (60 to 120, default 90) and `TUTELA_TOKEN_TTL_SECS` (60 to 600, default 300) are new and optional.
+

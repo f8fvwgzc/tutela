@@ -34,13 +34,18 @@ EXCHANGE_SRC = "crates/tutelad/src/exchange.rs"
 REVOCATION = "crates/tutelad/src/revocation.rs"
 PRINCIPALS = "crates/tutela-store/src/principals.rs"
 EXCHANGE = ["-p", "tutelad", "--test", "exchange"]
+DELEGATION = ["-p", "tutelad", "--test", "delegation"]
 
 # (id, file, what it breaks, old text, new text, cargo test arguments).
 # `old` must occur once.
 #
 # Not every guard can be a mutant. `models::principal` refuses agents, and
 # the evaluator never gives them an admin key either, so removing the first
-# alone changes no answer. It stays as defense in depth.
+# alone changes no answer. It stays as defense in depth. The same holds for
+# the check of attache's path on a workload actor in `exchange::actor`: the
+# store refuses to register any other path, and a CHECK in migration 7 holds
+# it, so no agent can be found for one (an equivalent mutant, run and kept
+# out of this list).
 MUTANTS = [
     ("S01", MODELS, "a widening publish needs no token",
      "    if d.is_widening() {\n",
@@ -123,12 +128,12 @@ MUTANTS = [
      "        if false && !trusted.allows(self.iss, self.tid) {\n",
      EXCHANGE),
     ("T06", EXCHANGE_SRC, "a token of another issuer is exchanged in its tenant",
-     "        Identity::Access(c) if c.iss == *state.keys.iss() => Tenant::of(&id),\n",
+     "        Identity::Access(c) if c.iss == *own_iss => Tenant::of(&id),\n",
      "        Identity::Access(_) => Tenant::of(&id),\n",
      EXCHANGE),
     ("T07", EXCHANGE_SRC, "an expired subject token is exchanged",
-     "    if exp <= now {\n        return Err(Refusal::grant(\"expired\"));\n",
-     "    if false && exp <= now {\n        return Err(Refusal::grant(\"expired\"));\n",
+     ".min(now + state.audiences.token_ttl.as_secs().min(ttl));\n    if exp <= now {\n",
+     ".min(now + state.audiences.token_ttl.as_secs().min(ttl));\n    if false && exp <= now {\n",
      EXCHANGE),
     ("T08", EXCHANGE_SRC, "a replayed subject token is exchanged",
      "    if !tutela_store::note_exchange(tx, key, &t.tenant.iss, &jti, expires).await? {\n",
@@ -143,8 +148,8 @@ MUTANTS = [
      "        if true || book.current(sub, epoch) && !actors.iter().any(|a| book.disabled(a)) {\n",
      EXCHANGE),
     ("T11", EXCHANGE_SRC, "a revoked token of this service is exchanged again",
-     "    if known.is_some_and(|s| s.disabled || c.epoch < s.epoch) {\n",
-     "    if false && known.is_some_and(|s| s.disabled || c.epoch < s.epoch) {\n",
+     "    if known.is_some_and(|s| s.disabled || epoch < s.epoch) {\n",
+     "    if false && known.is_some_and(|s| s.disabled || epoch < s.epoch) {\n",
      EXCHANGE),
     ("T12", PRINCIPALS, "one upstream subject is one person across issuers",
      "         WHERE a.tenant_id = $1 AND a.iss = $2 AND a.sub = $3\"\n",
@@ -166,6 +171,30 @@ MUTANTS = [
      "        MAX_ADMIN_TOKEN_LIFETIME_SECS\n",
      "        MAX_ACCESS_TOKEN_LIFETIME_SECS\n",
      EXCHANGE),
+    ("T17", EXCHANGE_SRC, "a delegated token is issued for an audience that is not delegation-aware",
+     "            .is_some_and(|r| r.delegation_aware)\n",
+     "            .is_some_and(|_| true)\n",
+     DELEGATION),
+    ("T18", EXCHANGE_SRC, "an actor gets the person's own token: wider than the person AND the agent",
+     "    let delegating = actor_token.is_some() || matches!(id, Identity::Delegated(_));\n",
+     "    let delegating = false && (actor_token.is_some() || matches!(id, Identity::Delegated(_)));\n",
+     DELEGATION),
+    ("T19", EXCHANGE_SRC, "a disabled or unknown agent acts",
+     "        Some(s) if s.principal.kind() == PrincipalKind::Agent && !s.disabled => Ok(s),\n",
+     "        Some(s) => Ok(s),\n        None if false => Ok(PrincipalState { principal: a.clone(), epoch: 0, disabled: false, workload: None }),\n",
+     DELEGATION),
+    ("T20", EXCHANGE_SRC, "an agent token of another tenant acts",
+     "            if c.tid != tid {\n                return Err(Refusal::grant(\"actor_tenant\"));\n            }\n            let known = agent(tx, &c.sub).await?;\n",
+     "            let known = agent(tx, &c.sub).await?;\n",
+     DELEGATION),
+    ("T21", EXCHANGE_SRC, "a chain past four actors is issued",
+     "    act.check_chain().map_err(|_| Refusal::grant(\"chain\"))?;\n",
+     "",
+     DELEGATION),
+    ("T22", REVOCATION, "a disabled actor's delegated token is still accepted",
+     "        if book.current(sub, epoch) && !actors.iter().any(|a| book.disabled(a)) {\n",
+     "        if book.current(sub, epoch) {\n",
+     DELEGATION),
 ]
 
 

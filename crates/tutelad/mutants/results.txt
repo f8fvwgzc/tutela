@@ -65,3 +65,16 @@ T15: caught by 1 test(s) - a service's admin token opens the admin routes
       tm06_a_person_steps_up_and_a_pipeline_keeps_its_service_token
 T16: caught by 1 test(s) - an admin token lives as long as an access token
       tm06_an_admin_token_is_for_a_person_after_step_up
+
+T17: caught by 2 test(s) - a delegated token is issued for an audience that is not delegation-aware
+      tm02_a_delegated_token_is_only_for_a_delegation_aware_audience, a_delegated_token_is_exchanged_per_hop_and_never_longer
+T18: caught by 7 test(s) - an actor gets the person's own token: wider than the person AND the agent
+      tm02_a_delegated_token_is_only_for_a_delegation_aware_audience, tm02_a_chain_past_four_actors_fails, a_workload_agent_acts_through_its_spiffe_id, a_delegated_token_is_exchanged_per_hop_and_never_longer and 3 more
+T19: caught by 1 test(s) - a disabled or unknown agent acts
+      tm02_a_disabled_agent_or_person_revokes_the_delegated_token
+T20: caught by 1 test(s) - an agent token of another tenant acts
+      tm02_a_disabled_agent_or_person_revokes_the_delegated_token
+T21: caught by 1 test(s) - a chain past four actors is issued
+      tm02_a_chain_past_four_actors_fails
+T22: caught by 1 test(s) - a disabled actor's delegated token is still accepted
+      tm02_a_disabled_agent_or_person_revokes_the_delegated_token

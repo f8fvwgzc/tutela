@@ -391,7 +391,7 @@ Payload:
 
 ### 4.5 Delegated (agent) tokens
 
-An agent that acts for a person uses a delegated token. Tutela issues it through RFC 8693 token exchange in `tutelad` (Phase B).
+An agent that acts for a person uses a delegated token. Tutela issues it through RFC 8693 token exchange in `tutelad` (Phase B, **built**: 4.8, [ADR-0033](DECISIONS.md#adr-0033-delegated-agent-tokens-from-token-exchange)).
 
 Header: `typ` = `agent+jwt`. Other header rules as in 4.1. **An SDK refuses `agent+jwt` unless delegation support is switched on in its config.**
 
@@ -475,7 +475,7 @@ Tokens are never written to logs, URLs or span attributes.
 | Parameter | Rule |
 |---|---|
 | `grant_type` | `urn:ietf:params:oauth:grant-type:token-exchange`. Anything else: `unsupported_grant_type`. |
-| `subject_token` | An external issuer's token whose one audience is `tutelad`'s own (`TUTELA_AUDIENCE`), or a token of `tutelad`'s own issuer for any audience it issues. Nothing else. |
+| `subject_token` | An external issuer's token whose one audience is `tutelad`'s own (`TUTELA_AUDIENCE`), or a token of `tutelad`'s own issuer (access or delegated) for any audience it issues. Nothing else; a `workloads` issuer's token is never a subject. |
 | `subject_token_type` | `urn:ietf:params:oauth:token-type:access_token` or `urn:ietf:params:oauth:token-type:jwt`. Never an ID token. |
 | `audience` | Exactly one registered audience: `TUTELA_AUDIENCE`, an `[[audience]]` of the trust file, or `tutela-admin` (4.4). Unknown: `invalid_target`. |
 | `resource` | Refused (`invalid_target`): name the service with `audience`. |
@@ -510,6 +510,19 @@ Tokens are never written to logs, URLs or span attributes.
 **Admin tokens** (`audience=tutela-admin`, 4.4): only for a person (`user:`), only when the subject token's `acr` is in `TUTELA_ADMIN_ACR`, never with an actor. `exp − iat ≤ 300`. With `TUTELA_ADMIN_ACR` unset, none is issued. A subject token without step-up gets `invalid_grant` with the description `step-up authentication is required`, so the client knows to ask for MFA.
 
 **Errors** (RFC 6749 5.2), `400` with `{"error", "error_description"}` and `Cache-Control: no-store`: `invalid_request`, `unsupported_grant_type`, `invalid_target`, `invalid_scope`, and `invalid_grant` for every problem with the subject token, with one description (except the step-up case above): it never says which check failed, and never holds a token. `503 temporarily_unavailable` when the database or the signing keys fail.
+
+**Delegated tokens** (4.5, [ADR-0033](DECISIONS.md#adr-0033-delegated-agent-tokens-from-token-exchange)). The same endpoint, with:
+
+| Parameter | Rule |
+|---|---|
+| `subject_token` | The person: an external issuer's token, an access token of `tutelad` whose subject is a `user`, or a delegated token of `tutelad` (the next hop, or one more actor). |
+| `actor_token`, `actor_token_type` | Together. The agent that acts now: an access token of a trust-list issuer whose `sub` is an `agent`, for the person's tenant id; or a token of a `workloads = true` issuer of the trust file (attache's embassy, a JWT-SVID) whose `sub` is `spiffe://<trust domain>/ns/<namespace>/svc/<service>`, standing for the agent registered for that workload. The agent must be registered in the tenant and enabled. Not needed to exchange a delegated token for the next hop. |
+| `audience` | Registered `delegation_aware`: `TUTELA_AUDIENCE`, or an `[[audience]]` with `delegation_aware = true`. Else `invalid_target`. Never `tutela-admin`. |
+| `cap` | A JSON object of at most 4096 bytes, copied into the token, never read. Kept from a delegated subject when absent. |
+| `run_id` | Required for a first delegation; kept from a delegated subject when absent. |
+| `node_id` | Optional. |
+
+The token is `typ: agent+jwt`: `sub` the person, `act` the chain with the new actor first (at most 4; a fifth is `invalid_grant`), `azp` the actor token's or the subject's, `epoch` the person's, and `exp` the earliest of now + `TUTELA_DELEGATED_TTL_SECS` (default 90, 60 to 120), the person's token and the agent's token. No `cnf` yet. A disabled agent or person gets nothing, and their issued tokens are refused on `tutelad`'s API within `TUTELA_REVISION_CHECK_MS`.
 
 **Metadata.** `GET /.well-known/oauth-authorization-server` (RFC 8414), no token: `issuer`, `token_endpoint`, `jwks_uri`, `grant_types_supported`.
 

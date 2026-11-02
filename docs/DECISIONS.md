@@ -49,6 +49,7 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0030](#adr-0030-tutelads-own-issuer-signing-keys-the-jwks-and-paths-without-a-token) | `tutelad`'s own issuer: signing keys, the JWKS, and paths without a token | Accepted |
 | [0031](#adr-0031-token-exchange-the-tenant-from-the-trust-list-a-person-from-iss-sub) | Token exchange: the tenant from the trust list, a person from (iss, sub) | Accepted |
 | [0032](#adr-0032-admin-tokens-a-person-steps-up-a-pipeline-keeps-its-service-token) | Admin tokens: a person steps up, a pipeline keeps its service token | Accepted |
+| [0033](#adr-0033-delegated-agent-tokens-from-token-exchange) | Delegated agent tokens from token exchange | Accepted |
 
 ---
 
@@ -1257,3 +1258,42 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 - **Both audiences for everyone.** Step-up would mean nothing: a person would send the `tutela-authz` token.
 - **A third audience for pipelines.** The service account already is the difference, and the admin keys and the approval token are the stronger checks.
 - **Check `amr` contains `mfa`.** Each IdP writes `amr` its own way; the deployment's `acr` policy is what CONTRACTS.md 4.4 names.
+
+---
+
+## ADR-0033: Delegated agent tokens from token exchange
+
+**Status:** Accepted, 2026-11-02. Built in Phase B, part 3a. It builds [ADR-0006](#adr-0006-delegated-agent-tokens-in-phase-b-not-optional) on the token exchange of [ADR-0031](#adr-0031-token-exchange-the-tenant-from-the-trust-list-a-person-from-iss-sub), and turns delegated tokens on in `tutelad`'s verifier.
+
+**Context.** ADR-0006 fixed the token (`typ: agent+jwt`, `sub` = the person, `act` = the agent, `cap`, the run, one audience, 60 to 120 s). CONTRACTS.md 4.5 and TM-02 add: only for `delegation_aware` audiences; at most 4 actors; every actor an agent; at issue time the agent exists, is enabled and is in the same tenant; disabling the person or the agent stops the tokens. TM-03 asks that a delegated token never decides more than the person AND the agent. attache runs agents as workloads named `spiffe://<trust domain>/ns/<namespace>/svc/<service>` (CONTRACTS.md 1.4). The PDP's overlap and `may_ask`'s full chain exist already (ADR-0013, ADR-0021).
+
+**Decision.**
+
+1. **The request** is a token exchange (CONTRACTS.md 4.8) with:
+   - `subject_token`: the person. An external issuer's token, an access token of `tutelad` whose subject is a person, or a delegated token of `tutelad` (the next hop, or one more actor);
+   - `actor_token` and `actor_token_type`: the agent that acts now. Not needed to exchange a delegated token for the next hop;
+   - `audience`: one audience registered `delegation_aware`. `tutelad`'s own audience is: the check API evaluates the chain. `tutela-admin` never is;
+   - `cap`: attache's capability snapshot, a JSON object of at most 4096 bytes, copied and never read or widened; `run_id` (required for a first delegation, kept for a hop) and `node_id`.
+2. **The actor** is one of:
+   - an access token (`at+jwt`) of an issuer of the trust list whose `sub` is an `agent`, addressed to `tutelad`'s own audience, for the person's tenant id (attache as a Tutela-format issuer, or `tutelad` itself); or
+   - a token of an issuer marked `workloads = true` in the trust file (attache's embassy: a JWT-SVID, `typ: JWT`), naming a SPIFFE id on attache's path `/ns/<namespace>/svc/<service>`. It stands for the agent registered for that workload (`tutela_store::register_agent` with a workload; a `/sa/...` path is refused). Such an issuer's token is never a person.
+
+   Either way the agent must be registered in the person's tenant and enabled, and an agent token's `epoch` must be current. A person never acts.
+3. **The chain.** The new actor comes first; a delegated subject's chain nests inside it (RFC 8693 4.1). At most 4 actors: a fifth is `invalid_grant`. Exchanging a delegated token checks the person and every actor again.
+4. **The token** (`typ: agent+jwt`, ES256): `sub` the person, `act` the chain, `cap`, `run_id`, `node_id`, `aud`, `azp` the actor token's (the client that acts, for example `attache-sidecar`) or else the subject's, `epoch` the person's, `rev`, and the person's `sid`, `amr` and `acr`. `exp` is the earliest of now + `TUTELA_DELEGATED_TTL_SECS` (default 90, 60 to 120), the person's token and the agent's token. No `cnf`: the token endpoint sees no client certificate yet. No `org`.
+5. **The verifier.** `verifier_config` turns delegation on, and the service's own audience is `delegation_aware`. The admin verifier never accepts a delegated token, and `models::principal` refuses one, so a delegated principal never reads or publishes a model, approves a proposal, explains or simulates (ADR-0028, ADR-0029, ADR-0032).
+6. **Revocation.** Disabling the agent or the person refuses the next exchange at once, and the issued delegated tokens on `tutelad`'s API within `TUTELA_REVISION_CHECK_MS` (ADR-0031 item 8 checks the person's epoch and whether any actor is disabled). Raising the person's epoch does the same. Raising an agent's epoch refuses its old agent tokens at the next exchange; a delegated token carries no epoch of its agents, so the ones already issued end with their life (at most 120 s). To stop them at once, disable the agent. Enabling again never brings an old token back.
+7. **The overlap is the PDP's.** A delegated token asks about its own person with its whole chain (`may_ask`), and the evaluator takes the overlap of the person and every agent (PERMISSION-MODEL.md 6.4). attache's `cap` limits apply inside attache.
+
+**Consequences.**
+- Agents must be registered in their tenant. attache gets the API to do it in part 3c (`tutela.admin.v1`); until then an operator calls `tutela_store::register_agent`.
+- A product verifying delegated tokens turns delegation on in `tutela-sdk` and is registered `delegation_aware` in `tutelad`'s trust file. It learns of a disabled agent through `tutela.principal.disabled.v1` (part 3b); until then, at most the token's life (120 s) plus the skew.
+- mTLS binding (`cnf`, RFC 8705) needs a client certificate at the token endpoint; `tutelad` sits behind a proxy that ends TLS. Open.
+- Part 3b's audit log records each delegated token issued (the person, the chain, the audience, `run_id`, `node_id`, the `jti`) and each refusal with its reason.
+
+**Alternatives considered.**
+- **Trust attache to name any agent with a service token.** attache would then speak for agents it does not run; the actor token proves the agent, and the registry check proves it belongs to the tenant.
+- **Map a workload by its SPIFFE id alone, without registration.** A workload of another tenant on the same trust domain could act; registration ties one workload to one agent of one tenant.
+- **Copy `cap` only from the actor token.** Tutela never reads `cap`; the request is where attache puts its snapshot, as CONTRACTS.md 4.5 says.
+- **Let a delegated token outlive the person's token.** Revoking the person's session would not end the agent's work within the token's life.
+

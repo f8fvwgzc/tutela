@@ -204,7 +204,11 @@ delegated tokens.
    token: `sub` = the person, `act = {sub: agent:agt_…}`, `cap` = attache's
    capability snapshot (Tutela does not read it), run and node ids, exactly
    one audience, TTL 60–120 s. The effective access is always the overlap
-   (person AND agent), capped by `cap`.
+   (person AND agent), capped by `cap`. **Built in `tutelad`** (part 3a,
+   [CONTRACTS.md 4.8](CONTRACTS.md#48-token-exchange-phase-b-built)): the
+   person's token is the `subject_token`, the agent's own token or the
+   embassy's JWT-SVID is the `actor_token`, and the agent must be registered
+   in the tenant (with its workload's SPIFFE id when it runs as one).
 7. **Audit (optional).** attache offers an acknowledged Append API on its
    evidence ledger. Tutela forwards copies of its audit events there when
    configured (not through the OpenTelemetry collector, which can drop data).
