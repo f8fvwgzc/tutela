@@ -900,7 +900,7 @@ pub enum PdpError {
 - `ExpiredBundle` and `UnsupportedBundle` need signed bundles (Phase B); the Phase A evaluator never returns them.
 - A field the model does not know is not an error: it is masked, as if secret.
 
-**Bundles** (Phase B). The PDP loads a signed bundle per (tenant, rev). Each bundle carries the tenant key, `rev`, `issued_at`, `expires_at`, a schema version and a `min_pdp_version`. The PDP refuses a `rev` lower than the highest it has seen, an expired bundle, and a bundle with a bad signature. The max bundle age is set per action class; writes and admin actions fail closed sooner. The bundle body format is fixed in Phase B.
+**Bundles** (Phase B, part 3, [ADR-0024](DECISIONS.md#adr-0024-signed-bundles-wait-for-part-3); not built). The PDP loads a signed bundle per (tenant, rev). Each bundle carries the tenant key, `rev`, `issued_at`, `expires_at`, a schema version and a `min_pdp_version`. The PDP refuses a `rev` lower than the highest it has seen, an expired bundle, and a bundle with a bad signature. The max bundle age is set per action class; writes and admin actions fail closed sooner. The bundle body format is fixed in Phase B.
 
 ---
 

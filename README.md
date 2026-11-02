@@ -147,7 +147,7 @@ Dependencies point down only: products → onto-intelli / texc-symphony → atta
 
 Phase A, Rust side: built, and tagged as the pre-release `v0.1.0` (items 1–9). Phase A is **not done**: fuzzing, the JS and Python SDKs and the template product are open. The list-query latency gate passes ([ADR-0016](docs/DECISIONS.md#adr-0016-the-list-query-grouped-terms-hashed-scope-tests-and-lower-filter-limits)). Details: [ROADMAP.md, Phase A](docs/ROADMAP.md#phase-a-packages-library-mode).
 
-Phase B: part 1 of 4 and the evaluation API, search API and permission map of part 2 are merged. Phase B is **not done**: there is no token exchange, audit log, Console or Helm chart yet, and the service gate does not pass yet. GitHub Actions has not run (account billing), so every merge was gated by local `make`. Details: [ROADMAP.md, Phase B status](docs/ROADMAP.md#phase-b-status).
+Phase B: parts 1 and 2a are merged: tenants, the bindings store, the check API over HTTP and gRPC, search, the permission map, and two-replica checks with a measured revocation delay. Phase B is **not done**: there are no signed bundles, model versioning, token exchange, audit log, Console or Helm chart yet, and the service gate does not pass yet. GitHub Actions has not run (account billing), so every merge was gated by local `make`. Details: [ROADMAP.md, Phase B status](docs/ROADMAP.md#phase-b-status).
 
 | Item | State |
 |------|-------|
@@ -165,6 +165,9 @@ Phase B: part 1 of 4 and the evaluation API, search API and permission map of pa
 | `tutelad`: the service binary with config, health, readiness, metrics, JSON logs, graceful shutdown and bearer-token checks on HTTP and gRPC ([ADR-0018](docs/DECISIONS.md#adr-0018-tutelad-the-stack-the-two-ports-and-the-config)) | Built (Phase B). It serves no permission API yet. |
 | Bindings and groups store: reads, closures at query time, assignment expiry with a revision bump, and the sweep in `tutelad` ([ADR-0020](docs/DECISIONS.md#adr-0020-the-bindings-store-closures-at-read-time-and-assignment-expiry)) | Built (Phase B) |
 | Tenant isolation in `tutelad`: forced row-level security, a non-owner role, the tenant only from the verified token, and the Service gate's two checks on a real Postgres ([ADR-0019](docs/DECISIONS.md#adr-0019-tenants-in-tutelad-the-tenant-comes-from-the-token-and-rls-is-checked)) | Built (Phase B) |
+| The check API in `tutelad`: evaluation, search and the permission map over HTTP and gRPC, from a snapshot per tenant that fails closed ([ADR-0021](docs/DECISIONS.md#adr-0021-the-check-api-one-code-path-a-snapshot-per-tenant-and-a-revision-lease), [ADR-0022](docs/DECISIONS.md#adr-0022-the-searches-live-next-to-the-evaluator), [ADR-0023](docs/DECISIONS.md#adr-0023-the-permission-map-and-a-tag-that-covers-the-answer)) | Done (Phase B). Nothing in production uses it yet |
+| Two real `tutelad` processes on one Postgres: a revoked role stops within 1.5 s (worst measured 1.010 s), and a database outage fails closed | Tested (Phase B) |
+| Signed bundles for offline checks | Not built: part 3 ([ADR-0024](docs/DECISIONS.md#adr-0024-signed-bundles-wait-for-part-3)) |
 | Everything else | Planned, see [docs/ROADMAP.md](docs/ROADMAP.md) |
 
 Phases: **A** packages and library mode, **B** `tutelad` service and Tutela Console, **C** own login server (optional), **D** hardening. Honest size for Tutela alone: about 35–45 person-weeks for one strong engineer.
