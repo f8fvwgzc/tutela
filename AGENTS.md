@@ -51,7 +51,7 @@ tutela/
 │   ├── tutela-vault/        envelope encryption with a KMS trait                          now
 │   ├── tutela-safenet/      SSRF-safe outbound HTTP                                       now
 │   ├── tutela-cli/          the `tutela` CLI: init, check, codegen, migrate, apply,       now
-│   │                        approvals (apps, keys: B)
+│   │                        approvals, apps, keys (Phase B: against tutelad)
 │   └── tutelad/             the service: config, ports, health, metrics, logs, shutdown,  now
 │                            the check API, the permission map, the admin API (Console: B)
 ├── deploy/                  production settings for tutelad                               now

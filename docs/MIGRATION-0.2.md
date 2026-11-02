@@ -242,3 +242,10 @@ These matter to whoever runs `tutelad`, and to a product that verifies its token
 - **Rotation:** add the new public key to attache's `ledger.producers[].keys` first, keep the old one, then `tutela keys rotate --audit`. Records already in the ledger keep verifying with the old key, which the database keeps.
 - **`tutelad::ledger`:** `LedgerConfig.key` is now `import: Option<…>`; `Forwarder::new` takes the vault; `key_id()` and `public_key()` became `producer()`; new `verify_record`. **`tutela-store`:** new `AuditKey`, `Ensured`, `audit_key_id`, `audit_keys`, `signing_audit_key`, `ensure_audit_key`, `rotate_audit_key`, `rewrap_audit_keys`.
 
+## The CLI against `tutelad` (part 4a)
+
+- **`tutela apply --server <url> --token <token>`** (or `TUTELA_URL`, `TUTELA_TOKEN`) applies a manifest to the caller's tenant in `tutelad` ([ADR-0046](DECISIONS.md#adr-0046-the-cli-against-tutelad-apply-with-the-impact-report-apps-and-keys-through-the-key-store)): it prints the diff and the impact report, refuses a widening change without `--approval` (exit 3; the approver signs with `tutela approve --tenant <tid>`), publishes with `expected_version`, or makes a proposal when the tenant has two-person publish on. Without `--server` it is library mode, as before.
+- **For texc-symphony, when it bumps:** its pipeline authenticates as an app (above), takes its `client_credentials` token, and runs `tutela apply --server` per tenant. The app's service account needs `manage_access` and `manage_fields` at every org to publish, and `read_audit` at every org for the report (the seeded `owner` role at each org has all three).
+- **New commands:** `tutela apps create | list | rotate | disable` (the tenant's owner's token; a secret printed once) and `tutela keys list | rotate [--audit] | deny <kid> | rewrap` (the operator: `TUTELA_DATABASE_URL`, `TUTELA_MASTER_KEY`, `TUTELA_ISSUER`).
+- **`tutela-cli`:** `CliError` has two new variants, `Service` and `Network` (it is `#[non_exhaustive]`); new modules `service` and `keys`.
+

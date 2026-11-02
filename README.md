@@ -43,7 +43,7 @@ Nothing is published to a registry yet. Other repos depend on the Rust crates by
 | Python | `tutela-py` (import `tutela`) | Token verifier, FastAPI dependency, check client | A |
 | OCI image | `ghcr.io/f8fvwgzc/tutelad` | The service and the Tutela Console; from Phase C optionally also the OIDC provider | B |
 | Helm chart | `oci://ghcr.io/f8fvwgzc/charts/tutela` | Self-hosting with 2+ replicas | B (hardened in D) |
-| CLI | `tutela` | `init`, `apply`, `codegen`, `apps create`, `keys rotate` | A (`apps create` and `keys rotate` need `tutelad`: B) |
+| CLI | `tutela` | `init`, `apply` (library mode, or against `tutelad` with the impact report), `codegen`, `apps create`, `keys rotate` | A (`apps create` and `keys rotate` need `tutelad`: B) |
 
 Delivery while the repo is private: Rust crates as git dependencies pinned to a release tag, npm packages on the GitHub Packages npm registry under the `@f8fvwgzc` scope, Python through git sources pinned to a tag. Every artifact of one release carries the same version.
 

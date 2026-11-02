@@ -86,11 +86,15 @@ ADMIN_APPS_SRC = "crates/tutelad/src/admin/apps.rs"
 STORE_APPS = "crates/tutela-store/src/apps.rs"
 APPS = ["-p", "tutelad", "--test", "apps"]
 STORE_AUDIT_KEYS = "crates/tutela-store/src/audit_keys.rs"
+CLI_SERVICE = "crates/tutela-cli/src/service.rs"
+CLI_KEYS = "crates/tutela-cli/src/keys.rs"
+CLI = ["-p", "tutelad", "--test", "cli"]
 
 # (id, file, what it breaks, old text, new text, cargo test arguments).
 # M01-M14 are part 4a's (#107): scopes, role assignments and groups.
 # C01-C08 are part 4a's apps and client authentication (#118).
 # V01-V03 are part 4a's sealed audit producer key (ADR-0045).
+# P01-P04 are part 4a's CLI against tutelad (ADR-0046).
 # `old` must occur once.
 #
 # Not every guard can be a mutant. `models::principal` refuses agents, and
@@ -101,6 +105,22 @@ STORE_AUDIT_KEYS = "crates/tutela-store/src/audit_keys.rs"
 # it, so no agent can be found for one (an equivalent mutant, run and kept
 # out of this list).
 MUTANTS = [
+    ("P01", CLI_SERVICE, "tutela apply publishes a widening diff without a token",
+     "    if widening && o.approval.is_none() {\n",
+     "    if false && widening && o.approval.is_none() {\n",
+     CLI),
+    ("P02", CLI_KEYS, "tutela keys rotate lets the next key sign at once",
+     "lead: Duration::from_secs(jwks_cache.as_secs().saturating_mul(2)),",
+     "lead: Duration::from_secs(jwks_cache.as_secs().saturating_mul(0)),",
+     CLI),
+    ("P03", CLI_SERVICE, "tutela apply publishes past two-person publish",
+     "    if settings[\"two_person\"] == Value::Bool(true) {\n",
+     "    if false && settings[\"two_person\"] == Value::Bool(true) {\n",
+     CLI),
+    ("P04", CLI_SERVICE, "tutela apply --dry-run writes",
+     "    if o.dry_run {\n",
+     "    if false && o.dry_run {\n",
+     CLI),
     ("V01", STORE_AUDIT_KEYS, "an old audit record stops verifying after a key rotation",
      "FROM tutela.audit_key ORDER BY created_at, kid",
      "FROM tutela.audit_key WHERE retired_at IS NULL ORDER BY created_at, kid",

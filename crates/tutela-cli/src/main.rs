@@ -9,7 +9,8 @@ use tutela_cli::apply::{self, Outcome};
 use tutela_cli::approval::{self, Approval};
 use tutela_cli::{CliError, DATABASE_ENV, DEFAULT_MANIFEST};
 
-/// Tutela's CLI for library mode: the manifest, its diff and approvals.
+/// Tutela's CLI: the manifest, its diff and approvals, in library mode and
+/// against `tutelad`; apps; `tutelad`'s keys.
 #[derive(Parser)]
 #[command(name = "tutela", version, about)]
 struct Cli {
@@ -66,6 +67,31 @@ enum Command {
         /// Show the diff only; write nothing.
         #[arg(long)]
         dry_run: bool,
+        /// `tutelad`'s URL (or TUTELA_URL): apply to the caller's tenant
+        /// there, with the impact report. Without it, library mode.
+        #[arg(long, env = "TUTELA_URL")]
+        server: Option<String>,
+        /// The caller's token for `tutelad` (or TUTELA_TOKEN): a pipeline's
+        /// service token or a person's admin token.
+        #[arg(long, env = "TUTELA_TOKEN", hide_env_values = true)]
+        token: Option<String>,
+    },
+    /// Apps of the caller's tenant on `tutelad` (the tenant's owner only).
+    Apps {
+        /// `tutelad`'s URL (or TUTELA_URL).
+        #[arg(long, env = "TUTELA_URL")]
+        server: String,
+        /// The caller's token (or TUTELA_TOKEN).
+        #[arg(long, env = "TUTELA_TOKEN", hide_env_values = true)]
+        token: String,
+        #[command(subcommand)]
+        command: AppsCommand,
+    },
+    /// `tutelad`'s signing keys and audit producer key, through the key store
+    /// (TUTELA_DATABASE_URL, TUTELA_MASTER_KEY, TUTELA_ISSUER).
+    Keys {
+        #[command(subcommand)]
+        command: KeysCommand,
     },
     /// Sign an approval for one change (run by an approver, after reviewing
     /// the diff that `tutela apply` printed).
@@ -98,6 +124,56 @@ enum Command {
 }
 
 #[derive(Subcommand)]
+enum AppsCommand {
+    /// Make an app. Its client secret is printed this once.
+    Create {
+        /// The app's display name.
+        #[arg(long)]
+        name: String,
+    },
+    /// List the apps.
+    List,
+    /// A new client secret, printed this once; the old ones keep working
+    /// for the overlap.
+    Rotate {
+        /// The client id, `app_<uuidv7>`.
+        id: String,
+        /// How long the old secrets keep working, in seconds (default 3600).
+        #[arg(long)]
+        overlap_secs: Option<u64>,
+    },
+    /// Disable an app: its secrets and tokens stop.
+    Disable {
+        /// The client id.
+        id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum KeysCommand {
+    /// List the signing keys and the audit keys.
+    List,
+    /// Make the next signing key (or, with --audit, the next audit producer
+    /// key).
+    Rotate {
+        /// Rotate the audit producer key instead.
+        #[arg(long)]
+        audit: bool,
+        /// The JWKS cache time of the replicas, in seconds.
+        #[arg(long, env = "TUTELA_JWKS_CACHE_SECS", default_value_t = 300)]
+        jwks_cache_secs: u64,
+    },
+    /// Deny a signing key at once; a new key signs.
+    Deny {
+        /// The key's `kid`.
+        kid: String,
+    },
+    /// Seal every key again under the current master key
+    /// (TUTELA_MASTER_KEY_PREVIOUS opens the old ones).
+    Rewrap,
+}
+
+#[derive(Subcommand)]
 enum ApproversCommand {
     /// Make a new key pair. The private key file is readable by you only.
     Keygen {
@@ -125,6 +201,14 @@ enum ApproversCommand {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    // Every Tutela binary installs the one crypto provider itself.
+    if tutela_safenet::rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .is_err()
+    {
+        eprintln!("error: a crypto provider is already installed");
+        return ExitCode::from(1);
+    }
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -205,8 +289,35 @@ async fn run(command: Command, out: &mut dyn Write) -> Result<ExitCode, CliError
         Command::Apply {
             file,
             approval,
+            author: _,
+            dry_run,
+            server: Some(server),
+            token,
+        } => {
+            let source = read(&file)?;
+            let svc =
+                tutela_cli::service::Service::new(&server, token.as_deref().unwrap_or_default())?;
+            let outcome = tutela_cli::service::apply(
+                &svc,
+                &tutela_cli::service::ApplyOptions {
+                    source: &source,
+                    approval: approval.as_deref(),
+                    dry_run,
+                },
+                out,
+            )
+            .await?;
+            if outcome == tutela_cli::service::Applied::Refused {
+                return Ok(ExitCode::from(3));
+            }
+        }
+        Command::Apply {
+            file,
+            approval,
             author,
             dry_run,
+            server: None,
+            token: _,
         } => {
             let source = read(&file)?;
             let mut client = tutela_cli::connect(db().as_deref()).await?;
@@ -254,6 +365,60 @@ async fn run(command: Command, out: &mut dyn Write) -> Result<ExitCode, CliError
                 },
             )?;
             writeln!(out, "{token}")?;
+        }
+        Command::Apps {
+            server,
+            token,
+            command,
+        } => {
+            let svc = tutela_cli::service::Service::new(&server, &token)?;
+            match command {
+                AppsCommand::Create { name } => {
+                    tutela_cli::service::apps_create(&svc, &name, out).await?;
+                }
+                AppsCommand::List => tutela_cli::service::apps_list(&svc, out).await?,
+                AppsCommand::Rotate { id, overlap_secs } => {
+                    tutela_cli::service::apps_rotate(&svc, &id, overlap_secs, out).await?;
+                }
+                AppsCommand::Disable { id } => {
+                    tutela_cli::service::apps_disable(&svc, &id, out).await?;
+                }
+            }
+        }
+        Command::Keys { command } => {
+            let mut client = tutela_cli::connect(db().as_deref()).await?;
+            if let KeysCommand::List = command {
+                tutela_cli::keys::list(&mut client, out).await?;
+                return Ok(ExitCode::SUCCESS);
+            }
+            let vault = tutela_vault::Vault::from_env().map_err(|_| {
+                CliError::Usage("TUTELA_MASTER_KEY is not set or not 32 bytes".into())
+            })?;
+            let iss: tutela_contracts::tenant::Issuer = std::env::var("TUTELA_ISSUER")
+                .ok()
+                .and_then(|i| i.parse().ok())
+                .ok_or_else(|| {
+                    CliError::Usage("TUTELA_ISSUER is not set or not an issuer".into())
+                })?;
+            match command {
+                KeysCommand::List => {}
+                KeysCommand::Rotate { audit: true, .. } => {
+                    tutela_cli::keys::rotate_audit(&mut client, &vault, &iss, out).await?;
+                }
+                KeysCommand::Rotate {
+                    audit: false,
+                    jwks_cache_secs,
+                } => {
+                    let cache = std::time::Duration::from_secs(jwks_cache_secs);
+                    tutela_cli::keys::rotate(&mut client, &vault, &iss, cache, out).await?;
+                }
+                KeysCommand::Deny { kid } => {
+                    tutela_cli::keys::deny(&mut client, &vault, &iss, &kid, out).await?;
+                }
+                KeysCommand::Rewrap => {
+                    tutela_cli::keys::rewrap(&mut client, &vault, &iss, out).await?
+                }
+            }
         }
         Command::Approvers { command } => match command {
             ApproversCommand::Keygen { out: path } => {

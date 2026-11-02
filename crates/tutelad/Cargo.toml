@@ -51,6 +51,7 @@ zeroize = "1.9.1"
 
 [dev-dependencies]
 ed25519-dalek = "3.0.0"
+tutela-cli = { path = "../tutela-cli" }
 reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
 tokio = { version = "1.54.1", features = ["io-util", "process"] }
 
