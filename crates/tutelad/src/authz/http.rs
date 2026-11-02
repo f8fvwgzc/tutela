@@ -11,7 +11,7 @@ use tutela_sdk::Identity;
 
 use super::wire::{
     EvaluationBody, EvaluationResult, EvaluationsBody, EvaluationsResult, PermissionsBody,
-    ResourceResults, SearchBody, SubjectResults,
+    ResourceResults, SearchBody, SubjectResults, WriteCheckBody, WriteCheckResult,
 };
 use crate::api::{AppState, Problem};
 
@@ -102,6 +102,15 @@ pub async fn permissions(
         HeaderValue::from_static("private, no-cache"),
     );
     Ok(res)
+}
+
+/// `POST /v1/authz/write-check`.
+pub async fn write_check(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Body(body): Body<WriteCheckBody>,
+) -> Result<Json<WriteCheckResult>, Problem> {
+    super::write_check(&state, &id, body).await.map(Json)
 }
 
 /// The AuthZEN metadata (section 9).

@@ -9,8 +9,8 @@ use tutela_contracts::principal::Principal;
 use tutela_contracts::tenant::TenantKey;
 use tutela_pdp::model::{GroupKey, RoleKey};
 use tutela_pdp::{
-    Binding, Group, Member, PathEntry, ScopeFieldRule, ScopePathError, ScopePaths, Subject,
-    TenantData,
+    Binding, BoundaryRule, Group, LinksFrom, Member, MoveRule, OnLooser, PathEntry, ScopeFieldRule,
+    ScopePathError, ScopePaths, Subject, TenantData,
 };
 
 use crate::{DbResult as _, StoreError, enter, entry, parse_entry, parse_org, to_rev};
@@ -275,18 +275,32 @@ async fn tenant_view(
     }
 
     let mut private = BTreeSet::new();
+    let mut boundaries = BTreeMap::new();
     for r in tx
         .query(
-            "SELECT scope_kind, scope_id FROM tutela.boundary_rule \
-             WHERE tenant_id = $1 AND private",
+            "SELECT scope_kind, scope_id, private, moves_out, moves_in, on_looser, links_from \
+             FROM tutela.boundary_rule WHERE tenant_id = $1",
             &[&tid],
         )
         .await
         .db()?
     {
-        private.insert(entry(r.try_get(0).db()?, r.try_get(1).db()?)?);
+        let scope = entry(r.try_get(0).db()?, r.try_get(1).db()?)?;
+        if r.try_get::<_, bool>(2).db()? {
+            private.insert(scope.clone());
+        }
+        let rule = BoundaryRule {
+            moves_out: move_rule(r.try_get(3).db()?)?,
+            moves_in: move_rule(r.try_get(4).db()?)?,
+            on_looser: on_looser(r.try_get(5).db()?)?,
+            links_from: links_from(r.try_get(6).db()?)?,
+        };
+        if rule != BoundaryRule::default() {
+            boundaries.insert(scope, rule);
+        }
     }
     data.private_scopes = private;
+    data.boundaries = boundaries;
 
     for r in tx
         .query(
@@ -322,6 +336,35 @@ async fn tenant_view(
         });
     }
     Ok((data, next_expiry))
+}
+
+fn move_rule(text: Option<&str>) -> Result<Option<MoveRule>, StoreError> {
+    text.map(|t| match t {
+        "members" => Ok(MoveRule::Members),
+        "owners" => Ok(MoveRule::Owners),
+        "none" => Ok(MoveRule::Nobody),
+        _ => Err(StoreError::corrupt("move rule")),
+    })
+    .transpose()
+}
+
+fn on_looser(text: Option<&str>) -> Result<Option<OnLooser>, StoreError> {
+    text.map(|t| match t {
+        "approve" => Ok(OnLooser::Approve),
+        "block" => Ok(OnLooser::Block),
+        _ => Err(StoreError::corrupt("on_looser")),
+    })
+    .transpose()
+}
+
+fn links_from(text: Option<&str>) -> Result<Option<LinksFrom>, StoreError> {
+    text.map(|t| match t {
+        "any" => Ok(LinksFrom::Any),
+        "team" => Ok(LinksFrom::Team),
+        "none" => Ok(LinksFrom::Nobody),
+        _ => Err(StoreError::corrupt("links_from")),
+    })
+    .transpose()
 }
 
 async fn scope_paths(

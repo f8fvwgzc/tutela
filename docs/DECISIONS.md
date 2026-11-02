@@ -971,3 +971,40 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 **Alternatives considered.**
 - **Build them now with one key from an environment variable.** It is the cheapest honest version, and items 2 to 4 still hold. Part 3 would then migrate deployed PDPs off a key scheme nobody meant to keep.
 - **Sign with a key per replica.** PDPs would have to trust every replica, and a replica restart would change the key.
+
+---
+
+## ADR-0025: Moves and links in `write_check`
+
+**Status:** Accepted, 2026-11-02. Built in Phase B, part 2b. It closes the "Moves stay refused" items of [ADR-0013](#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits) (item 13) and [ADR-0014](#adr-0014-tutela-store-in-phase-a-the-schema-row-level-security-and-checked-writes) (item 8).
+
+**Context.** PERMISSION-MODEL.md 9 and 10 give the rules in the blueprint's words: "owners and members", "owners of both projects only", "the source owner's approval", "looser". Tenant trees are not the blueprint's tree, and Tutela holds no field values and no tree below a resource, so each word needs a meaning that works on any tree and fails closed.
+
+**Decision.**
+
+1. **Crossed scopes.** The item leaves and enters the scopes below the part the two paths share. Boundary rules guard crossing, so a scope the item stays inside has no say.
+2. **Rules.** The nearest scope on each side has the default `members`. A scope further out adds a rule only when it set one. `members` is `write` on the scope; `owners` is the admin key `approve_move` on it, so a tenant can build its own owner role. PERMISSION-MODEL.md 10.1 has the table.
+3. **Across teams** means more than one crossed scope on a side. "Team" has no meaning in a tenant's tree, and this errs strict: a row moved between issues of two projects of one team counts as across teams.
+4. **A scope's field values are not known**, so conditions on a scope's type count as false in these checks.
+5. **Looser** means anyone gains anything: item level, a field or feature level, a custom action or an admin key. It uses the same functions as `check`. Below the item there are no field values, so a role's level is a range, and a change that cannot be ruled out counts. Lines that depend on this are `conditional`. The comparison is the first half of the impact report (`tutela-pdp`, module `impact`).
+6. **A cap per role, for what sits below.** `write_check` does not know the tree below the item, and a principal assigned there is on neither path. Field rules above an assignment still cap it (7.1 step 5), so a cap that goes up for a role that holds any binding counts as a gain. The property test found this hole; `tm08_a_rule_left_behind_counts_for_whoever_sits_below_the_moved_scope` keeps it shut. It can flag a move that nobody below benefits from, which costs an approval and nothing else.
+7. **Bounds.** 10,000 principals and 1,000,000 comparisons. Past a bound the move is looser and `complete` is `false`: stopping early never reads as "no change".
+8. **Approval lives in the product.** A move waits for the owner of each scope it leaves, or of the old parent when it leaves none. The product collects the approval and asks again with `approved_by`. Tutela judges each name at this revision, and the person moving counts unless delegated. So there is no pending-move table, and an approver who lost the key since agreeing counts for nothing. Part 3 audits the moved scopes and who approved.
+9. **Only a service may send `approved_by`**: it already speaks for its users. A person's own question is a UI hint (CONTRACTS.md 7.1).
+10. **A link stays inside its org, and needs `read` on the target.** A deny for a target the person cannot read gives no detail. `links_from` is `any`, `team` or `none`, on every scope the link reaches into. A link changes no decision, because Tutela does not store links.
+11. **`POST /v1/authz/write-check`** sits beside the permission map, because it is not an AuthZEN operation. gRPC carries the verdict as JSON text, as `SearchResource` does for a filter.
+12. **New reason codes** `boundary_rule` and `approval_required`, both safe to show (CONTRACTS.md 10.2 allows new codes inside v1).
+
+**Consequences.**
+- `restricted_links` and `ai_reach` of `boundary_rule` are still not read. Showing a link as "Restricted" or dropping it is the product's work, and `ai_reach` stays as ADR-0013 item 6 has it.
+- A type that stopped being a container can still hold rows (ADR-0013 item 1). The model's `parent` rules do not show them, so a move of such a resource compares its own row only. The `tm08` property test leaves those scopes out on purpose. Part 3's audit shows such moves; a fix needs the product to say what is below an item.
+- `tutela_store::set_boundary` writes the rules. It trusts its caller on `manage_boundaries`; the admin API (part 3) checks it.
+- Rate limits on the comparison are open (TM-23, Phase D).
+- The property tests are `tm08_no_move_widens_past_the_rules` (it compares the verdict with what `check` says before and after, for every principal on everything below the moved item), `tm09_links_follow_their_rules` and `tm10_list_filter_equals_check_after_a_move`. A sweep of 4,000 seeds passed. 21 more planted bugs (M36 to M56 in `mutants.py`) are all caught; the first run left four alive, each now has its own test. The mutants are a script, not part of `make`; the tests that catch them are.
+
+**Alternatives considered.**
+- **Read the rule of the source and target only.** A team could not close its boundary with one rule.
+- **Require a rule on every crossed scope.** A team that says nothing would stop its projects' owners from moving items, against the blueprint's "owners of both".
+- **A pending-move table in Tutela.** One more store of state for what the product already holds, and an approval that can go stale inside it.
+- **Enumerate the scopes below the moved item.** It needs a provider in `write_check`, covers only registered scopes, and rows are never registered.
+

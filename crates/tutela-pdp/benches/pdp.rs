@@ -481,6 +481,7 @@ fn build() -> Res<World> {
         groups,
         private_scopes,
         field_rules,
+        ..TenantData::default()
     };
     let mut pdp = Pdp::new();
     pdp.load(tenant.clone(), 1, model, data)?;
@@ -621,6 +622,8 @@ fn main() -> Res<()> {
             resource: w.resource(i)?,
             new_attrs,
             new_path: None,
+            new_links: vec![],
+            approved_by: vec![],
             at_least_revision: None,
         };
         let t0 = Instant::now();

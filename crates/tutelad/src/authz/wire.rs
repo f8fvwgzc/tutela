@@ -360,6 +360,41 @@ impl PermissionsBody {
     }
 }
 
+/// The body of `POST /v1/authz/write-check`.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct WriteCheckBody {
+    /// Who.
+    pub subject: Option<Subject>,
+    /// The stored item, before the write.
+    pub resource: Option<Resource>,
+    /// The changed fields, with their new values.
+    pub new_attrs: Option<BTreeMap<String, serde_json::Value>>,
+    /// The new ancestors, for a move.
+    pub new_path: Option<Vec<Entry>>,
+    /// The resources this write links to.
+    pub new_links: Option<Vec<Resource>>,
+    /// Who approved a move into a looser scope. A service only.
+    pub approved_by: Option<Vec<String>>,
+    /// Extra input.
+    pub context: Option<Context>,
+}
+
+/// `context` of a write verdict.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct WriteContext {
+    /// The verdict.
+    pub tutela: tutela_pdp::WriteDecision,
+}
+
+/// The answer of `POST /v1/authz/write-check`.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct WriteCheckResult {
+    /// `true` exactly when the verdict allows the whole write.
+    pub decision: bool,
+    /// The details.
+    pub context: WriteContext,
+}
+
 /// A request that does not parse. The text is short English with no values
 /// from the request, so it is safe to send and to log.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -416,6 +451,63 @@ impl Ask {
             fields: self.fields,
             at_least_revision: need,
         }
+    }
+}
+
+/// A parsed write.
+#[derive(Clone, Debug)]
+pub struct WriteAsk {
+    /// Who.
+    pub subject: Principal,
+    /// The actor chain, current actor first.
+    pub actors: Vec<Principal>,
+    /// The stored item.
+    pub resource: ResourceRef,
+    /// The changed fields.
+    pub new_attrs: Attrs,
+    /// The new ancestors, for a move.
+    pub new_path: Option<Vec<PathEntry>>,
+    /// The link targets.
+    pub new_links: Vec<ResourceRef>,
+    /// Who approved.
+    pub approved_by: Vec<Principal>,
+    /// `context.at_least_revision`.
+    pub at_least: Option<u64>,
+}
+
+impl WriteAsk {
+    /// Parses one write.
+    ///
+    /// # Errors
+    ///
+    /// [`Invalid`] when a field is missing or does not parse.
+    pub fn parse(body: WriteCheckBody) -> Result<Self, Invalid> {
+        let (subject, actors) = principal(&body.subject.ok_or(Invalid("`subject` is missing"))?)?;
+        let resource = resource(body.resource.ok_or(Invalid("`resource` is missing"))?)?;
+        let approved_by = body
+            .approved_by
+            .unwrap_or_default()
+            .iter()
+            .map(|p| {
+                p.parse()
+                    .map_err(|_| Invalid("`approved_by` holds something that is no principal"))
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(Self {
+            subject,
+            actors,
+            resource,
+            new_attrs: attrs(body.new_attrs.unwrap_or_default())?,
+            new_path: body.new_path.as_deref().map(path).transpose()?,
+            new_links: body
+                .new_links
+                .unwrap_or_default()
+                .into_iter()
+                .map(self::resource)
+                .collect::<Result<_, _>>()?,
+            approved_by,
+            at_least: body.context.and_then(|c| c.at_least_revision),
+        })
     }
 }
 

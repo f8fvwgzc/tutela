@@ -25,7 +25,9 @@ mod api;
 mod data;
 mod eval;
 mod filter;
+mod impact;
 pub mod model;
+mod moves;
 mod pdp;
 mod search;
 
@@ -38,23 +40,28 @@ mod tests_check;
 #[cfg(test)]
 mod tests_filter;
 #[cfg(test)]
+mod tests_moves;
+#[cfg(test)]
 mod tests_props;
 #[cfg(test)]
 mod tests_search;
 
 pub use api::{
-    AttrValue, Attrs, CheckRequest, FieldVerdict, ListFilterRequest, MAX_ACTORS, MAX_BATCH,
-    MAX_FIELDS, MAX_PATH, PathEntry, PdpError, ResourceRef, ScopePathError, ScopePathProblem,
-    ScopePaths, WriteCheckRequest, WriteDecision,
+    AttrValue, Attrs, CheckRequest, FieldVerdict, LinkVerdict, ListFilterRequest, MAX_ACTORS,
+    MAX_APPROVERS, MAX_BATCH, MAX_FIELDS, MAX_LINKS, MAX_PATH, MoveDecision, MoveOutcome,
+    PathEntry, PdpError, ResourceRef, ScopePathError, ScopePathProblem, ScopePaths,
+    WriteCheckRequest, WriteDecision,
 };
 pub use data::{
-    Binding, Group, LoadError, MAX_GROUP_CLOSURE, MAX_GROUP_DEPTH, MAX_GROUP_WORK, Member,
-    ScopeFieldRule, Subject, TenantData,
+    Binding, BoundaryRule, Group, LinksFrom, LoadError, MAX_GROUP_CLOSURE, MAX_GROUP_DEPTH,
+    MAX_GROUP_WORK, Member, MoveRule, OnLooser, ScopeFieldRule, Subject, TenantData,
 };
 pub use filter::{
     FilterExpr, FilterSize, FilterValue, ListFilter, MAX_CONTAINER_IN, MAX_FILTER_DEPTH,
     MAX_FILTER_ENTRIES, MAX_FILTER_NODES, MAX_IDS_IN,
 };
+pub use impact::{Change, ImpactLine};
+pub use moves::{MAX_MOVE_CANDIDATES, MAX_MOVE_LINES, MAX_MOVE_WORK};
 pub use pdp::Pdp;
 pub use search::{
     MAX_SEARCH_PAGE, MAX_SEARCH_SCAN, ResourcePage, SubjectPage, SubjectSearchRequest,

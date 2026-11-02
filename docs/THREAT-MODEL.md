@@ -257,7 +257,7 @@ Each threat has an id (TM-01 ... TM-23). Its tests carry the id in their name, f
   - A new field marked confidential or secret starts at None (a correction to the blueprint).
   - Operator settings (issuer trust list, signup policy, signing keys) are not tenant permissions. No tenant role can hold them.
 - **Phase.** A (narrow-only rule, `write_check`, widening detection in the compiler). B (impact report, approvals, two-person publish, `tutela apply` against `tutelad`).
-- **Test.** Property test "no widening" (Phase A exit): random grant attempts never give anyone more than the granter holds. `tutela apply` with a widening diff and no approval token → non-zero exit. A move without `moves_out` on the source or `moves_in` on the target → denied. A move into a looser scope without approval → not applied. A new secret field → None for every role until a rule grants it.
+- **Test.** Property test "no widening" (Phase A exit): random grant attempts never give anyone more than the granter holds. `tutela apply` with a widening diff and no approval token → non-zero exit. A move without `moves_out` on the source or `moves_in` on the target → denied. A move into a looser scope without approval → not applied (`tm08_*` in `tutela-pdp` and `crates/tutelad/tests/write_check.rs`). A new secret field → None for every role until a rule grants it.
 
 #### TM-09. Resource path spoofing
 

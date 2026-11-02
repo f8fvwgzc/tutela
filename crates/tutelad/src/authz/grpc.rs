@@ -242,8 +242,45 @@ fn permissions_body(r: pb::PermissionsRequest) -> Result<wire::PermissionsBody, 
     })
 }
 
+fn entries(l: Vec<pb::PathEntry>) -> Vec<wire::Entry> {
+    l.into_iter()
+        .map(|e| wire::Entry {
+            kind: e.r#type,
+            id: e.id,
+        })
+        .collect()
+}
+
+fn write_body(r: pb::WriteCheckRequest) -> Result<wire::WriteCheckBody, Status> {
+    Ok(wire::WriteCheckBody {
+        subject: r.subject.map(subject).transpose()?,
+        resource: r.resource.map(resource),
+        new_attrs: Some(r.new_attrs.into_iter().map(|(k, v)| (k, attr(v))).collect()),
+        new_path: r.new_path.map(|p| entries(p.entries)),
+        new_links: Some(r.new_links.into_iter().map(resource).collect()),
+        approved_by: Some(r.approved_by),
+        context: r.context.map(context),
+    })
+}
+
 #[tonic::async_trait]
 impl Authz for AuthzService {
+    async fn write_check(
+        &self,
+        req: Request<pb::WriteCheckRequest>,
+    ) -> Result<Response<pb::WriteCheckResponse>, Status> {
+        let id = identity(&req)?;
+        let body = write_body(req.into_inner())?;
+        let out = super::write_check(&self.state, &id, body).await?;
+        let decision_json = serde_json::to_string(&out.context.tutela)
+            .map_err(|_| Status::unavailable("unavailable: the verdict cannot be written"))?;
+        Ok(Response::new(pb::WriteCheckResponse {
+            decision: out.decision,
+            rev: out.context.tutela.rev,
+            decision_json,
+        }))
+    }
+
     async fn evaluate(
         &self,
         req: Request<pb::EvaluationRequest>,

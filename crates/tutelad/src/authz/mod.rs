@@ -13,9 +13,11 @@ pub mod http;
 mod permissions;
 mod search;
 pub mod wire;
+mod write;
 
 pub use permissions::{PermissionMap, Permissions, UiAnswer, permissions};
 pub use search::{search_resource, search_subject};
+pub use write::write_check;
 
 use axum::http::StatusCode;
 use tutela_contracts::principal::{Principal, PrincipalKind};
@@ -55,17 +57,21 @@ fn may_ask(id: &Identity, subject: &Principal, actors: &[Principal]) -> Result<(
     allowed.then_some(()).ok_or_else(Problem::forbidden)
 }
 
-/// May this token list who holds a permission? That is a question about
-/// many principals, so a service only.
-fn may_list_subjects(id: &Identity) -> Result<(), Problem> {
-    let service = matches!(
+/// `true` for a token of a service (`sa`, `key`).
+fn is_service(id: &Identity) -> bool {
+    matches!(
         id,
         Identity::Access(c) if matches!(
             c.sub.kind(),
             PrincipalKind::ServiceAccount | PrincipalKind::Key
         )
-    );
-    service.then_some(()).ok_or_else(Problem::forbidden)
+    )
+}
+
+/// May this token list who holds a permission? That is a question about
+/// many principals, so a service only.
+fn may_list_subjects(id: &Identity) -> Result<(), Problem> {
+    is_service(id).then_some(()).ok_or_else(Problem::forbidden)
 }
 
 /// The lowest revision that may answer: what the caller asked for, and the

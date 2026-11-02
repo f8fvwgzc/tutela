@@ -63,7 +63,8 @@ pub use tokio_postgres;
 pub use write::{
     Expired, add_member, add_org, assign, assign_until, create_group, create_tenant,
     delete_field_rule, delete_group, delete_scope, expire_assignments, move_scope, put_field_rule,
-    put_scope, remove_member, remove_principal, set_assignment_expiry, set_private, unassign,
+    put_scope, remove_member, remove_principal, set_assignment_expiry, set_boundary, set_private,
+    unassign,
 };
 
 /// What kind of failure a [`StoreError`] is.

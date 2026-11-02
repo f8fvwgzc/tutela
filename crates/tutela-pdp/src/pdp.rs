@@ -14,9 +14,9 @@ use tutela_contracts::principal::{Principal, PrincipalKind};
 use tutela_contracts::tenant::{OrgId, TenantKey};
 
 use crate::api::{
-    AttrValue, Attrs, CheckRequest, FieldVerdict, ListFilterRequest, MAX_ACTORS, MAX_BATCH,
-    MAX_FIELDS, MAX_PATH, PathEntry, PdpError, ResourceRef, ScopePaths, WriteCheckRequest,
-    WriteDecision,
+    AttrValue, Attrs, CheckRequest, FieldVerdict, ListFilterRequest, MAX_ACTORS, MAX_APPROVERS,
+    MAX_BATCH, MAX_FIELDS, MAX_LINKS, MAX_PATH, PathEntry, PdpError, ResourceRef, ScopePaths,
+    WriteCheckRequest, WriteDecision,
 };
 use crate::data::{Index, LoadError, TenantData};
 use crate::eval::{
@@ -25,6 +25,7 @@ use crate::eval::{
 };
 use crate::filter::{ListFilter, Listing};
 use crate::model::{FieldType, Model};
+use crate::moves::{check_link, check_move};
 
 /// One tenant's model and data at one revision.
 pub(crate) struct Bundle {
@@ -34,7 +35,7 @@ pub(crate) struct Bundle {
 }
 
 impl Bundle {
-    fn ctx(&self) -> Ctx<'_> {
+    pub(crate) fn ctx(&self) -> Ctx<'_> {
         Ctx {
             model: &self.model,
             index: &self.index,
@@ -58,17 +59,17 @@ pub struct Pdp {
 }
 
 /// The two kinds of principals in a request, checked.
-struct Who<'a> {
-    subject: &'a Principal,
+pub(crate) struct Who<'a> {
+    pub(crate) subject: &'a Principal,
     actors: &'a [Principal],
 }
 
 impl Who<'_> {
-    fn delegated(&self) -> bool {
+    pub(crate) fn delegated(&self) -> bool {
         !self.actors.is_empty()
     }
 
-    fn all(&self) -> impl Iterator<Item = &Principal> {
+    pub(crate) fn all(&self) -> impl Iterator<Item = &Principal> {
         core::iter::once(self.subject).chain(self.actors)
     }
 }
@@ -330,32 +331,34 @@ impl Pdp {
         crate::filter::list_filter(&listing, who.subject, who.actors, paths)
     }
 
-    /// Per-field verdicts for a write (CONTRACTS.md 6.7).
+    /// Per-field verdicts for a write (CONTRACTS.md 6.7), with the verdict
+    /// on a move and on each new link.
     ///
     /// Each changed field needs Write on that field (for the person and
     /// every actor). A field marked `grants_access` also needs the admin key
     /// `<type>:manage_access`, which never goes to agents or through
-    /// delegation. A field the type does not declare is denied.
+    /// delegation. A field the type does not declare is denied. A move and a
+    /// link are checked against the boundary rules (ADR-0025).
     ///
     /// # Errors
     ///
     /// As [`Pdp::check`]. Also [`PdpError::InvalidInput`] when nothing
-    /// changes, and for a move (`new_path`): moves need boundary rules, which
-    /// come with `tutela-store` (ROADMAP Phase A item 5). Until then a move
-    /// is refused.
+    /// changes, for a new path that breaks the rules of a path, and for a new
+    /// parent whose type may not hold this type.
     pub fn write_check(&self, req: &WriteCheckRequest) -> Result<WriteDecision, PdpError> {
         let b = self.bundle(&req.tenant, req.at_least_revision)?;
         let who = who(&req.subject, &req.actors)?;
-        if req.new_path.is_some() {
-            return Err(PdpError::invalid(
-                "moves are refused until boundary rules exist (ROADMAP Phase A item 5)",
-            ));
-        }
-        if req.new_attrs.is_empty() {
+        if req.new_attrs.is_empty() && req.new_path.is_none() && req.new_links.is_empty() {
             return Err(PdpError::invalid("a write must change at least one field"));
         }
         if req.new_attrs.len() > MAX_FIELDS {
             return Err(PdpError::invalid("more than 512 changed fields"));
+        }
+        if req.new_links.len() > MAX_LINKS {
+            return Err(PdpError::invalid("more than 64 new links"));
+        }
+        if req.approved_by.len() > MAX_APPROVERS {
+            return Err(PdpError::invalid("more than 8 approvers"));
         }
         let ty = &req.resource.type_name;
         let write = ActionKey::builtin(ty.clone(), BuiltinAction::Write);
@@ -397,6 +400,8 @@ impl Pdp {
                 effect: Effect::Deny,
                 rev: b.rev,
                 fields,
+                moved: None,
+                links: Vec::new(),
             });
         }
         let walk = Walk::new(&b.index, &this, &req.resource.path);
@@ -477,15 +482,25 @@ impl Pdp {
                 rule_ids: rule_ids(ctx, &sides, &lowered),
             });
         }
-        let effect = if verdicts.iter().all(|v| v.effect == Effect::Allow) {
-            Effect::Allow
-        } else {
-            Effect::Deny
-        };
+        let moved = req
+            .new_path
+            .as_deref()
+            .map(|path| check_move(b, &who, req, path))
+            .transpose()?;
+        let links = req
+            .new_links
+            .iter()
+            .map(|target| check_link(b, &who, &req.resource, target))
+            .collect::<Result<Vec<_>, _>>()?;
+        let allowed = verdicts.iter().all(|v| v.effect == Effect::Allow)
+            && moved.as_ref().is_none_or(|m| m.effect == Effect::Allow)
+            && links.iter().all(|l| l.effect == Effect::Allow);
         Ok(WriteDecision {
-            effect,
+            effect: if allowed { Effect::Allow } else { Effect::Deny },
             rev: b.rev,
             fields: verdicts,
+            moved,
+            links,
         })
     }
 }
@@ -526,7 +541,7 @@ pub(crate) fn this_entry(res: &ResourceRef) -> Result<PathEntry, PdpError> {
 }
 
 /// `true` if the resource's org is one of the tenant's orgs (step 2).
-fn in_tenant(index: &Index, res: &ResourceRef) -> bool {
+pub(crate) fn in_tenant(index: &Index, res: &ResourceRef) -> bool {
     let org = res
         .path
         .last()
@@ -662,7 +677,11 @@ fn highest_label(
 /// The rule ids of a decision: the deciding assignments, the conditions that
 /// were false and the field rules that lowered a field, in that order,
 /// without repeats.
-fn rule_ids(ctx: Ctx<'_>, sides: &[Side<'_, '_>], lowered: &BTreeSet<RuleRef>) -> Vec<RuleId> {
+pub(crate) fn rule_ids(
+    ctx: Ctx<'_>,
+    sides: &[Side<'_, '_>],
+    lowered: &BTreeSet<RuleRef>,
+) -> Vec<RuleId> {
     let mut out: Vec<RuleId> = Vec::new();
     let mut seen: HashSet<RuleId> = HashSet::new();
     let mut push = |id: Option<RuleId>| {
@@ -696,7 +715,7 @@ fn rule_ids(ctx: Ctx<'_>, sides: &[Side<'_, '_>], lowered: &BTreeSet<RuleRef>) -
 /// The reason of a decision over the person and the actors
 /// (CONTRACTS.md 6.4): the person's own reason when the person is denied;
 /// `delegation_overlap` (or `outside_ai_reach`) when only an actor is.
-fn decision_reason(
+pub(crate) fn decision_reason(
     ctx: Ctx<'_>,
     walk: &Walk<'_, '_>,
     sides: &[Side<'_, '_>],

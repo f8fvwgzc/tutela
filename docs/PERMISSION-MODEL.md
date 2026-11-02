@@ -403,6 +403,7 @@ The wire shape lives in `tutela-contracts`; see [CONTRACTS.md](CONTRACTS.md).
 - You see the linked item's title only if you can open the item. Otherwise you see "Restricted item", or nothing, as the owner chose.
 - Owners choose who can link into their scope (`boundary_rule.links_from`).
 - Agents do not follow links into other projects (their `ai_reach` stops them).
+- Making a link is a `write` on its source, and the person must be able to open the target: a link to something you cannot open would tell that it exists. `write_check` checks both, and `links_from` on every scope the link reaches into: `any` (the default) takes links from the whole org, `team` only from under that scope's parent, `none` only from inside the scope. A link stays inside its org ([ADR-0025](DECISIONS.md#adr-0025-moves-and-links-in-write_check)).
 - Graph queries filter **both** items and links by access. onto-intelli applies this inside its graph traversal, fed by Tutela's permissions.
 
 Link and move rules across scopes (Blueprint, with the blueprint's names):
@@ -422,11 +423,45 @@ For other trees, "project" means the scope where the agent is assigned, and "tea
 
 (Blueprint) Work does not stay in one box. Moves are allowed, follow access, and owners can restrict them.
 
-1. A move is **one operation**: a `write` that changes the item's parent (`Pdp::write_check` with a new path, see [CONTRACTS.md §6.7](CONTRACTS.md#67-write_check)). It needs the right on both sides: `moves_out` on the source scope and `moves_in` on the target scope (`boundary_rule`). Across teams, only owners of both scopes. Phase A: `write_check` refuses moves until these boundary rules exist with `tutela-store` ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)).
+1. A move is **one operation**: a `write` that changes the item's parent (`Pdp::write_check` with a new path, see [CONTRACTS.md §6.7](CONTRACTS.md#67-write_check)). It needs the right on both sides: `moves_out` on the source scope and `moves_in` on the target scope (`boundary_rule`). Across teams, only owners of both scopes. How these read in any tree is in 10.1.
 2. The moved item **takes the rules of its new parent**. Its children, files, chat and history move with it.
 3. Tutela compares access before and after (the same impact calculation as model changes, [15](#15-model-changes)). If the new scope is **looser** (for example Budget is visible there), the move **waits for the source owner's approval** (`on_looser = approve`). An owner can also set `on_looser = block`.
 4. The audit log records the move with **both** scopes.
 5. Because the product's database holds the parent, the product changes the parent and the ancestors in one transaction, and sends `at_least_revision` on its next check. A test proves that access through the old parent ends after the move (New).
+
+### 10.1 The rules of a move, exactly
+
+Decided in [ADR-0025](DECISIONS.md#adr-0025-moves-and-links-in-write_check).
+
+The two paths share their top. The scopes below that shared part are **crossed**: the item **leaves** the ones on the old path and **enters** the ones on the new path. A scope the item stays inside is not crossed. A move across orgs is refused.
+
+| Check | What it needs |
+|---|---|
+| The item | `write` on the item, for the person and every actor. |
+| The nearest scope left, and the nearest scope entered | `moves_out`, `moves_in`. With no rule set: `members`. |
+| Any other scope crossed | Its own `moves_out` or `moves_in`, only if it set one. So a team that says nothing does not stop its projects' owners. |
+| The new parent | `write` on it, also when it is not crossed: a new child is a write on its parent (5.2). |
+
+| Rule | Means |
+|---|---|
+| `members` | `write` on the scope, for the person and every actor. |
+| `owners` | The admin key `approve_move` on the scope. Never through delegation, never for an agent. |
+| `none` | Nobody. |
+
+A move that crosses **more than one scope on a side** is a move across teams, so `members` on the nearest scopes counts as `owners`. Conditions on a scope's type count as false here: Tutela does not have a scope's field values, so the answer can only be too strict.
+
+**Before and after.** For every principal with an assignment on the old path, on the new path or on the item, directly or through a group, Tutela compares the item level, every field and feature level, every custom action and every admin key. The moved item is compared with its own field values. Whatever can sit below it (the model's `parent` rules) is compared per type with no field values: a role's conditions could leave it anywhere from its lowest level to its highest, so a change that cannot be ruled out counts as a gain. A principal assigned below a moved scope is on neither path, but the field rules above its assignment still cap it, so a field cap that goes up for a role counts too.
+
+If anyone gains anything, the move is **looser**:
+
+| `on_looser` of a scope left (or of the old parent, when nothing is left) | Result |
+|---|---|
+| `block` | Refused. |
+| `approve`, or no rule | Allowed when an owner of **each** such scope agrees: someone who holds `approve_move` there. The person moving counts, so a source owner approves by moving. Otherwise the answer names the scopes that still wait (`approve_at`). |
+
+Through delegation the person does not count, because admin keys never pass through delegation.
+
+**A comparison that hits a bound never says "no change".** Above 10,000 principals or 1,000,000 comparisons the move counts as looser, and the answer says `complete: false`.
 
 ---
 

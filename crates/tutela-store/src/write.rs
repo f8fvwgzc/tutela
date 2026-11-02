@@ -14,7 +14,9 @@ use tutela_contracts::level::Level;
 use tutela_contracts::principal::Principal;
 use tutela_contracts::tenant::{Issuer, OrgId, TenantId, TenantKey};
 use tutela_pdp::model::{GroupKey, RoleKey};
-use tutela_pdp::{MAX_PATH, Member, PathEntry, Subject};
+use tutela_pdp::{
+    BoundaryRule, LinksFrom, MAX_PATH, Member, MoveRule, OnLooser, PathEntry, Subject,
+};
 
 use crate::bindings::{Assignment, assignment_row};
 use crate::{
@@ -613,15 +615,72 @@ pub async fn set_private(
     finish_write(tx, tenant, rev).await
 }
 
+/// Sets the move and link rules of a registered scope, replacing the ones it
+/// had. The private flag stays as it is. The caller has checked
+/// `manage_boundaries`.
+///
+/// # Errors
+///
+/// [`NotFound`](crate::StoreErrorKind::NotFound) for an unregistered scope,
+/// [`Invalid`](crate::StoreErrorKind::Invalid) for an org, or a database error.
+pub async fn set_boundary(
+    tx: &Transaction<'_>,
+    tenant: &TenantKey,
+    scope: &PathEntry,
+    rule: &BoundaryRule,
+) -> Result<u64, StoreError> {
+    let rev = begin_write(tx, tenant).await?;
+    let tid = tenant.tid.to_string();
+    if scope.is_org() {
+        return Err(StoreError::invalid("an org has no boundary rule"));
+    }
+    require_scope(tx, &tid, scope).await?;
+    let move_text = |r: Option<MoveRule>| {
+        r.map(|r| match r {
+            MoveRule::Members => "members",
+            MoveRule::Owners => "owners",
+            MoveRule::Nobody => "none",
+        })
+    };
+    let looser = rule.on_looser.map(|r| match r {
+        OnLooser::Approve => "approve",
+        OnLooser::Block => "block",
+    });
+    let links = rule.links_from.map(|r| match r {
+        LinksFrom::Any => "any",
+        LinksFrom::Team => "team",
+        LinksFrom::Nobody => "none",
+    });
+    tx.execute(
+        "INSERT INTO tutela.boundary_rule (tenant_id, scope_kind, scope_id, moves_out, moves_in, \
+         on_looser, links_from, rev) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+         ON CONFLICT (tenant_id, scope_kind, scope_id) DO UPDATE SET \
+         moves_out = excluded.moves_out, moves_in = excluded.moves_in, \
+         on_looser = excluded.on_looser, links_from = excluded.links_from, rev = excluded.rev",
+        &[
+            &tid,
+            &scope.type_name.as_str(),
+            &scope.id.as_str(),
+            &move_text(rule.moves_out),
+            &move_text(rule.moves_in),
+            &looser,
+            &links,
+            &db_rev(rev)?,
+        ],
+    )
+    .await
+    .db()?;
+    finish_write(tx, tenant, rev).await
+}
+
 /// Moves a registered scope under new ancestors. The scope and every
 /// registered scope below it get their new paths in the caller's
 /// transaction, with the revision bump, so `list_filter` sees the move at
 /// once. Call it in the transaction that changes the parent in the
 /// product's own tables.
 ///
-/// This only keeps the paths current. Whether the move is allowed is the
-/// product's check; `Pdp::write_check` refuses moves until boundary rules
-/// exist (ADR-0014).
+/// This only keeps the paths current. Whether the move is allowed is
+/// `Pdp::write_check` with a new path (ADR-0025), which the product asks first.
 ///
 /// # Errors
 ///

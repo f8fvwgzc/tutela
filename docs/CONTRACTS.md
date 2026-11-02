@@ -40,7 +40,7 @@ Only the left column exists in `tutela-contracts` after the first commit. Everyt
 | 4 | Tokens | Claim structs for access tokens and delegated tokens, and their claim checks (no size, header, signature or `epoch` check) | Full verification in `tutela-sdk` (A); token exchange in `tutelad` (B); own OIDC provider (C, optional) |
 | 5 | API keys | Parse, format check, display prefix | Hashing, storage, verification, rotation (A, B) |
 | 6 | Decision | The Decision object: effect, level, field mask, rule ids, reason, rev, obligations | `Pdp::check`, `Pdp::batch`, `Pdp::list_filter`, `Pdp::write_check` (A; built in `tutela-pdp`, [ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)) |
-| 7 | Remote check API | — | Built in `tutelad` (B): evaluation, search, the permission map and gRPC. |
+| 7 | Remote check API | — | Built in `tutelad` (B): evaluation, search, the permission map, write-check and gRPC. |
 | 8 | Events | CloudEvents envelope, event type grammar and names | Outbox, webhooks, SSE (B) |
 | 9 | audit.v1 | The audit.v1 record | Producer signatures, sequence numbers, local hash chain, forwarding to attache's evidence ledger (B) |
 | 10 | Versioning | The rules apply from the first commit | Deprecation headers on live endpoints (B) |
@@ -604,6 +604,8 @@ The code is the text before the first `:` in `reason` (or the whole string if th
 | `tenant_mismatch` | The resource or a principal belongs to another tenant. | no |
 | `break_glass` | An org Owner opened hidden data through the break-glass path. | no |
 | `not_allowed` | A generic deny. Used where the real reason must stay hidden. | yes |
+| `boundary_rule` | A boundary rule of a scope stopped a move or a link. | yes |
+| `approval_required` | A move into a looser scope waits for the source owner. | yes |
 
 Rules:
 - `effect` decides. The reason only explains. A reader that sees an unknown code treats it like `not_allowed`.
@@ -849,13 +851,37 @@ pub struct WriteCheckRequest {
     pub resource: ResourceRef,           // the stored item, before the write
     pub new_attrs: Attrs,                // the changed fields only, with their new values
     pub new_path: Option<Vec<PathEntry>>,// Some(...) when the write moves the item to a new parent
+    pub new_links: Vec<ResourceRef>,     // the resources this write links to, at most 64
+    pub approved_by: Vec<Principal>,     // who agreed to a looser move, at most 8
     pub at_least_revision: Option<u64>,
 }
 
 pub struct WriteDecision {
-    pub effect: Effect,                  // allow only if every changed field is allowed
+    pub effect: Effect,                  // allow only if every field, the move and every link are
     pub rev: u64,
     pub fields: Vec<FieldVerdict>,       // one per changed field, sorted by field name
+    pub moved: Option<MoveDecision>,     // `move` in JSON
+    pub links: Vec<LinkVerdict>,         // one per new link, in order
+}
+
+pub struct MoveDecision {
+    pub effect: Effect,
+    pub outcome: MoveOutcome,            // allowed, needs_approval or refused
+    pub reason: Reason,
+    pub rule_ids: Vec<RuleId>,
+    pub left: Vec<PathEntry>,            // the scopes the item leaves, nearest first
+    pub entered: Vec<PathEntry>,         // the scopes it enters, nearest first
+    pub looser: bool,                    // someone gains, or the comparison did not finish
+    pub complete: bool,                  // false: it hit a bound, and counts as looser
+    pub approve_at: Vec<PathEntry>,      // the scopes that still wait for an owner
+    pub gains: Vec<ImpactLine>,          // who gains what, at most 100 lines
+}
+
+pub struct LinkVerdict {
+    pub target: PathEntry,
+    pub effect: Effect,
+    pub reason: Reason,
+    pub rule_ids: Vec<RuleId>,
 }
 
 pub struct FieldVerdict {
@@ -872,8 +898,10 @@ Rules:
 - A field marked `grants_access` in the manifest also needs `manage_access`. It is an admin key, so an agent or a delegated token never changes such a field.
 - A name that is not a declared data field of the type (a feature, an unknown field) is denied.
 - If any field is denied, the whole write is refused (403), and the denied fields are named.
-- At least one field must change; an empty write is an error.
-- A move (`new_path` is set) is also checked against the boundary rules of the old and new scopes ([PERMISSION-MODEL.md §10](PERMISSION-MODEL.md#10-moving-resources-between-scopes)). Phase A: those boundary rules come with `tutela-store` (item 5). Until then `write_check` returns an error for a move, so a move into a looser scope cannot leak ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)).
+- A write changes a field, moves the item or adds a link; a write that does none of these is an error.
+- A move (`new_path` is set) is checked against the boundary rules of the scopes it crosses, then access is compared before and after ([PERMISSION-MODEL.md §10.1](PERMISSION-MODEL.md#101-the-rules-of-a-move-exactly), [ADR-0025](DECISIONS.md#adr-0025-moves-and-links-in-write_check)). `new_path` follows the `path` rules of 6.5; a new parent whose type may not hold this type is an error. A move into a looser scope is `needs_approval` until an owner of each scope in `approve_at` agrees. The product runs that flow and asks again with `approved_by`; each name is judged at this revision, and one who holds no `approve_move` there counts for nothing.
+- A link (`new_links`) needs `write` on the source, `read` on the target for the person and every actor, and the target's `links_from` ([PERMISSION-MODEL.md §9](PERMISSION-MODEL.md#9-links-never-grant-access)). A deny for a target the person cannot read is `not_allowed`, with no detail and no rule ids. A link never changes a decision: Tutela does not store links.
+- `write_check` allows a change. The product makes it, in its own transaction, and calls `tutela_store::move_scope` for a registered scope.
 
 ### 6.8 Errors
 
@@ -1143,7 +1171,7 @@ The map is a **UI hint only**. Every server route checks again.
 
 ### 7.6 gRPC `tutela.authz.v1`
 
-The same operations over gRPC, all built: `Evaluate`, `Evaluations`, `SearchResource`, `SearchSubject` and `Permissions`. Service `tutela.authz.v1.Authz`, on the API port, behind the same token check. The handlers call the same code as HTTP. Messages carry the same fields with the same names and meanings as the JSON above, with these differences: `properties` is flat (`subject.act`, `resource.path`, `resource.attrs`), with no items `Evaluations` answers with one item, and `SearchResource` carries the filter as JSON text in `filter_json`, because a condition is a tree of open shape. The errors of 7.1 become gRPC codes: 400 `INVALID_ARGUMENT`, 401 `UNAUTHENTICATED`, 403 `PERMISSION_DENIED`, 503 `UNAVAILABLE`. The message starts with the problem code. The `.proto` file is `crates/tutela-contracts/proto/tutela/authz/v1/authz.proto`, and it is published with each release (section 10).
+The same operations over gRPC, all built: `Evaluate`, `Evaluations`, `SearchResource`, `SearchSubject`, `Permissions` and `WriteCheck` (7.8). Service `tutela.authz.v1.Authz`, on the API port, behind the same token check. The handlers call the same code as HTTP. Messages carry the same fields with the same names and meanings as the JSON above, with these differences: `properties` is flat (`subject.act`, `resource.path`, `resource.attrs`), with no items `Evaluations` answers with one item, and `SearchResource` carries the filter as JSON text in `filter_json`, because a condition is a tree of open shape. The errors of 7.1 become gRPC codes: 400 `INVALID_ARGUMENT`, 401 `UNAUTHENTICATED`, 403 `PERMISSION_DENIED`, 503 `UNAVAILABLE`. The message starts with the problem code. The `.proto` file is `crates/tutela-contracts/proto/tutela/authz/v1/authz.proto`, and it is published with each release (section 10).
 
 ---
 
@@ -1172,7 +1200,58 @@ Auth as in 7.1. The response is:
 
 A verified token for a tenant that is not in the directory gets 403 `unknown_tenant`. A database failure, or a role that does not isolate tenants, gets 503 `unavailable`. A caller never names a tenant: a header, a query or a body has no effect.
 
-### 7.8 Ports and operations
+### 7.8 `POST /v1/authz/write-check`
+
+**Status: Phase B, built.** `Pdp::write_check` over the network (6.7). The rules of 7.1 apply, on who may ask too. Only a service may send `approved_by`; anyone else gets 403 `forbidden`.
+
+```json
+{
+  "subject": { "type": "user", "id": "user:usr_0193a1b2-c3d4-7a11-8b22-3c4d5e6f7081" },
+  "resource": { "type": "invoice", "id": "inv-881", "properties": {
+    "path": [ { "type": "project", "id": "p-77" }, { "type": "org", "id": "org_…" } ],
+    "attrs": {}
+  } },
+  "new_attrs": { "status": "done" },
+  "new_path": [ { "type": "project", "id": "p-78" }, { "type": "org", "id": "org_…" } ],
+  "new_links": [ { "type": "invoice", "id": "inv-900", "properties": { "path": ["…"], "attrs": {} } } ],
+  "approved_by": ["user:usr_0193a1b2-c3d4-7a11-8b22-3c4d5e6f7082"],
+  "context": { "at_least_revision": 42 }
+}
+```
+
+`new_attrs`, `new_path`, `new_links` and `approved_by` are each optional, and at least one of the first three must be there. The answer is 200 for an allow and for a deny:
+
+```json
+{
+  "decision": false,
+  "context": { "tutela": {
+    "effect": "deny",
+    "rev": 42,
+    "fields": [ { "field": "status", "effect": "allow", "needs": "invoice:write", "reason": "allowed", "rule_ids": ["ra_…"] } ],
+    "move": {
+      "effect": "deny",
+      "outcome": "needs_approval",
+      "reason": "approval_required: the move gives someone more access, and waits for the source owner",
+      "rule_ids": ["ra_…"],
+      "left": [ { "type": "project", "id": "p-77" } ],
+      "entered": [ { "type": "project", "id": "p-78" } ],
+      "looser": true,
+      "complete": true,
+      "approve_at": [ { "type": "project", "id": "p-77" } ],
+      "gains": [ { "change": "gain", "kind": "user", "key": "invoice.amount", "from": "none", "to": "read", "conditional": false, "principals": ["user:usr_…"], "scopes": [ { "type": "invoice", "id": "inv-881" } ] } ]
+    },
+    "links": [ { "target": { "type": "invoice", "id": "inv-900" }, "effect": "allow", "reason": "allowed", "rule_ids": ["ra_…"] } ]
+  } }
+}
+```
+
+- `move` is there for a move, `links` for new links. A rule id of a boundary rule is `boundary:<type>/<id>`.
+- `gains` names other principals, so only a service gets it. Anyone else gets `[]`. A line of kind `role` names a role, not a person: its holders below the moved item may gain. `conditional` means it depends on field values Tutela does not have.
+- A write that changes a `grants_access` field, and every move, are answered from data that has just been checked ([ADR-0021](DECISIONS.md#adr-0021-the-check-api-one-code-path-a-snapshot-per-tenant-and-a-revision-lease) item 5): with no database, 503. Other writes use the age limit of a write.
+- `tutelad_decisions_total` counts it as `operation="write_check"`.
+- gRPC: `WriteCheck`. The answer holds `decision`, `rev` and `decision_json`, which is `context.tutela` as JSON text. A move's shape grows inside v1, so it stays one contract with the JSON.
+
+### 7.9 Ports and operations
 
 **Status: Phase B, built.** `tutelad` listens on two ports.
 

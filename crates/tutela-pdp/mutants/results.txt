@@ -11,8 +11,8 @@ M03 eval.rs: caught by 3 test(s) - a direct assignment no longer beats group one
       tests_check::the_direct_assignment_beats_group_ones_at_one_scope, tests_props::check_matches_the_reference_evaluator, tests_props::the_reference_and_miss_tests_compare_enough
 M04 eval.rs: caught by 4 test(s) - only the first group role at a scope counts
       tests_check::group_roles_combine_component_wise_but_grants_are_never_pooled, tests_check::many_group_roles_at_one_scope_give_each_rule_id_once_in_binding_order, tests_props::check_matches_the_reference_evaluator, tests_props::the_reference_and_miss_tests_compare_enough
-M05 eval.rs: caught by 10 test(s) - check: conditions never narrow
-      tests_check::a_delegated_field_write_needs_the_agent_too, tests_check::a_field_that_decides_access_must_be_sent, tests_check::an_unknown_group_makes_the_whole_condition_false_even_under_not, tests_check::the_agent_condition_narrows_when_not_assigned, tests_filter::tm03_delegated_lists_are_the_overlap, tests_filter::tm10_a_valid_manifest_can_pass_the_limits_and_the_list_fails_closed and 4 more
+M05 eval.rs: caught by 13 test(s) - check: conditions never narrow
+      tests_check::a_delegated_field_write_needs_the_agent_too, tests_check::a_field_that_decides_access_must_be_sent, tests_check::an_unknown_group_makes_the_whole_condition_false_even_under_not, tests_check::the_agent_condition_narrows_when_not_assigned, tests_filter::tm03_delegated_lists_are_the_overlap, tests_filter::tm10_a_valid_manifest_can_pass_the_limits_and_the_list_fails_closed and 7 more
 M06 eval.rs: caught by 3 test(s) - check: an unknown group does not make the condition false
       tests_check::an_unknown_group_makes_the_whole_condition_false_even_under_not, tests_props::the_reference_and_miss_tests_compare_enough, tests_props::tm10_the_differential_test_hits_every_case
 M07 eval.rs: caught by 4 test(s) - field rules at single scopes are ignored
@@ -73,3 +73,46 @@ M34 search.rs: caught by 3 test(s) - a subject search lists every candidate with
       tests_props::tm10_search_agrees_with_check, tests_props::tm10_the_search_test_compares_enough, tests_search::a_subject_search_of_a_foreign_path_lists_no_one
 M35 search.rs: caught by 3 test(s) - a subject search mixes principal kinds
       tests_props::tm10_search_agrees_with_check, tests_props::tm10_the_search_test_compares_enough, tests_search::a_subject_search_expands_groups_and_keeps_to_its_kind
+
+M36 moves.rs: caught by 5 test(s) - a move ignores moves_out
+      tests_moves::a_scope_further_out_adds_a_rule_only_when_it_set_one, tests_moves::tm08_a_boundary_rule_stops_a_move_on_its_own_side, tests_moves::tm08_no_move_widens_past_the_rules, tests_moves::tm08_owners_of_a_scope_hold_approve_move, tests_moves::tm08_the_move_tests_compare_enough
+M37 moves.rs: caught by 3 test(s) - a move ignores moves_in
+      tests_moves::tm08_a_boundary_rule_stops_a_move_on_its_own_side, tests_moves::tm08_no_move_widens_past_the_rules, tests_moves::tm08_the_move_tests_compare_enough
+M38 moves.rs: caught by 1 test(s) - a move across teams needs no owners
+      tests_moves::across_teams_only_owners_of_both_sides
+M39 moves.rs: caught by 2 test(s) - the nearest scope has no default rule
+      tests_moves::across_teams_only_owners_of_both_sides, tests_moves::the_source_owner_approves_by_moving
+M40 moves.rs: caught by 3 test(s) - on_looser = block does not block
+      tests_moves::an_owner_can_block_a_move_into_a_looser_scope, tests_moves::tm08_no_move_widens_past_the_rules, tests_moves::tm08_the_move_tests_compare_enough
+M41 moves.rs: caught by 7 test(s) - a move that widens is not looser
+      tests_moves::an_owner_can_block_a_move_into_a_looser_scope, tests_moves::the_source_owner_approves_by_moving, tests_moves::tm08_a_move_into_a_looser_scope_waits_for_the_source_owner, tests_moves::tm08_a_rule_left_behind_counts_for_whoever_sits_below_the_moved_scope, tests_moves::tm08_no_move_widens_past_the_rules, tests_moves::tm08_the_move_tests_compare_enough and 1 more
+M42 moves.rs: caught by 1 test(s) - a comparison that stopped early says nobody gains
+      tests_moves::a_comparison_that_stops_early_never_says_nobody_gains
+M43 moves.rs: caught by 3 test(s) - anyone named in approved_by approves
+      tests_moves::a_comparison_that_stops_early_never_says_nobody_gains, tests_moves::tm08_a_move_into_a_looser_scope_waits_for_the_source_owner, tests_moves::tm09_approvals_never_pass_through_delegation
+M44 moves.rs: caught by 1 test(s) - a delegated mover approves its own move
+      tests_moves::tm09_a_person_does_not_approve_through_an_agent
+M45 moves.rs: caught by 1 test(s) - a rule left behind counts for nobody below the moved scope
+      tests_moves::tm08_a_rule_left_behind_counts_for_whoever_sits_below_the_moved_scope
+M46 moves.rs: caught by 1 test(s) - the comparison looks at the moved item only
+      tests_moves::tm08_a_rule_left_behind_counts_for_whoever_sits_below_the_moved_scope
+M47 impact.rs: caught by 1 test(s) - the comparison ignores field rules
+      tests_moves::tm08_a_move_into_a_looser_scope_waits_for_the_source_owner
+M48 impact.rs: caught by 1 test(s) - an unknown condition counts at its best on both sides
+      tests_moves::a_gain_that_depends_on_a_condition_counts
+M49 moves.rs: caught by 3 test(s) - a link ignores links_from
+      tests_moves::links_from_says_who_may_link_in, tests_moves::tm08_the_move_tests_compare_enough, tests_moves::tm09_links_follow_their_rules
+M50 moves.rs: caught by 3 test(s) - a link may point at what the person cannot open
+      tests_moves::tm08_the_move_tests_compare_enough, tests_moves::tm09_links_follow_their_rules, tests_moves::tm09_links_never_grant_and_follow_the_targets_rule
+M51 moves.rs: caught by 3 test(s) - a link needs no write on its source
+      tests_moves::tm08_the_move_tests_compare_enough, tests_moves::tm09_links_follow_their_rules, tests_moves::tm09_links_never_grant_and_follow_the_targets_rule
+M52 moves.rs: caught by 1 test(s) - a move needs no write on the item
+      tests_moves::tm08_owners_of_a_scope_hold_approve_move
+M53 moves.rs: caught by 1 test(s) - a move needs no write on the new parent
+      tests_moves::a_new_child_needs_write_on_its_new_parent
+M54 moves.rs: caught by 3 test(s) - a move crosses only the first scope of each side
+      tests_moves::a_scope_further_out_adds_a_rule_only_when_it_set_one, tests_moves::tm08_no_move_widens_past_the_rules, tests_moves::tm08_the_move_tests_compare_enough
+M55 moves.rs: caught by 1 test(s) - a move may leave its org
+      tests_moves::tm05_a_move_stays_in_its_tenant_and_its_org
+M56 data.rs: caught by 8 test(s) - boundary rules are not loaded
+      tests_moves::a_scope_further_out_adds_a_rule_only_when_it_set_one, tests_moves::an_owner_can_block_a_move_into_a_looser_scope, tests_moves::links_from_says_who_may_link_in, tests_moves::tm08_a_boundary_rule_stops_a_move_on_its_own_side, tests_moves::tm08_no_move_widens_past_the_rules, tests_moves::tm08_owners_of_a_scope_hold_approve_move and 2 more
