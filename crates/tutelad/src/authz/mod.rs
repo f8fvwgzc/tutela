@@ -10,9 +10,11 @@
 
 pub mod grpc;
 pub mod http;
+mod permissions;
 mod search;
 pub mod wire;
 
+pub use permissions::{PermissionMap, Permissions, UiAnswer, permissions};
 pub use search::{search_resource, search_subject};
 
 use axum::http::StatusCode;

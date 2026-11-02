@@ -420,6 +420,11 @@ fields      = ["invoice.amount"]
 routes      = ["PATCH /api/invoices/{id}"]
 when_denied = "readonly"
 
+[ui."invoices.status_cell"]
+fields      = ["invoice.status"]
+routes      = ["PATCH /api/invoices/{id}"]
+when_denied = "hide"
+
 [ui."projects.settings"]
 actions     = ["project:write"]
 routes      = ["PATCH /api/projects/{id}"]

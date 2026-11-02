@@ -308,6 +308,58 @@ pub struct SubjectResults {
     pub context: SubjectContextOut,
 }
 
+/// `resource` of a permission map: `path` and `attrs` are at the top level
+/// here (CONTRACTS.md 7.5).
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct MapResource {
+    /// A type name.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// The product's own id.
+    pub id: Option<String>,
+    /// The ancestors, nearest first; the last is the org.
+    pub path: Option<Vec<Entry>>,
+    /// The field values conditions read.
+    pub attrs: Option<BTreeMap<String, serde_json::Value>>,
+}
+
+/// The body of `POST /v1/authz/permissions`.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct PermissionsBody {
+    /// Who.
+    pub subject: Option<Subject>,
+    /// On what.
+    pub resource: Option<MapResource>,
+    /// Missing: every UI key of the model.
+    pub ui_keys: Option<Vec<String>>,
+    /// Extra actions to answer.
+    pub actions: Option<Vec<String>>,
+    /// Extra field keys to answer.
+    pub fields: Option<Vec<String>>,
+    /// Sent after the caller's own write.
+    pub at_least_revision: Option<u64>,
+}
+
+impl PermissionsBody {
+    /// What the request asks, for the ETag. The order of keys in the body
+    /// does not change it; the order of a list does. A missing list and an
+    /// empty one ask the same, except `ui_keys`, where missing means all.
+    #[must_use]
+    pub fn canonical(&self) -> serde_json::Value {
+        let resource = self.resource.as_ref();
+        let names = |l: &Option<Vec<String>>| l.clone().filter(|l| !l.is_empty());
+        serde_json::json!({
+            "type": resource.map(|r| r.kind.as_str()),
+            "id": resource.and_then(|r| r.id.as_deref()),
+            "path": resource.and_then(|r| r.path.as_ref()).filter(|p| !p.is_empty()),
+            "attrs": resource.and_then(|r| r.attrs.as_ref()).filter(|a| !a.is_empty()),
+            "ui_keys": self.ui_keys,
+            "actions": names(&self.actions),
+            "fields": names(&self.fields),
+        })
+    }
+}
+
 /// A request that does not parse. The text is short English with no values
 /// from the request, so it is safe to send and to log.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -482,6 +534,22 @@ pub fn kind(s: &Subject) -> Result<PrincipalKind, Invalid> {
         .into_iter()
         .find(|k| k.as_str() == s.kind)
         .ok_or(Invalid("`subject.type` is not a principal kind"))
+}
+
+/// The resource of a permission map.
+///
+/// # Errors
+///
+/// [`Invalid`] when a field is missing or does not parse.
+pub fn map_resource(r: MapResource) -> Result<ResourceRef, Invalid> {
+    resource(Resource {
+        kind: r.kind,
+        id: r.id,
+        properties: Some(ResourceProperties {
+            path: r.path,
+            attrs: r.attrs,
+        }),
+    })
 }
 
 /// A resource, parsed in full.

@@ -3,14 +3,15 @@
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Extension, FromRequest, Request, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::response::{IntoResponse as _, Response};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tutela_sdk::Identity;
 
 use super::wire::{
-    EvaluationBody, EvaluationResult, EvaluationsBody, EvaluationsResult, ResourceResults,
-    SearchBody, SubjectResults,
+    EvaluationBody, EvaluationResult, EvaluationsBody, EvaluationsResult, PermissionsBody,
+    ResourceResults, SearchBody, SubjectResults,
 };
 use crate::api::{AppState, Problem};
 
@@ -76,6 +77,31 @@ pub async fn search_subject(
     Body(body): Body<SearchBody>,
 ) -> Result<Json<SubjectResults>, Problem> {
     super::search_subject(&state, &id, body).await.map(Json)
+}
+
+/// `POST /v1/authz/permissions`. The answer is 304 with no body when
+/// `If-None-Match` names the current tag.
+pub async fn permissions(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    headers: HeaderMap,
+    Body(body): Body<PermissionsBody>,
+) -> Result<Response, Problem> {
+    let sent = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok());
+    let out = super::permissions(&state, &id, body, sent).await?;
+    let etag = HeaderValue::from_str(&out.etag).map_err(|_| Problem::stale("unavailable"))?;
+    let mut res = match out.map {
+        Some(map) => Json(map).into_response(),
+        None => StatusCode::NOT_MODIFIED.into_response(),
+    };
+    res.headers_mut().insert(header::ETAG, etag);
+    res.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-cache"),
+    );
+    Ok(res)
 }
 
 /// The AuthZEN metadata (section 9).

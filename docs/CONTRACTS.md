@@ -40,7 +40,7 @@ Only the left column exists in `tutela-contracts` after the first commit. Everyt
 | 4 | Tokens | Claim structs for access tokens and delegated tokens, and their claim checks (no size, header, signature or `epoch` check) | Full verification in `tutela-sdk` (A); token exchange in `tutelad` (B); own OIDC provider (C, optional) |
 | 5 | API keys | Parse, format check, display prefix | Hashing, storage, verification, rotation (A, B) |
 | 6 | Decision | The Decision object: effect, level, field mask, rule ids, reason, rev, obligations | `Pdp::check`, `Pdp::batch`, `Pdp::list_filter`, `Pdp::write_check` (A; built in `tutela-pdp`, [ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)) |
-| 7 | Remote check API | — | Built in `tutelad`: evaluation, search and gRPC (B). Permission map planned (B). |
+| 7 | Remote check API | — | Built in `tutelad` (B): evaluation, search, the permission map and gRPC. |
 | 8 | Events | CloudEvents envelope, event type grammar and names | Outbox, webhooks, SSE (B) |
 | 9 | audit.v1 | The audit.v1 record | Producer signatures, sequence numbers, local hash chain, forwarding to attache's evidence ledger (B) |
 | 10 | Versioning | The rules apply from the first commit | Deprecation headers on live endpoints (B) |
@@ -906,7 +906,7 @@ pub enum PdpError {
 
 ## 7. Remote check API
 
-**Status: Phase B.** Built: 7.1 to 7.4, the same calls in 7.6, and 7.7 and 7.8. Planned: 7.5. `tutelad` serves it. The shapes follow the OpenID AuthZEN Authorization API 1.0, checked against the published text. Where AuthZEN leaves room (`properties`, `context`), Tutela fixes the fields below. The design is in [ADR-0021](DECISIONS.md#adr-0021-the-check-api-one-code-path-a-snapshot-per-tenant-and-a-revision-lease).
+**Status: Phase B.** Built: all of this section. `tutelad` serves it. The shapes follow the OpenID AuthZEN Authorization API 1.0, checked against the published text. Where AuthZEN leaves room (`properties`, `context`), Tutela fixes the fields below. The design is in [ADR-0021](DECISIONS.md#adr-0021-the-check-api-one-code-path-a-snapshot-per-tenant-and-a-revision-lease).
 
 ### 7.1 Common rules
 
@@ -1091,7 +1091,8 @@ Request:
     "path": [
       { "type": "project", "id": "p-77" },
       { "type": "org", "id": "org_0193a1b2-c3d4-7f00-9a00-000000000002" }
-    ]
+    ],
+    "attrs": { "assignee": "user:usr_0193a1b2-c3d4-7a11-8b22-3c4d5e6f7081" }
   },
   "ui_keys": ["invoices.approve_button", "invoices.delete_button"],
   "actions": ["invoice:approve"],
@@ -1100,9 +1101,11 @@ Request:
 }
 ```
 
-- `subject.properties.act` may be added, as in 7.1.
-- `ui_keys` missing: every UI key the calling app declared.
-- `actions` and `fields` are optional extra keys to answer.
+- `subject.properties.act` may be added, as in 7.1. The rules of 7.1 on who may ask apply.
+- `resource.attrs` holds the field values conditions read, as in 7.2. It is needed when the type has a `grants_access` field.
+- `ui_keys` missing: every UI key of the model. A name that is not in the model is 400 `unknown_key`.
+- `actions` and `fields` are optional extra keys to answer. At most 2,000 names in each list; more is 400 `too_many_items`.
+- An action of another type than the resource is 400. A field of another type is `none`.
 
 Response (`ETag: "r42-9f86d081884c7d65"`):
 
@@ -1125,13 +1128,22 @@ Response (`ETag: "r42-9f86d081884c7d65"`):
 | `hide` | Do not render. |
 | `readonly` | Show the value, but not editable. |
 
-Caching: the client sends `If-None-Match` with the ETag and the same body. If nothing changed, the answer is `304 Not Modified` with no body. The ETag covers the revision, the subject and the request body.
+How a UI key gets its mode ([ADR-0023](DECISIONS.md#adr-0023-the-permission-map-and-a-tag-that-covers-the-answer)):
+- It is denied when one of its actions is denied, or one of its fields is `none`. A key about another type than the resource cannot be decided, so it is denied too. The mode is then `when_denied`, except that `readonly` becomes `hide` when a field is `none`: `readonly` shows the value, and the value cannot be read.
+- It is `readonly` when nothing is denied and a field is at `read`. Otherwise it is `show`.
+- `reason` is sent with `disable` only.
+
+A field's level comes from the `<type>:read` decision's mask: `write`, `read` or `none`.
+
+Caching: the client sends `If-None-Match` with the ETag and the same body. If nothing changed, the answer is `304 Not Modified` with no body. Weak tags (`W/`) and lists are read. `*` never gives a 304, because it holds no map. The answer has `Cache-Control: private, no-cache`.
+
+The ETag is `"r<rev>-<16 hex digits>"`. It covers the tenant, the revision, the digest of the model, the subject, the actors, the request **and the answer itself**. The answer is worked out on every call and the check for who may ask runs first, so a 304 can never hide a change or stand in for another principal's map. The answer must be in it: an assignment can expire and change the map before the revision moves (ADR-0020). Over gRPC, `if_none_match` and `not_modified` do this job, with the same tag.
 
 The map is a **UI hint only**. Every server route checks again.
 
 ### 7.6 gRPC `tutela.authz.v1`
 
-The same operations over gRPC: `Evaluate`, `Evaluations`, `SearchResource` and `SearchSubject` are built; `Permissions` is planned (Phase B). Service `tutela.authz.v1.Authz`, on the API port, behind the same token check. The handlers call the same code as HTTP. Messages carry the same fields with the same names and meanings as the JSON above, with these differences: `properties` is flat (`subject.act`, `resource.path`, `resource.attrs`), with no items `Evaluations` answers with one item, and `SearchResource` carries the filter as JSON text in `filter_json`, because a condition is a tree of open shape. The errors of 7.1 become gRPC codes: 400 `INVALID_ARGUMENT`, 401 `UNAUTHENTICATED`, 403 `PERMISSION_DENIED`, 503 `UNAVAILABLE`. The message starts with the problem code. The `.proto` file is `crates/tutela-contracts/proto/tutela/authz/v1/authz.proto`, and it is published with each release (section 10).
+The same operations over gRPC, all built: `Evaluate`, `Evaluations`, `SearchResource`, `SearchSubject` and `Permissions`. Service `tutela.authz.v1.Authz`, on the API port, behind the same token check. The handlers call the same code as HTTP. Messages carry the same fields with the same names and meanings as the JSON above, with these differences: `properties` is flat (`subject.act`, `resource.path`, `resource.attrs`), with no items `Evaluations` answers with one item, and `SearchResource` carries the filter as JSON text in `filter_json`, because a condition is a tree of open shape. The errors of 7.1 become gRPC codes: 400 `INVALID_ARGUMENT`, 401 `UNAUTHENTICATED`, 403 `PERMISSION_DENIED`, 503 `UNAVAILABLE`. The message starts with the problem code. The `.proto` file is `crates/tutela-contracts/proto/tutela/authz/v1/authz.proto`, and it is published with each release (section 10).
 
 ---
 

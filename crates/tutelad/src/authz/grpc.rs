@@ -218,6 +218,30 @@ fn page(p: wire::PageOut) -> pb::PageResponse {
     }
 }
 
+fn permissions_body(r: pb::PermissionsRequest) -> Result<wire::PermissionsBody, Status> {
+    Ok(wire::PermissionsBody {
+        subject: r.subject.map(subject).transpose()?,
+        resource: r.resource.map(|res| wire::MapResource {
+            kind: res.r#type,
+            id: (!res.id.is_empty()).then_some(res.id),
+            path: Some(
+                res.path
+                    .into_iter()
+                    .map(|e| wire::Entry {
+                        kind: e.r#type,
+                        id: e.id,
+                    })
+                    .collect(),
+            ),
+            attrs: Some(res.attrs.into_iter().map(|(k, v)| (k, attr(v))).collect()),
+        }),
+        ui_keys: r.ui_keys.map(|l| l.values),
+        actions: (!r.actions.is_empty()).then_some(r.actions),
+        fields: (!r.fields.is_empty()).then_some(r.fields),
+        at_least_revision: r.at_least_revision,
+    })
+}
+
 #[tonic::async_trait]
 impl Authz for AuthzService {
     async fn evaluate(
@@ -301,6 +325,46 @@ impl Authz for AuthzService {
                 .collect(),
             page: Some(page(out.page)),
             rev: out.context.tutela.rev,
+        }))
+    }
+
+    async fn permissions(
+        &self,
+        req: Request<pb::PermissionsRequest>,
+    ) -> Result<Response<pb::PermissionsResponse>, Status> {
+        let id = identity(&req)?;
+        let r = req.into_inner();
+        let sent = (!r.if_none_match.is_empty()).then(|| r.if_none_match.clone());
+        let body = permissions_body(r)?;
+        let out = super::permissions(&self.state, &id, body, sent.as_deref()).await?;
+        let Some(map) = out.map else {
+            return Ok(Response::new(pb::PermissionsResponse {
+                etag: out.etag,
+                not_modified: true,
+                ..pb::PermissionsResponse::default()
+            }));
+        };
+        Ok(Response::new(pb::PermissionsResponse {
+            rev: map.rev,
+            ui: map
+                .ui
+                .into_iter()
+                .map(|(k, v)| {
+                    let answer = pb::UiAnswer {
+                        mode: v.mode.to_owned(),
+                        reason: v.reason.unwrap_or_default(),
+                    };
+                    (k, answer)
+                })
+                .collect(),
+            actions: map.actions.into_iter().collect(),
+            fields: map
+                .fields
+                .into_iter()
+                .map(|(k, v)| (k, v.to_owned()))
+                .collect(),
+            etag: out.etag,
+            not_modified: false,
         }))
     }
 }

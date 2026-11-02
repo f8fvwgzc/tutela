@@ -14,6 +14,8 @@ service Authz {
   rpc SearchResource(SearchRequest) returns (SearchResourceResponse);
   // POST /access/v1/search/subject.
   rpc SearchSubject(SearchRequest) returns (SearchSubjectResponse);
+  // POST /v1/authz/permissions.
+  rpc Permissions(PermissionsRequest) returns (PermissionsResponse);
 }
 
 // One link of the `act` chain: subject.properties.act in JSON.
@@ -168,4 +170,32 @@ message SearchSubjectResponse {
   repeated Subject results = 1;
   PageResponse page = 2;
   uint64 rev = 3;
+}
+
+message PermissionsRequest {
+  Subject subject = 1;
+  Resource resource = 2;
+  // Missing: every UI key of the model.
+  StringList ui_keys = 3;
+  repeated string actions = 4;
+  repeated string fields = 5;
+  optional uint64 at_least_revision = 6;
+  // The If-None-Match header.
+  string if_none_match = 7;
+}
+
+message UiAnswer {
+  string mode = 1;
+  string reason = 2;
+}
+
+message PermissionsResponse {
+  uint64 rev = 1;
+  map<string, UiAnswer> ui = 2;
+  map<string, bool> actions = 3;
+  map<string, string> fields = 4;
+  // The ETag header: the same tag as over HTTP.
+  string etag = 5;
+  // true is the 304 of HTTP: only `etag` is set.
+  bool not_modified = 6;
 }
