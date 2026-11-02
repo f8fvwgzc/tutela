@@ -233,7 +233,7 @@ Two assignments can meet at the same scope: one direct, one or more through grou
 ### 6.4 Groups (New)
 
 - A group belongs to one org. Members are principals or other groups.
-- The group closure is read at query time, with a recursive query over `group_member`. There is no closure table to keep current ([ADR-0020](DECISIONS.md#adr-0020-the-bindings-store-closures-at-read-time-and-assignment-expiry)). Inside `tutela-pdp`, each principal's groups are held in memory per revision.
+- The group closure is read at query time, with a recursive query over `group_member`. There is no closure table to keep current. Measured through row-level security with 20 tenants, 10,000 users and groups 32 deep: p99 under 1.5 ms for a whole transaction ([ADR-0020](DECISIONS.md#adr-0020-the-bindings-store-closures-at-read-time-and-assignment-expiry)). Inside `tutela-pdp`, each principal's groups are held in memory per revision.
 - In Phase A, group keys are unique in the tenant, so a binding or an `in_group` condition names one group ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)).
 - Limits, checked when a tenant is loaded: groups nest at most 32 levels deep, the closure holds at most 1,000,000 (principal, group) pairs, and computing it takes at most 4,000,000 steps. Data above a limit is refused for that tenant only; its bundle loaded before and other tenants keep working.
 - Removing a principal from a group removes its access through that group in the same transaction as the revision bump.

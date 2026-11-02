@@ -806,6 +806,31 @@ Planting bugs confirms the tests can fail: an open policy, no `FORCE`, `Recyclin
 7. **`remove_principal`** takes a principal's assignments and memberships in one revision (PERMISSION-MODEL.md 6.4).
 8. **An expired row does not hold its place.** `assign` removes a row past its expiry for the same (subject, scope) in its own transaction.
 
+**Measured** ([#55](https://github.com/f8fvwgzc/tutela/issues/55), `cargo bench -p tutela-store --bench closure`):
+- Machine: Apple M2 Pro, 16 GiB, macOS 26.6.2, PostgreSQL 16.14 (Homebrew) in a new cluster with the default config and `--locale=C`, on loopback TCP, load about 2.
+- Data: the spike's closure world in each of 20 tenants, in one set of tables (613,115 `group_member`, 400,000 `scope_path` and 200,000 `role_assignment` rows). Each tenant has 10,000 users, 500 groups in 8 levels, a chain of 32 nested groups, 20,000 scopes with paths of 1 to 32, and 10,000 assignments.
+- Each run is a real request: a role that owns nothing, forced row-level security, a new transaction, `enter`, the store call, `COMMIT`, with a random tenant and input. 1,000 warm-up runs, then 10,000 measured, with unprepared statements. The `tx` figures are the whole transaction; `call` is the store call alone.
+- The gate is the threshold fixed before the spike: p99 under 5 ms for G, G32 and P. **All five runs pass.** Each p99 below is the worst of the five; each p50 is their mean.
+
+| Query | p50 tx | p99 call | p99 tx | Gated? |
+|---|---|---|---|---|
+| **G** groups of a user (about 50 rows) | 0.99 ms | 0.90 ms | **1.44 ms** | yes |
+| **G32** groups of a user at the bottom of 32 levels | 1.07 ms | | **1.46 ms** | yes |
+| **P** path of a scope at depth 32 | 0.43 ms | 0.32 ms | **0.67 ms** | yes |
+| A assignments that apply to a user (about 125 rows) | 1.78 ms | | 2.49 ms | information |
+| M32 members at the end of the chain | 0.58 ms | | 0.95 ms | information |
+| **B** scopes below a scope at depth 16 | 8.17 ms | | **11.0 ms** | information |
+| M members of the group that holds everyone (10,000 rows) | 20.0 ms | | 22.9 ms | information |
+| L a whole tenant loaded | 84.3 ms | | 90.6 ms | information |
+| W a checked membership write, and its removal | 95.6 ms | | 104 ms | information |
+
+M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw runs 1 to 5 are in [`docs/bench-results/`](bench-results/) as `closure-run*.txt`.
+
+**What the numbers say.**
+- Going up is fast, so read-time closure holds. The real calls cost more than the spike's prepared statement (p99 0.18 ms), because they plan each statement and pay a transaction. They are still a third of the budget.
+- **The path closure going down (B) is over 5 ms, and it does not use the GIN index.** ADR-0014 item 8 said a provider over `scope_path` could answer `ScopePaths::below` with that index. Under row-level security it cannot: `@>` on arrays is not `leakproof`, so Postgres must run the policy first, and it reads all of the tenant's rows (`EXPLAIN` as the service role shows a scan on `scope_path_pkey` with 20,000 rows filtered). `tutela-pdp` does not need this path, because `ScopePathSnapshot` answers from memory. A SQL provider for `below` would be O(tenant's scopes). Do not build one without measuring it.
+- W is the cost ADR-0014 item 4 warned about: a write reads the whole tenant, about 48 ms each at this size. It is fine for admin work, and it is not fine for bulk imports. The sweep skips this check.
+
 **Consequences.**
 - **Part 2 must honour `next_expiry`.** A signed bundle's `expires_at` must be no later than its `next_expiry`, or a PDP keeps allowing until the sweep and a push. `tutela_pdp::Pdp` does not know about expiry; the loader does.
 - A cache that ignores `next_expiry` is late by up to the sweep interval, plus the time to reach it. PERMISSION-MODEL.md 16.1 has the row.

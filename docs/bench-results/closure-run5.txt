@@ -1,0 +1,24 @@
+# start 2026-11-02 13:44:39 JST, load { 2.26 2.12 2.04 }, Apple M2 Pro, git 5fb7cf6 + this branch, cargo/rustc running: 0/0
+postgres 16.14 (Homebrew)
+setup: 20 tenants, 613115 group_member, 400000 scope_path, 200000 role_assignment rows in 19.3 s
+G groups of a user call: n=10000 p50=572.0us p90=694.5us p99=858.7us p99.9=1330.0us max=2917.4us  (avg rows 50.2)
+G groups of a user tx  : n=10000 p50=987.3us p90=1127.1us p99=1381.7us p99.9=1973.5us max=3333.4us
+G32 groups of a user at the bottom of 32 levels call: n=10000 p50=645.9us p90=756.5us p99=904.2us p99.9=1204.0us max=3901.9us  (avg rows 77.9)
+G32 groups of a user at the bottom of 32 levels tx  : n=10000 p50=1074.3us p90=1192.9us p99=1462.5us p99.9=2023.8us max=5359.4us
+P path of a scope at depth 32 call: n=10000 p50=196.8us p90=218.3us p99=321.9us p99.9=505.8us max=1070.2us  (avg rows 32.0)
+P path of a scope at depth 32 tx  : n=10000 p50=429.3us p90=474.6us p99=638.6us p99.9=1052.2us max=1711.1us
+A assignments that apply to a user (info) call: n=10000 p50=1345.9us p90=1539.6us p99=1777.1us p99.9=2135.0us max=3120.1us  (avg rows 125.3)
+A assignments that apply to a user (info) tx  : n=10000 p50=1783.4us p90=1986.7us p99=2302.9us p99.9=2972.3us max=5194.2us
+B scopes below a scope at depth 16 (info) call: n=10000 p50=7722.2us p90=9533.5us p99=10388.3us p99.9=11142.2us max=23133.7us  (avg rows 15.8)
+B scopes below a scope at depth 16 (info) tx  : n=10000 p50=8237.4us p90=10054.0us p99=10931.9us p99.9=11700.8us max=23839.8us
+M members of the group of everyone (info) call: n=200 p50=19386.3us p90=20140.6us p99=21951.0us p99.9=26908.5us max=26908.5us  (avg rows 10000.0)
+M members of the group of everyone (info) tx  : n=200 p50=19962.8us p90=20718.3us p99=22539.8us p99.9=27477.5us max=27477.5us
+M32 members at the end of the chain (info) call: n=10000 p50=341.8us p90=372.7us p99=499.5us p99.9=847.0us max=1433.8us  (avg rows 1.0)
+M32 members at the end of the chain (info) tx  : n=10000 p50=581.5us p90=631.7us p99=829.3us p99.9=1422.2us max=3023.2us
+L a whole tenant loaded (info) call: n=200 p50=83286.0us p90=86794.2us p99=88981.8us p99.9=89680.3us max=89680.3us  (avg rows 10000.0)
+L a whole tenant loaded (info) tx  : n=200 p50=84274.9us p90=87749.0us p99=90120.5us p99.9=90755.8us max=90755.8us
+W a checked membership write and its removal (info) call: n=200 p50=94576.7us p90=98407.8us p99=102129.6us p99.9=103294.8us max=103294.8us  (avg rows 1.0)
+W a checked membership write and its removal (info) tx  : n=200 p50=95490.0us p90=99446.8us p99=103230.5us p99.9=104290.4us max=104290.4us
+gate: PASS (G, G32 and P tx p99 < 5 ms)
+# exit 0
+# end 13:48:08, load { 1.59 1.88 1.95 }
