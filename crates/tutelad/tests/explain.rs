@@ -62,7 +62,7 @@ impl CloneSeed for Seed {
 }
 
 async fn post(w: &World, path: &str, asker: &str, s: &Seed, body: &Value) -> (StatusCode, Value) {
-    let t = w.issuer.token(asker, &s.tid, 0);
+    let t = w.issuer.console(asker, &s.tid, 0);
     let res = w.post(path, &t, body).await;
     let status = res.status();
     (status, res.json().await.unwrap_or(Value::Null))
@@ -184,7 +184,7 @@ async fn a_simulation_answers_for_a_candidate_and_writes_nothing() {
     assert_eq!(v["current"]["decision"], false);
     assert_eq!(v["changed"], true);
     // The live answer is the old one.
-    let t = w.issuer.token(SA, &s.tid, 0);
+    let t = w.issuer.console(SA, &s.tid, 0);
     let live: Value = w
         .post("/access/v1/evaluation", &t, &ask(USER, "invoice:write", &s))
         .await
@@ -239,19 +239,26 @@ async fn a_simulation_answers_for_a_candidate_and_writes_nothing() {
     w.finish().await;
 }
 
+/// gRPC's `Explain` is for services (ADR-0032): a service that holds
+/// `read_audit` gets the same explanation over both, and a person's token
+/// is refused there.
 #[tokio::test]
 async fn http_and_grpc_explain_alike() {
+    const AUDITOR: &str = "sa:sa_0193a1b2-c3d4-7a11-8b22-3c4d5e6f70c3";
     let Some(mut w) = world().await else { return };
     setup(&mut w).await;
+    let s = w.a.clone_seed();
+    assign(&mut w.d.owner, &s, AUDITOR, "owner", &s.org).await;
     let s = &w.a;
-    let (_, http) = post(
+    let (status, http) = post(
         &w,
         "/v1/authz/explain",
-        ADMIN,
+        AUDITOR,
         s,
         &ask(USER, "invoice:read", s),
     )
     .await;
+    assert_eq!(status, StatusCode::OK, "{http}");
     let channel = tonic::transport::Endpoint::from_shared(format!("http://{}", w.s.api))
         .unwrap()
         .connect()
@@ -279,10 +286,28 @@ async fn http_and_grpc_explain_alike() {
         }),
         context: None,
     });
-    let token = w.issuer.token(ADMIN, &s.tid, 0);
+    let asked = req.get_ref().clone();
+    let token = w.issuer.console(AUDITOR, &s.tid, 0);
     req.metadata_mut()
         .insert("authorization", format!("Bearer {token}").parse().unwrap());
     let out = client.explain(req).await.unwrap().into_inner();
+    // A person's admin token is for the HTTP admin routes, and its
+    // `tutela-authz` token has no right to explain.
+    for (token, code) in [
+        (
+            w.issuer.console(ADMIN, &s.tid, 0),
+            tonic::Code::Unauthenticated,
+        ),
+        (
+            w.issuer.token(ADMIN, &s.tid, 0),
+            tonic::Code::PermissionDenied,
+        ),
+    ] {
+        let mut r = tonic::Request::new(asked.clone());
+        r.metadata_mut()
+            .insert("authorization", format!("Bearer {token}").parse().unwrap());
+        assert_eq!(client.explain(r).await.unwrap_err().code(), code);
+    }
     let tutela: Value = serde_json::from_str(&out.explanation_json).unwrap();
     assert_eq!(tutela, http["context"]["tutela"]);
     assert_eq!(out.decision, http["decision"].as_bool().unwrap());

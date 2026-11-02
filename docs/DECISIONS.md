@@ -48,6 +48,7 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0029](#adr-0029-two-person-publish) | Two-person publish | Accepted |
 | [0030](#adr-0030-tutelads-own-issuer-signing-keys-the-jwks-and-paths-without-a-token) | `tutelad`'s own issuer: signing keys, the JWKS, and paths without a token | Accepted |
 | [0031](#adr-0031-token-exchange-the-tenant-from-the-trust-list-a-person-from-iss-sub) | Token exchange: the tenant from the trust list, a person from (iss, sub) | Accepted |
+| [0032](#adr-0032-admin-tokens-a-person-steps-up-a-pipeline-keeps-its-service-token) | Admin tokens: a person steps up, a pipeline keeps its service token | Accepted |
 
 ---
 
@@ -1222,3 +1223,37 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 - **Read the tenant from an `organization` claim.** A tenant-controlled IdP could name another tenant (TM-04, TM-05); the trust list is the operator's.
 - **Check the epoch per request in the database.** One more query on every check; the book follows the snapshot's lease instead.
 
+---
+
+## ADR-0032: Admin tokens: a person steps up, a pipeline keeps its service token
+
+**Status:** Accepted, 2026-11-02. Built in Phase B, part 3a. It does what [ADR-0026](#adr-0026-a-tenant-owns-its-model-versions) and [ADR-0028](#adr-0028-explain-and-simulate-need-read_audit-on-the-resource) left to part 3: the model routes, explain and simulate take `aud=tutela-admin`.
+
+**Context.** CONTRACTS.md 4.4, TM-01 and TM-06 want the Console and the embeddable admin components to use their own audience, `tutela-admin`, with a 5-minute life and step-up MFA (`acr`), never accepted by a product API. Until now the model routes, explain and simulate took a `tutela-authz` token with admin keys at every org (or `read_audit` on the resource). `tutela apply` in a pipeline (part 4) calls `POST /v1/models/publish` with a service account, which cannot do MFA. The ROADMAP asks to decide whether `tutela-authz` tokens keep working there.
+
+**Decision.**
+
+1. **Token exchange issues `aud=tutela-admin`** (CONTRACTS.md 4.8) only:
+   - for a person (`user:`), never for a service, a key or an agent, and never with an actor;
+   - when the subject token's `acr` is one of `TUTELA_ADMIN_ACR`, a comma-separated list the operator sets (CONTRACTS.md 4.4: "the values the deployment configures as MFA"). With the variable unset, no admin token is issued at all: there is no default that could be mistaken for MFA. `amr` is not read: `["ext"]` says nothing, and RFC 8176 values are not the deployment's policy;
+   - for the earlier of 300 s and `TUTELA_TOKEN_TTL_SECS`, and never past the subject token's `exp`.
+   A subject token without step-up gets `invalid_grant` with the description "step-up authentication is required", the one refusal that says why: the Console must know to ask for MFA.
+2. **The admin routes** are `/v1/models` and everything under it, `POST /v1/authz/explain` and `POST /v1/authz/simulate`. On them:
+   - a **person** must present an admin token: `aud=tutela-admin`, and its `acr` in `TUTELA_ADMIN_ACR`, checked again at the route;
+   - a **service** (`sa`, `key`) keeps its `tutela-authz` token. **This is the answer for `tutela apply` in a pipeline**: a service account cannot step up, and the checks that matter for it stay: admin keys at every org of the tenant on data that has just been checked (ADR-0026 item 8), an approval token for any widening change (ADR-0015), and two-person publish where the tenant has it (ADR-0029). An admin token for a service is refused;
+   - an agent, a delegated token and an external token are refused, as before.
+3. **Every other route refuses an admin token** (TM-01): the main verifier's audience is `tutela-authz`, so an admin token fails its audience step there with 401. Only the admin routes run a second verifier, for `tutela-admin`, which trusts the trust file's Tutela-format issuers and the own issuer, never an external issuer, and never accepts a delegated token. The audience a token names picks the verifier; each verifier still checks everything.
+4. **gRPC** has no admin verifier. Its `Explain` and `Simulate` are for services; a person's `tutela-authz` token is refused there.
+5. **The lifetime limit** of 300 s for `tutela-admin` is the verifier's (`tutela-contracts`), so a 6-minute admin token is refused wherever it is presented.
+
+**Consequences.**
+- The Console (part 4) exchanges the person's Keycloak token, after step-up, for an admin token, and calls the admin routes with it. It needs `TUTELA_ADMIN_ACR` set to what Keycloak's step-up gives.
+- A person's `tutela-authz` token that worked on these routes before now gets 403. No release had it.
+- A service account that holds the admin keys at every org can still publish without MFA. That is the pipeline's job; part 3b's audit log must show who published and with which approval.
+- Part 3c's `tutela.admin.v1` (gRPC) needs the same rule: either an admin verifier on its own audience, or services only.
+
+**Alternatives considered.**
+- **`tutela-admin` only.** A pipeline would need a person's MFA for every deploy, or a way for a service to fake it.
+- **Both audiences for everyone.** Step-up would mean nothing: a person would send the `tutela-authz` token.
+- **A third audience for pipelines.** The service account already is the difference, and the admin keys and the approval token are the stronger checks.
+- **Check `amr` contains `mfa`.** Each IdP writes `amr` its own way; the deployment's `acr` policy is what CONTRACTS.md 4.4 names.

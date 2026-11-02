@@ -79,6 +79,10 @@ pub struct Config {
     /// exchange, at most 600 s (CONTRACTS.md 4.2). It never outlives the
     /// token it was exchanged for.
     pub token_ttl: Duration,
+    /// `TUTELA_ADMIN_ACR`: the `acr` values that count as step-up MFA for an
+    /// admin token (CONTRACTS.md 4.4, ADR-0032), comma-separated. Empty:
+    /// no admin token is issued or accepted for a person.
+    pub admin_acr: Vec<String>,
 }
 
 /// The secrets `tutelad` needs at start-up. `Debug` shows none of them.
@@ -286,6 +290,19 @@ impl Config {
             (60..=MAX_ACCESS_TOKEN_LIFETIME_SECS).contains(&token_ttl.as_secs()),
             "TUTELA_TOKEN_TTL_SECS must be from 60 to 600"
         );
+        let admin_acr: Vec<String> = get("TUTELA_ADMIN_ACR")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_owned)
+            .collect();
+        ensure!(
+            admin_acr
+                .iter()
+                .all(|v| v.len() <= 64 && v.bytes().all(|b| b.is_ascii_graphic())),
+            "TUTELA_ADMIN_ACR is a comma-separated list of acr values"
+        );
         let key_refresh = seconds(&get, "TUTELA_KEY_REFRESH_SECS", "10")?;
         ensure!(
             !key_refresh.is_zero() && key_refresh <= jwks_cache,
@@ -311,6 +328,7 @@ impl Config {
             jwks_cache,
             key_refresh,
             token_ttl,
+            admin_acr,
         })
     }
 
@@ -804,6 +822,17 @@ mod tests {
         assert_eq!(c.audience.as_str(), DEFAULT_AUDIENCE);
         assert!(!c.dev_mode);
         assert!(!format!("{c:?}").contains("hunter2"));
+        // No step-up value by default: no admin token for a person.
+        assert!(c.admin_acr.is_empty());
+        let mut acr = good.to_vec();
+        acr.push(("TUTELA_ADMIN_ACR", " mfa, gold ,".to_owned()));
+        assert_eq!(
+            Config::from_vars(vars(&acr)).unwrap().admin_acr,
+            ["mfa", "gold"]
+        );
+        let mut bad_acr = good.to_vec();
+        bad_acr.push(("TUTELA_ADMIN_ACR", "m f a".to_owned()));
+        assert!(Config::from_vars(vars(&bad_acr)).is_err());
 
         let e = Config::from_vars(vars(&good[1..])).unwrap_err();
         assert_eq!(e.to_string(), "TUTELA_DATABASE_URL is not set");

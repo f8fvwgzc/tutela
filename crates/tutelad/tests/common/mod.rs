@@ -312,8 +312,12 @@ pub fn config(database_url: &str, trust: TrustFile) -> Config {
         jwks_cache: Duration::from_secs(300),
         key_refresh: Duration::from_secs(10),
         token_ttl: Duration::from_secs(300),
+        admin_acr: vec![STEP_UP.to_owned()],
     }
 }
+
+/// The `acr` the tests' deployment counts as step-up MFA.
+pub const STEP_UP: &str = "mfa";
 
 /// The test master key and pepper.
 pub fn secrets() -> tutelad::config::Secrets {
@@ -647,6 +651,59 @@ impl Issuer {
                 "act": {"sub": agent}, "cap": {}, "run_id": "run-1",
             }),
         )
+    }
+
+    /// An admin token (`aud=tutela-admin`) of `sub` with `acr`, issued
+    /// `age` seconds ago and living `life` seconds.
+    pub fn admin_token(&self, sub: &str, tid: &str, acr: &str, age: u64, life: u64) -> String {
+        self.admin_token_at(sub, tid, acr, age, life, 0)
+    }
+
+    /// [`Issuer::admin_token`] carrying `rev`.
+    pub fn admin_token_at(
+        &self,
+        sub: &str,
+        tid: &str,
+        acr: &str,
+        age: u64,
+        life: u64,
+        rev: u64,
+    ) -> String {
+        let iat = now() - age;
+        let mut claims = json!({
+            "iss": ISS, "sub": sub, "aud": "tutela-admin", "azp": "tutela-console",
+            "exp": iat + life, "iat": iat, "nbf": iat,
+            "jti": uuid::Uuid::now_v7().to_string(),
+            "tid": tid, "epoch": 0, "rev": rev, "acr": acr,
+        });
+        if sub.starts_with("user:") {
+            claims["sid"] = json!("ses_0193a1b2-c3d4-7123-8456-789abcdef012");
+            claims["amr"] = json!(["pwd", "otp"]);
+        }
+        self.sign_claims(&claims)
+    }
+
+    /// What the Console or a pipeline sends to the admin routes (ADR-0032):
+    /// a person's admin token after step-up, a service's own token.
+    pub fn console(&self, sub: &str, tid: &str, rev: u64) -> String {
+        if sub.starts_with("user:") {
+            self.admin_token_at(sub, tid, STEP_UP, 0, 300, rev)
+        } else {
+            self.token(sub, tid, rev)
+        }
+    }
+
+    /// A person's admin token from another session.
+    pub fn second_console_session(&self, sub: &str, tid: &str) -> String {
+        let now = now();
+        self.sign_claims(&json!({
+            "iss": ISS, "sub": sub, "aud": "tutela-admin", "azp": "tutela-console",
+            "exp": now + 300, "iat": now, "nbf": now,
+            "jti": uuid::Uuid::now_v7().to_string(),
+            "sid": "ses_0193a1b2-c3d4-7123-8456-000000000002",
+            "amr": ["pwd", "otp"], "acr": STEP_UP,
+            "tid": tid, "epoch": 0, "rev": 0,
+        }))
     }
 
     /// A token of `sub` from another session.

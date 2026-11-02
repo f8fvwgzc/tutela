@@ -86,13 +86,13 @@ fn code(v: &Value) -> &str {
 }
 
 async fn version(w: &World, s: &Seed) -> i64 {
-    let t = w.issuer.token(ALICE, &s.tid, 0);
+    let t = w.issuer.console(ALICE, &s.tid, 0);
     let (_, v) = call(w, "GET", "/v1/models", &t, &Value::Null).await;
     v["active"]["version"].as_i64().unwrap()
 }
 
 async fn propose(w: &World, s: &Seed, who: &str, source: &str) -> Value {
-    let t = w.issuer.token(who, &s.tid, 0);
+    let t = w.issuer.console(who, &s.tid, 0);
     let body = json!({"source": source, "expected_version": version(w, s).await});
     let (status, v) = call(w, "POST", "/v1/models/proposals", &t, &body).await;
     assert_eq!(status, StatusCode::OK, "{v}");
@@ -118,8 +118,8 @@ async fn tm08_the_same_principal_never_proposes_and_approves() {
 
     // Alice herself, from her session or another one.
     for t in [
-        w.issuer.token(ALICE, &s.tid, 0),
-        w.issuer.second_session(ALICE, &s.tid),
+        w.issuer.console(ALICE, &s.tid, 0),
+        w.issuer.second_console_session(ALICE, &s.tid),
     ] {
         let (status, v) = approve(&w, s, &t, &p["id"], json!({})).await;
         assert_eq!(
@@ -158,13 +158,13 @@ async fn tm08_the_same_principal_never_proposes_and_approves() {
 
     // Others who may not change the model.
     for who in [USER, SA, STRANGER] {
-        let t = w.issuer.token(who, &s.tid, 0);
+        let t = w.issuer.console(who, &s.tid, 0);
         let (status, _) = approve(&w, s, &t, &p["id"], json!({})).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{who}");
     }
 
     // Bob approves, and it publishes.
-    let t = w.issuer.token(BOB, &s.tid, 0);
+    let t = w.issuer.console(BOB, &s.tid, 0);
     let (status, v) = approve(&w, s, &t, &p["id"], json!({})).await;
     assert_eq!(status, StatusCode::OK, "{v}");
     let (_, got) = call(
@@ -201,7 +201,7 @@ async fn tm08_a_widening_proposal_still_needs_its_token() {
     let s = &w.a;
     let p = propose(&w, s, ALICE, &with_reader("write")).await;
     assert_eq!(p["class"], "widening");
-    let t = w.issuer.token(BOB, &s.tid, 0);
+    let t = w.issuer.console(BOB, &s.tid, 0);
     let (status, v) = approve(&w, s, &t, &p["id"], json!({})).await;
     assert_eq!(
         (status, code(&v)),
@@ -245,8 +245,8 @@ async fn while_it_is_on_a_model_is_published_only_through_two_people() {
     admins(&mut w).await;
     let s = &w.a;
     let (ta, tb) = (
-        w.issuer.token(ALICE, &s.tid, 0),
-        w.issuer.token(BOB, &s.tid, 0),
+        w.issuer.console(ALICE, &s.tid, 0),
+        w.issuer.console(BOB, &s.tid, 0),
     );
     let set = |on: bool| json!({"two_person": on});
     let (status, v) = call(&w, "PUT", "/v1/models/settings", &ta, &set(true)).await;
@@ -261,7 +261,7 @@ async fn while_it_is_on_a_model_is_published_only_through_two_people() {
         (StatusCode::FORBIDDEN, "two_person_required")
     );
     // Tenant B did not turn it on.
-    let tb_b = w.issuer.token(ALICE, &w.b.tid, 0);
+    let tb_b = w.issuer.console(ALICE, &w.b.tid, 0);
     let (_, v) = call(&w, "GET", "/v1/models/settings", &tb_b, &Value::Null).await;
     assert_eq!(v["two_person"], false);
 
@@ -277,7 +277,7 @@ async fn while_it_is_on_a_model_is_published_only_through_two_people() {
 
     // Who may not touch the setting.
     for who in [USER, SA, AGENT] {
-        let t = w.issuer.token(who, &s.tid, 0);
+        let t = w.issuer.console(who, &s.tid, 0);
         let (status, _) = call(&w, "PUT", "/v1/models/settings", &t, &set(true)).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{who}");
     }
@@ -289,7 +289,7 @@ async fn a_proposal_goes_stale_when_its_report_would_change() {
     let Some(mut w) = world().await else { return };
     admins(&mut w).await;
     let a = w.a.clone_seed();
-    let tb = w.issuer.token(BOB, &a.tid, 0);
+    let tb = w.issuer.console(BOB, &a.tid, 0);
 
     // A change of data that the report does not see keeps it fresh: an
     // approver role is not the role the proposal changes.
@@ -331,7 +331,7 @@ async fn a_proposal_goes_stale_when_its_report_would_change() {
         "when_denied = \"disable\"\n\n[ui.\"invoices.amount_cell\"]",
     );
     let body = json!({"source": other, "expected_version": version(&w, &a).await});
-    let ta = w.issuer.token(ALICE, &a.tid, 0);
+    let ta = w.issuer.console(ALICE, &a.tid, 0);
     let (status, v) = call(&w, "POST", "/v1/models/publish", &ta, &body).await;
     assert_eq!(status, StatusCode::OK, "{v}");
     let (status, v) = approve(&w, &a, &tb, &p["id"], json!({})).await;
@@ -361,7 +361,7 @@ async fn a_proposal_with_a_report_cut_short_goes_stale_on_any_change() {
     };
     admins(&mut w).await;
     let a = w.a.clone_seed();
-    let tb = w.issuer.token(BOB, &a.tid, 0);
+    let tb = w.issuer.console(BOB, &a.tid, 0);
     let p = propose(&w, &a, ALICE, &with_reader("none")).await;
     assert_eq!(p["impact"]["complete"], false);
     assign(&mut w.d.owner, &a, STRANGER, "approver").await;
@@ -384,7 +384,7 @@ async fn tm05_a_proposal_belongs_to_its_tenant() {
     admins(&mut w).await;
     let p = propose(&w, &w.a, ALICE, &with_reader("none")).await;
     // Bob owns tenant B too; his token for B finds nothing of tenant A's.
-    let t = w.issuer.token(BOB, &w.b.tid, 0);
+    let t = w.issuer.console(BOB, &w.b.tid, 0);
     let path = format!("/v1/models/proposals/{}", p["id"].as_str().unwrap());
     let (status, _) = call(&w, "GET", &path, &t, &Value::Null).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -394,7 +394,7 @@ async fn tm05_a_proposal_belongs_to_its_tenant() {
     assert_eq!(list, json!([]));
     // Who may not look or propose.
     for who in [USER, SA, AGENT] {
-        let t = w.issuer.token(who, &w.a.tid, 0);
+        let t = w.issuer.console(who, &w.a.tid, 0);
         let (status, _) = call(&w, "GET", "/v1/models/proposals", &t, &Value::Null).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{who}");
         let body = json!({"source": with_reader("none"), "expected_version": 0});

@@ -128,3 +128,9 @@ These matter to whoever runs `tutelad`, and to a product that verifies its token
 - **For attache and texc-symphony, when they bump:** a token from `tutelad` has `iss = TUTELA_ISSUER`. Add that issuer to the `tutela-sdk` trust list with `jwks_uri = <TUTELA_ISSUER>/.well-known/jwks.json` and `algs = ["ES256"]`, with the tenants you serve, and register your audience (`symphony`, ...) in `tutelad`'s trust file. A person's token from Keycloak is exchanged once; for another audience, exchange the Tutela token. Nothing changes in `tutela-sdk`'s verifier for these tokens.
 - **New in `tutela-store`:** `provision_user`, `principal_state`, `revoke_sessions`, `set_disabled`, `register_agent`, `agent_for_workload`, `revocations`, `note_exchange`.
 
+## Admin tokens (part 3a)
+
+- **A person on the admin routes** (`/v1/models…`, `POST /v1/authz/explain`, `POST /v1/authz/simulate`) now sends an admin token, `aud=tutela-admin`, from token exchange after step-up. A person's `tutela-authz` token gets 403 there. A service account keeps its `tutela-authz` token (`tutela apply` in a pipeline).
+- **`TUTELA_ADMIN_ACR`**: the `acr` values your IdP gives after step-up MFA, comma-separated. Unset, no admin token is issued. Set it to what Keycloak's step-up gives (an ACR-to-LoA mapping or a client policy).
+- **gRPC `Explain` and `Simulate`** are for services only.
+

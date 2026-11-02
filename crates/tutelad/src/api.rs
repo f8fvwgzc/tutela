@@ -14,6 +14,7 @@ use axum::{Json, Router, middleware};
 use serde::Serialize;
 use tower::ServiceExt as _;
 use tower_http::timeout::TimeoutLayer;
+use tutela_contracts::claims::Audience;
 use tutela_sdk::Verifier;
 use tutela_sdk::http::{AuthLayer, Protocol};
 use tutela_sdk::{Identity, Step};
@@ -247,20 +248,9 @@ async fn problem_for_401(res: Response) -> Response {
 /// nothing to a caller without a token. `grpc` holds the gRPC services.
 pub fn api_router(state: &AppState, grpc: Router, request_timeout: Duration) -> Router {
     let timeout = TimeoutLayer::with_status_code(StatusCode::SERVICE_UNAVAILABLE, request_timeout);
-    let http = Router::new()
-        .route("/v1/whoami", get(whoami))
-        .route("/access/v1/evaluation", post(authz::http::evaluation))
-        .route("/access/v1/evaluations", post(authz::http::evaluations))
-        .route(
-            "/access/v1/search/resource",
-            post(authz::http::search_resource),
-        )
-        .route(
-            "/access/v1/search/subject",
-            post(authz::http::search_subject),
-        )
-        .route("/v1/authz/permissions", post(authz::http::permissions))
-        .route("/v1/authz/write-check", post(authz::http::write_check))
+    // The admin routes take a `tutela-admin` token from a person, or a
+    // `tutela-authz` token from a service (ADR-0032).
+    let admin = Router::new()
         .route("/v1/authz/explain", post(authz::http::explain))
         .route(
             "/v1/authz/simulate",
@@ -297,15 +287,32 @@ pub fn api_router(state: &AppState, grpc: Router, request_timeout: Duration) -> 
             post(models::http::publish)
                 .layer(DefaultBodyLimit::max(models::http::MODEL_BODY_LIMIT)),
         )
+        .route_layer(middleware::from_fn_with_state(state.clone(), current_http))
+        .route_layer(middleware::from_fn_with_state(state.clone(), admin_auth));
+    let http = Router::new()
+        .route("/v1/whoami", get(whoami))
+        .route("/access/v1/evaluation", post(authz::http::evaluation))
+        .route("/access/v1/evaluations", post(authz::http::evaluations))
+        .route(
+            "/access/v1/search/resource",
+            post(authz::http::search_resource),
+        )
+        .route(
+            "/access/v1/search/subject",
+            post(authz::http::search_subject),
+        )
+        .route("/v1/authz/permissions", post(authz::http::permissions))
+        .route("/v1/authz/write-check", post(authz::http::write_check))
         .route(
             "/.well-known/authzen-configuration",
             get(authz::http::metadata),
         )
         .fallback(not_found)
-        .with_state(state.clone())
-        .layer(timeout)
         .layer(middleware::from_fn_with_state(state.clone(), current_http))
         .layer(AuthLayer::new(Arc::clone(&state.verifier), Protocol::Http))
+        .merge(admin)
+        .with_state(state.clone())
+        .layer(timeout)
         .layer(middleware::map_response(problem_for_401))
         .layer(middleware::from_fn_with_state(
             Arc::clone(&state.metrics),
@@ -352,6 +359,53 @@ async fn current_http(State(state): State<AppState>, req: Request, next: Next) -
         }
         Err(Refusal::Problem(p)) => p.into_response(),
     }
+}
+
+/// The token check of the admin routes: an admin token (`aud=tutela-admin`)
+/// goes to the admin verifier, any other to the main one, which checks
+/// everything else as on every route. A refusal is the same 401 as
+/// `AuthLayer`'s, with the step for the log.
+async fn admin_auth(State(state): State<AppState>, mut req: Request, next: Next) -> Response {
+    let refuse = |step: Option<Step>| {
+        let mut res = invalid_token().into_response();
+        res.headers_mut().insert(
+            header::WWW_AUTHENTICATE,
+            HeaderValue::from_static("Bearer error=\"invalid_token\""),
+        );
+        if let Some(step) = step {
+            res.extensions_mut().insert(step);
+        }
+        res
+    };
+    let Some(token) = bearer(req.headers()) else {
+        return refuse(None);
+    };
+    let admin = exchange::peek_audience(&token).as_deref() == Some(Audience::TUTELA_ADMIN.as_str());
+    let verifier = if admin {
+        state.audiences.admin_verifier()
+    } else {
+        &state.verifier
+    };
+    match verifier.verify(&token).await {
+        Ok(id) => {
+            req.extensions_mut().insert(id);
+            next.run(req).await
+        }
+        Err(e) => refuse(Some(e.step())),
+    }
+}
+
+/// The token of exactly one `Authorization: Bearer` header, as `AuthLayer`
+/// reads it.
+fn bearer(headers: &axum::http::HeaderMap) -> Option<String> {
+    let mut values = headers.get_all(header::AUTHORIZATION).iter();
+    let v = values.next()?.to_str().ok()?;
+    if values.next().is_some() {
+        return None;
+    }
+    let (scheme, token) = v.split_once(' ')?;
+    (scheme.eq_ignore_ascii_case("bearer") && !token.is_empty() && !token.contains(' '))
+        .then(|| token.to_owned())
 }
 
 /// [`current_http`] for gRPC: `unauthenticated`, `permission_denied` or

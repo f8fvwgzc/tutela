@@ -130,6 +130,7 @@ Done:
 | Two-person publish, optional per tenant; a proposal goes stale when its impact report would change | Done | [ADR-0029](DECISIONS.md#adr-0029-two-person-publish) |
 | `tutelad`'s own issuer: signing keys sealed by `tutela-vault`, the JWKS without a token, rotation with pre-publication, a `kid` deny-list, tenants made at runtime trusted through the directory; `TUTELA_MASTER_KEY`, `TUTELA_KEY_PEPPER` and `TUTELA_ISSUER` required at start-up | Done (part 3a) | [ADR-0030](DECISIONS.md#adr-0030-tutelads-own-issuer-signing-keys-the-jwks-and-paths-without-a-token) |
 | Token exchange (RFC 8693) at `POST /oauth2/token`: an external issuer's token for a Tutela access token, the tenant from the trust list, just-in-time provisioning by `(iss, sub)`, each external token once; own tokens for another audience; a raised `epoch` or a disabled principal refused on the API | Done (part 3a) | [ADR-0031](DECISIONS.md#adr-0031-token-exchange-the-tenant-from-the-trust-list-a-person-from-iss-sub) |
+| Admin tokens: `aud=tutela-admin` from token exchange, for a person after step-up (`TUTELA_ADMIN_ACR`), at most 300 s; the model routes, explain and simulate take them from a person and a `tutela-authz` token from a service (a pipeline); every other route refuses them | Done (part 3a) | [ADR-0032](DECISIONS.md#adr-0032-admin-tokens-a-person-steps-up-a-pipeline-keeps-its-service-token) |
 
 Not started:
 
