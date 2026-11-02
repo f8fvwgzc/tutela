@@ -153,7 +153,7 @@ impl WorkloadId {
             .unwrap_or_default()
     }
 
-    /// The path, starting with `/`, for example `/ns/shop/sa/orders`.
+    /// The path, starting with `/`, for example `/ns/shop/svc/orders`.
     #[must_use]
     pub fn path(&self) -> &str {
         self.text.get(self.path_start..).unwrap_or_default()
@@ -403,7 +403,7 @@ mod tests {
     const SA: &str = "sa:sa_0193a1b2-c3d4-7c55-ad66-7e8f90a1b2c3";
     const KEY: &str = "key:key_0193a1b2-c3d4-7d77-be88-9fa0b1c2d3e4";
     const AGENT: &str = "agent:agt_0193a1b2-c3d4-7b33-9c44-5d6e7f809102";
-    const WORKLOAD: &str = "workload:spiffe://prod-eu1.attache.example.test/ns/shop/sa/orders";
+    const WORKLOAD: &str = "workload:spiffe://prod-eu1.attache.example.test/ns/shop/svc/orders";
 
     #[test]
     fn doc_examples_round_trip_with_their_lengths() {
@@ -443,7 +443,7 @@ mod tests {
         let p: Principal = WORKLOAD.parse().unwrap();
         let w = p.as_workload().unwrap();
         assert_eq!(w.trust_domain(), "prod-eu1.attache.example.test");
-        assert_eq!(w.path(), "/ns/shop/sa/orders");
+        assert_eq!(w.path(), "/ns/shop/svc/orders");
     }
 
     #[test]
@@ -501,7 +501,7 @@ mod tests {
     fn spiffe_table_from_the_doc() {
         let cases: &[(&str, Result<(), PrincipalError>)] = &[
             (
-                "workload:spiffe://prod-eu1.attache.example.test/ns/shop/sa/orders",
+                "workload:spiffe://prod-eu1.attache.example.test/ns/shop/svc/orders",
                 Ok(()),
             ),
             (

@@ -143,6 +143,8 @@ SPIFFE rules:
 - No query (`?`), no fragment (`#`), no percent-encoding.
 - The whole SPIFFE ID is at most 2048 bytes.
 
+attache issues every workload identity Tutela sees. It names a workload per **service**, not per Kubernetes service account: `spiffe://<trust domain>/ns/<namespace>/svc/<service>`. This path is the URI SAN of each certificate attache's embassy issues, and the identity that charters name in `authz.callers` and `authz.services`. Tutela does not check this form (any path that follows the rules here parses), but write this path in bindings and trust rules: a `/sa/<service account>` path never matches an attache workload.
+
 Tutela's extra rules:
 1. The path must not be empty. `spiffe://prod-eu1.example.test` names a trust domain, not a workload.
 2. Each trust domain must be **unique per cluster**. A fixed shared name (such as `agentsc` in every cluster) is not allowed, because the ids would collide across clusters.
@@ -156,7 +158,7 @@ segment      = 1*( ALPHA / DIGIT / "." / "-" / "_" )   ; but never "." or ".."
 
 | Example | Valid? | Why |
 |---|---|---|
-| `workload:spiffe://prod-eu1.attache.example.test/ns/shop/sa/orders` | yes | |
+| `workload:spiffe://prod-eu1.attache.example.test/ns/shop/svc/orders` | yes | |
 | `workload:spiffe://Prod.example.test/ns/shop` | no | uppercase in the trust domain |
 | `workload:spiffe://prod.example.test` | no | empty path |
 | `workload:spiffe://prod.example.test/ns//shop` | no | empty segment |
