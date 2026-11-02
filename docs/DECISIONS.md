@@ -1041,3 +1041,32 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 - **A new table for versions.** Two records of the same event.
 - **Delete a tenant's model to go back to the app.** That rewrites history.
 
+---
+
+## ADR-0027: The impact report
+
+**Status:** Accepted, 2026-11-02. Built in Phase B, part 2b.
+
+**Context.** PERMISSION-MODEL.md 15.1 step 3 asks for "12 users gain read on contract", from the tenant's real data. Tutela holds no rows and no field values, a tenant can have thousands of scopes and a group of everyone, and a report that stops early must not read as "no impact". The calculation also has to be the one a move uses (ADR-0025), so the two cannot disagree.
+
+**Decision.**
+
+1. **`tutela_pdp::model_impact(before, after, tenant, paths, limit)`** compares two evaluators that hold the same tenant data and two models. `tutelad` builds both for each report, on a blocking thread, from one fresh read; the live snapshots never change.
+2. **Places.** A scope that holds something: an assignment, a field rule, a private flag or a boundary rule, an org root included. Anywhere else the answer is its parent's. Each place is asked for every type that can be there or below it in either model.
+3. **Who.** Only principals that hold a changed role on the place's path, directly or through a group. Everyone else has the same deciding role in both models, so the same answer. What changed is worked out from the two models first: a type whose definition changed, or an all-roles field rule, counts for every role.
+4. **The same comparison as a move.** A role's level is a range when field values are not known, and a change that cannot be ruled out counts and is marked `conditional`. A scope of a type that holds nothing by the model can still hold old rows (ADR-0013 item 1), so there every changed type counts, conditionally.
+5. **One comparison per set of deciding assignments** at a place: without field values the answer depends on nothing else. A group of thousands costs one comparison and one step each.
+6. **The bound** is a count of steps, `TUTELA_IMPACT_MAX_WORK` (default 2,000,000): a principal at a place, or a key compared. Not a timer, so the same data gives the same report, which two-person publish needs. A report that reaches it ends with `complete: false`; `no_impact` needs `complete`.
+7. **The report names principals**, with the scopes, so its digest covers who and not only how many. A response caps lines and names; the digest does not.
+8. **Who may ask:** what looking at the model needs (ADR-0026). The report shows other people's access.
+
+**Consequences.**
+- The property test `tm08_the_impact_report_holds_every_change` asks `check` under both models for every principal on every row, and finds each change in the report. `a_report_that_stops_early_never_says_no_impact` cuts the bound at random. Seven planted bugs (M57 to M64, without M61) are caught. M61 left out the org roots that hold nothing; it was an equivalent mutant, so that code went.
+- A tenant of the benchmark's size with a changed role held by a group of everyone can reach the bound. Its report says so, and a widening change still needs its token. A cheaper walk for such groups is later work.
+- The report counts what can change, not rows: a conditional line may hold for no row at all.
+
+**Alternatives considered.**
+- **Compare `check` on a sample of resources.** Tutela holds no rows, and a sample can miss.
+- **A time limit.** Two runs on the same data could differ, and a proposal could go stale for nothing.
+- **Report counts only.** A count can stay the same while the people change.
+

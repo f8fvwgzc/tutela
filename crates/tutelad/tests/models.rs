@@ -458,3 +458,110 @@ async fn tm14_the_service_role_writes_no_manifest_and_no_approver_key() {
     );
     w.finish().await;
 }
+
+async fn dry_run(w: &World, s: &Seed, sub: &str, source: &str) -> reqwest::Response {
+    let t = w.issuer.token(sub, &s.tid, 0);
+    w.post("/v1/models/impact", &t, &json!({"source": source}))
+        .await
+}
+
+#[tokio::test]
+async fn the_impact_report_says_who_gains_from_the_tenants_own_data() {
+    let Some(mut w) = world().await else { return };
+    admins(&mut w).await;
+    // Tenant B's approver is also a reader there. It is in B's report only.
+    let tx = w.d.owner.transaction().await.unwrap();
+    tutela_store::assign(
+        &tx,
+        &w.b.key,
+        &Subject::Principal(common::B_USER.parse().unwrap()),
+        &RoleKey::parse("reader").unwrap(),
+        &w.b.org,
+        None,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let head = active(&w, &w.a).await;
+    let source = with_reader("write");
+    let res = dry_run(&w, &w.a, ADMIN, &source).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(v["class"], "widening");
+    assert_eq!(v["version"], head["version"]);
+    assert_eq!(v["from"], head["digest"]);
+    assert_eq!(v["to"], tutela_store::digest(&source));
+    let impact = &v["impact"];
+    assert_eq!(impact["complete"], true);
+    assert_eq!(impact["no_impact"], false);
+    assert_eq!(
+        impact["summary"],
+        json!([
+            "1 user gains write on invoice in 1 scope",
+            "1 user gains write on invoice.status in 1 scope",
+        ]),
+        "{impact}"
+    );
+    assert_eq!(impact["lines"][0]["examples"], json!([USER]));
+    assert_eq!(impact["lines"][0]["count"], 1);
+    // Nothing changed: the live answer is the old one, at every revision.
+    assert!(!can_write(&w, &w.a, USER, 0).await);
+    assert_eq!(active(&w, &w.a).await, head);
+
+    let v: Value = dry_run(&w, &w.b, ADMIN, &source)
+        .await
+        .json()
+        .await
+        .unwrap();
+    let names = v["impact"]["lines"][0]["examples"].clone();
+    assert_eq!(names, json!([common::B_USER]), "{v}");
+
+    // A change nobody holds has no impact, and says so.
+    let spare = format!("{MANIFEST}\n[roles.spare]\ngrants = {{ invoice = \"full\" }}\n");
+    let v: Value = dry_run(&w, &w.a, ADMIN, &spare).await.json().await.unwrap();
+    assert_eq!(v["impact"]["no_impact"], true, "{v}");
+    assert_eq!(v["class"], "widening");
+
+    // It reveals other people's access: a plain member, a product service
+    // and an agent may not ask.
+    for sub in [USER, SA, AGENT] {
+        let res = dry_run(&w, &w.a, sub, &source).await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN, "{sub}");
+    }
+    w.finish().await;
+}
+
+#[tokio::test]
+async fn an_impact_report_that_stops_early_says_so_and_is_kept_with_the_version() {
+    let Some(mut w) = common::world_with(|c| c.impact_work = 1).await else {
+        return;
+    };
+    admins(&mut w).await;
+    let head = active(&w, &w.a).await;
+    let narrow = with_reader("none");
+    let v: Value = dry_run(&w, &w.a, ADMIN, &narrow)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(v["impact"]["complete"], false, "{v}");
+    assert_eq!(v["impact"]["no_impact"], false);
+
+    let res = publish(
+        &w,
+        &w.a,
+        &json!({"source": narrow, "expected_version": head["version"]}),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let out: Value = res.json().await.unwrap();
+    assert_eq!(out["impact"]["complete"], false);
+    let t = w.issuer.token(ADMIN, &w.a.tid, 0);
+    let kept: Value = get(&w, &format!("/v1/models/{}", out["version"]), &t)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(kept["impact"], out["impact"]);
+    w.finish().await;
+}

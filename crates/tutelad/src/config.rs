@@ -55,6 +55,9 @@ pub struct Config {
     /// `TUTELA_REVISION_CHECK_MS`, `TUTELA_MAX_AGE_READ_SECS` and
     /// `TUTELA_MAX_AGE_WRITE_SECS`: how current an answer must be.
     pub limits: Limits,
+    /// `TUTELA_IMPACT_MAX_WORK`: the most steps one impact report takes
+    /// (ADR-0027). A report that reaches it says it is not complete.
+    pub impact_work: usize,
 }
 
 impl std::fmt::Debug for Config {
@@ -116,6 +119,15 @@ impl Config {
             "writes fail closed sooner than reads: TUTELA_MAX_AGE_WRITE_SECS must not be above \
              TUTELA_MAX_AGE_READ_SECS"
         );
+        let impact_work = parsed(
+            &get,
+            "TUTELA_IMPACT_MAX_WORK",
+            &tutela_pdp::MAX_IMPACT_WORK.to_string(),
+        )?;
+        ensure!(
+            impact_work >= 1,
+            "TUTELA_IMPACT_MAX_WORK must be at least 1"
+        );
         Ok(Self {
             database_url: need("TUTELA_DATABASE_URL")?,
             listen: parsed(&get, "TUTELA_LISTEN", "0.0.0.0:8080")?,
@@ -130,6 +142,7 @@ impl Config {
             shutdown_timeout: seconds(&get, "TUTELA_SHUTDOWN_TIMEOUT_SECS", "30")?,
             expiry_sweep,
             limits,
+            impact_work,
         })
     }
 

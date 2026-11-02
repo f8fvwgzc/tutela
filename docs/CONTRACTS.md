@@ -1266,6 +1266,7 @@ A verified token for a tenant that is not in the directory gets 403 `unknown_ten
 |---|---|
 | `GET /v1/models` | The active model and a page of versions, newest first. Query: `before`, `limit` (at most 100). The texts are left out. |
 | `GET /v1/models/{version}` | One version, with its text. 404 for a version this tenant does not have. |
+| `POST /v1/models/impact` | A dry run: what a publish of this text would do now. Nothing is written. Needs what looking needs. |
 | `POST /v1/models/publish` | A new version. |
 
 ```json
@@ -1291,8 +1292,30 @@ Publish:
 - The first publish of a tenant with no version writes two: the manifest it ran on as version 1, then the new one.
 
 ```json
-{ "version": 4, "rev": 45, "digest": "60303…", "class": "widening", "restores": 1 }
+{ "version": 4, "rev": 45, "digest": "60303…", "class": "widening", "restores": 1, "impact": { "…": "…" } }
 ```
+
+**The impact report** ([ADR-0027](DECISIONS.md#adr-0027-the-impact-report)). `POST /v1/models/impact` takes the same body as a publish (`source` or `restore`) and answers what a publish would do, with what an approval token must name:
+
+```json
+{ "version": 3, "from": "9f86…", "to": "60303…", "class": "widening", "diff": "WIDENING …",
+  "impact": {
+    "complete": true,
+    "no_impact": false,
+    "summary": ["12 users gain read on contract.budget in 3 scopes", "1 agent gains read on contract.budget in 1 scope"],
+    "lines": [ { "change": "gain", "kind": "user", "key": "contract.budget", "from": "none", "to": "read",
+                 "conditional": false, "count": 12, "scopes": 3, "examples": ["user:usr_…"] } ],
+    "omitted_lines": 0,
+    "digest": "c3ab…"
+  } }
+```
+
+- It runs on the tenant's real bindings, on two evaluators built for it: one with the active model, one with the candidate. No snapshot changes. It counts principals and scopes, never rows: Tutela holds no rows.
+- `key` is a type (the item level), a field or feature, or an action (`allowed` or `denied`). A gain names the new level, a loss the old one.
+- `conditional: true`: it depends on field values Tutela does not have, so it can happen and may not happen to every row. A scope whose type holds nothing by the model can still hold old rows; its lines are conditional too.
+- **The bound.** A report takes at most `TUTELA_IMPACT_MAX_WORK` steps (default 2,000,000). One that stops there has `complete: false`, and its lines are a lower bound. `no_impact` is `true` only for a complete report with no line, so stopping early never reads as "no impact".
+- A response holds at most 1,000 lines and 20 `examples` per line. `digest` is SHA-256 of the whole report, every principal of every line included.
+- A publish stores the report with its version, and `GET /v1/models/{version}` gives it back.
 
 | Status | When |
 |---|---|

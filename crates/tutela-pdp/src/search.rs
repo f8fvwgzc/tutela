@@ -155,7 +155,7 @@ impl<'a> Test<'a> {
     }
 }
 
-fn path_error(scope: &PathEntry, e: ScopePathError) -> PdpError {
+pub(crate) fn path_error(scope: &PathEntry, e: ScopePathError) -> PdpError {
     PdpError::ScopePath {
         scope: scope.clone(),
         problem: match e {

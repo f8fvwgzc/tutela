@@ -296,6 +296,7 @@ pub fn config(database_url: &str, trust: TrustFile) -> Config {
         shutdown_timeout: Duration::from_secs(5),
         expiry_sweep: Duration::from_secs(3600),
         limits: tutelad::cache::Limits::default(),
+        impact_work: tutela_pdp::MAX_IMPACT_WORK,
     }
 }
 
@@ -331,6 +332,7 @@ pub fn state(config: &Config, issuer: &Issuer) -> AppState {
         metrics,
         stopping: Arc::new(AtomicBool::new(false)),
         dev_mode: config.dev_mode,
+        impact_work: config.impact_work,
     }
 }
 

@@ -665,10 +665,9 @@ fn random_rule(rng: &mut Rng) -> BoundaryRule {
     }
 }
 
-/// Boundary rules on a quarter of the scopes, and more assignments than a
-/// plain world has, so that many moves get past the first checks: user 1
-/// owns the org, user 2 is a member of it, and others sit on single scopes.
-fn with_rules(rng: &mut Rng, w: &mut World) {
+/// More assignments than a plain world has: user 1 owns the org, user 2 is
+/// a member of it, and others sit on single scopes.
+pub(crate) fn with_more_bindings(rng: &mut Rng, w: &mut World) {
     let mut roles: Vec<String> = w.spec.roles.iter().map(|r| r.key.clone()).collect();
     roles.extend(["member".to_owned(), "viewer".to_owned()]);
     for (n, t) in (1..).zip(&mut w.tenants) {
@@ -700,6 +699,12 @@ fn with_rules(rng: &mut Rng, w: &mut World) {
             add(t, p, &role, s, i);
         }
     }
+}
+
+/// Boundary rules on a quarter of the scopes, and the assignments of
+/// [`with_more_bindings`], so that many moves get past the first checks.
+fn with_rules(rng: &mut Rng, w: &mut World) {
+    with_more_bindings(rng, w);
     for t in &mut w.tenants {
         for n in &t.nodes {
             if n.path.len() <= crate::MAX_PATH && rng.chance(25) {

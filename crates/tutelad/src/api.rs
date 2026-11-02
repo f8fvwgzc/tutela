@@ -43,6 +43,8 @@ pub struct AppState {
     pub stopping: Arc<AtomicBool>,
     /// `TUTELA_DEV_MODE`.
     pub dev_mode: bool,
+    /// `TUTELA_IMPACT_MAX_WORK`.
+    pub impact_work: usize,
 }
 
 /// An error answer: `application/problem+json` (RFC 9457, CONTRACTS.md 7.1).
@@ -251,6 +253,10 @@ pub fn api_router(state: &AppState, grpc: Router, request_timeout: Duration) -> 
         .route("/v1/authz/write-check", post(authz::http::write_check))
         .route("/v1/models", get(models::http::versions))
         .route("/v1/models/{version}", get(models::http::version))
+        .route(
+            "/v1/models/impact",
+            post(models::http::impact).layer(DefaultBodyLimit::max(models::http::MODEL_BODY_LIMIT)),
+        )
         .route(
             "/v1/models/publish",
             post(models::http::publish)

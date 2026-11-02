@@ -40,6 +40,8 @@ mod tests_check;
 #[cfg(test)]
 mod tests_filter;
 #[cfg(test)]
+mod tests_impact;
+#[cfg(test)]
 mod tests_moves;
 #[cfg(test)]
 mod tests_props;
@@ -60,7 +62,7 @@ pub use filter::{
     FilterExpr, FilterSize, FilterValue, ListFilter, MAX_CONTAINER_IN, MAX_FILTER_DEPTH,
     MAX_FILTER_ENTRIES, MAX_FILTER_NODES, MAX_IDS_IN,
 };
-pub use impact::{Change, ImpactLine};
+pub use impact::{Change, ImpactLine, ImpactReport, MAX_IMPACT_WORK, model_impact};
 pub use moves::{MAX_MOVE_CANDIDATES, MAX_MOVE_LINES, MAX_MOVE_WORK};
 pub use pdp::Pdp;
 pub use search::{
