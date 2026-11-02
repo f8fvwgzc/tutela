@@ -176,6 +176,9 @@ bumps the per-tenant revision in the same transaction as the change, and
 checks the whole tenant data with the evaluator's load checks before the
 commit. `load` reads a tenant's revision, `TenantData` and scope paths in one
 consistent view ([ADR-0014](DECISIONS.md#adr-0014-tutela-store-in-phase-a-the-schema-row-level-security-and-checked-writes)).
+Assignments, groups and the group and path closures read back through the same
+transaction, and `expire_assignments` removes what has expired and bumps the
+revision ([ADR-0020](DECISIONS.md#adr-0020-the-bindings-store-closures-at-read-time-and-assignment-expiry)).
 
 ### `tutela-sdk` (Phase A)
 
@@ -239,7 +242,8 @@ port (`/healthz`, `/readyz`, `/metrics`), JSON logs and the graceful shutdown.
 Tenant isolation is built too
 ([ADR-0019](DECISIONS.md#adr-0019-tenants-in-tutelad-the-tenant-comes-from-the-token-and-rls-is-checked)).
 `tutelad migrate` runs the migrations and grants as the owner, apart from the
-service. Production settings are in `deploy/`. The rest of this list is planned.
+service. A timer removes expired assignments, tenant by tenant, and bumps each
+revision. Production settings are in `deploy/`. The rest of this list is planned.
 
 - **Check API** (AuthZEN 1.0 shape): `POST /access/v1/evaluation`,
   `/access/v1/evaluations` (up to 200 items), `/access/v1/search/resource`,

@@ -36,6 +36,7 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0017](#adr-0017-opaque-public-errors-for-the-crates-that-touch-the-outside-world) | Opaque public errors for the crates that touch the outside world | Accepted |
 | [0018](#adr-0018-tutelad-the-stack-the-two-ports-and-the-config) | `tutelad`: the stack, the two ports and the config | Accepted |
 | [0019](#adr-0019-tenants-in-tutelad-the-tenant-comes-from-the-token-and-rls-is-checked) | Tenants in `tutelad`: the tenant comes from the token, and RLS is checked | Accepted |
+| [0020](#adr-0020-the-bindings-store-closures-at-read-time-and-assignment-expiry) | The bindings store: closures at read time, and assignment expiry | Accepted |
 
 ---
 
@@ -776,3 +777,46 @@ Planting bugs confirms the tests can fail: an open policy, no `FORCE`, `Recyclin
 - **Set the tenant in a tower layer.** A layer cannot hold a transaction open across a handler without boxing it, and a handler that opened its own would miss it. `Conn::begin` puts it where the transaction starts.
 - **Run the migrations at start-up.** The service would need the owner's credentials, and TM-14 wants them apart.
 - **Put the check in CI only.** TM-14 asks for a CI check. Running it in the service as well also covers a role changed in production.
+
+---
+
+## ADR-0020: The bindings store: closures at read time, and assignment expiry
+
+**Status:** Accepted, 2026-11-02. Built in Phase B ([#53](https://github.com/f8fvwgzc/tutela/issues/53)). It builds what ADR-0014 item 8 left for Phase B, and settles what ADR-0011 item 3 left to the store.
+
+**Context.** ADR-0014 gave the store checked writes for assignments and groups, but no way to read them back. It ignored a row with `expires_at`, because expiry needs a revision bump when it passes. ADR-0011 left open whether the group closure is a table or a query, and [PERMISSION-MODEL.md 6.4](PERMISSION-MODEL.md#64-groups-new) still said table.
+
+**Decision.**
+
+1. **Reads** run in the caller's transaction, like everything in the store:
+   - `assignment`, and `assignments` with a filter on subject or scope, a page of at most 1,000, ordered by id;
+   - `assignments_for`: a principal's own, plus those of its groups;
+   - `groups` and `group_members`;
+   - `groups_of` and `members_of`: the group closure, up and down;
+   - `ancestors` and `scopes_below`: the path closure, up and down.
+2. **The group closure is read at query time**, with a recursive query. There is no closure table. ADR-0011 measured p99 0.18 ms that way, against 0.10 ms from a table that costs p99 77 ms to update when one group nests in another. A write must then keep a second copy of the truth correct, and a bug there grants access. The evaluator already holds each principal's groups in memory per revision. Migration 3 adds the index the walk up needs.
+3. **An assignment can end.** `assign_until` sets `expires_at`, and `set_assignment_expiry` changes it. A time already past is refused, by the database's clock, so all replicas share one clock.
+4. **An expiry takes effect at once for new reads, and the revision follows.** The two are separate on purpose:
+   - Every read drops a row past its expiry, with `clock_timestamp()`. `now()` is the start of the transaction, so a long transaction would keep an expired row. This is the fail-closed part: it needs no sweep.
+   - `expire_assignments` removes those rows and bumps the revision in one transaction, so caches at an older revision reload. It returns what it removed, so the audit log can record it in that transaction when it exists.
+   - With nothing expired there is no bump, and the check takes no lock. Replicas that sweep at once wait on the revision row, and the second finds nothing, so one expiry makes one revision.
+   - It runs no load checks. Taking a row out cannot break them, and a tenant whose data no longer loads must still lose an expired grant.
+5. **`tutelad` sweeps on a timer** (`TUTELA_EXPIRY_SWEEP_SECS`, default 30 s). It enters each tenant in turn, as ADR-0014 does for `publish_manifest`, because row-level security hides every other tenant's rows. There is no bypass. A failure in one tenant does not stop the others. A job has no token, so `Conn` has crate-private methods for this one job; a handler cannot use them, and `Tenant` stays token-only.
+6. **`TenantBundle::next_expiry`** says when a loaded view stops being true. Between an expiry and the sweep, two loads at one revision can differ: the later one has less. So `(tenant, rev)` alone no longer fixes the data, in the narrowing direction only.
+7. **`remove_principal`** takes a principal's assignments and memberships in one revision (PERMISSION-MODEL.md 6.4).
+8. **An expired row does not hold its place.** `assign` removes a row past its expiry for the same (subject, scope) in its own transaction.
+
+**Consequences.**
+- **Part 2 must honour `next_expiry`.** A signed bundle's `expires_at` must be no later than its `next_expiry`, or a PDP keeps allowing until the sweep and a push. `tutela_pdp::Pdp` does not know about expiry; the loader does.
+- A cache that ignores `next_expiry` is late by up to the sweep interval, plus the time to reach it. PERMISSION-MODEL.md 16.1 has the row.
+- In library mode nothing sweeps. The product calls `expire_assignments` on a timer. Until it does, an expired assignment does not count, but the revision does not move.
+- A sweep is one short transaction per tenant, on one connection. Its cost grows with the number of tenants, not with the rows.
+- The expired row is gone. Until the audit log exists (a later part of Phase B), the log line is the only trace.
+
+**Alternatives considered.**
+- **A closure table** (above).
+- **Filter by time only, with no sweep.** Caches would never learn of an expiry.
+- **Sweep only, with no time filter on reads.** That is a stale allow for up to one interval, and it fails open if the sweep stops.
+- **Sweep inside `load`.** A read would have to take a write lock and bump a revision.
+- **Keep expired rows, marked.** The unique rule on (subject, scope) would block a new assignment, and every read would have to skip them. The audit log is the right place for history.
+- **A list of what is due, outside row-level security.** It would be faster with many tenants, but it is a table with tenant data and no policy.

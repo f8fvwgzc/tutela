@@ -226,12 +226,14 @@ A role entry can set a level for:
 
 A role assignment gives one principal or one group one role at one scope. There is at most one direct assignment per principal per scope.
 
+An assignment may have an expiry. It counts until that time by the database's clock, and it stops counting at that time, for every new read. A sweep then removes it and bumps the tenant revision, so caches reload ([ADR-0020](DECISIONS.md#adr-0020-the-bindings-store-closures-at-read-time-and-assignment-expiry)).
+
 Two assignments can meet at the same scope: one direct, one or more through groups. The rule (New, [ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)): **the direct assignment wins**; this lets an owner narrow one person who sits in a wide group. If there is none, **every** group role at that scope counts: each role is evaluated on its own (its own conditions and field rules), and the results are combined **component-wise**: the highest item level, and the highest level per field and feature. A **custom action** is allowed if **any** deciding role allows it with its own item level after its own conditions (`allows_custom_at`); raw grants are never pooled, so a grant cannot escape the conditions of the role that holds it. **Admin keys** are the union of the deciding roles' keys. The model diff relies on this ([ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)).
 
 ### 6.4 Groups (New)
 
 - A group belongs to one org. Members are principals or other groups.
-- Tutela keeps a closure table, so "is this principal in that group" is one lookup. The week-1 spike measures this at depth 32 with big groups (see [ROADMAP.md](ROADMAP.md#very-next-steps)).
+- The group closure is read at query time, with a recursive query over `group_member`. There is no closure table to keep current ([ADR-0020](DECISIONS.md#adr-0020-the-bindings-store-closures-at-read-time-and-assignment-expiry)). Inside `tutela-pdp`, each principal's groups are held in memory per revision.
 - In Phase A, group keys are unique in the tenant, so a binding or an `in_group` condition names one group ([ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)).
 - Limits, checked when a tenant is loaded: groups nest at most 32 levels deep, the closure holds at most 1,000,000 (principal, group) pairs, and computing it takes at most 4,000,000 steps. Data above a limit is refused for that tenant only; its bundle loaded before and other tenants keep working.
 - Removing a principal from a group removes its access through that group in the same transaction as the revision bump.
@@ -715,6 +717,7 @@ The real numbers are measured and documented in Phase B, and tested in the night
 | What changed | How it reaches a running service | Worst case |
 |---|---|---|
 | A role, assignment or field rule | Revision bump → SSE push → new bundle | The max bundle age for that action class (online for revocation-sensitive actions) |
+| An assignment expires | New reads stop at the expiry. A sweep bumps the revision, then as above. A loaded bundle carries `next_expiry`, so a cache that honours it stops at the expiry too | Without `next_expiry`: the sweep interval (`TUTELA_EXPIRY_SWEEP_SECS`, default 30 s), plus the row above |
 | A user is disabled or a session revoked | `epoch` bump; `tutela.principal.disabled.v1` / `tutela.session.revoked.v1`; token exchange refused | The access-token lifetime (10 min) if a service misses the epoch feed; much less with it |
 | An agent is quarantined by attache | The agent principal is disabled; delegated tokens are refused at exchange | The delegated-token TTL (60–120 s) |
 | Library mode (no `tutelad`) | The PDP reads the revision from `tutela-store` in the product's database | The PDP's revision-check interval |
@@ -927,7 +930,7 @@ The first six table names come from the blueprint. The last five are new.
 | `audit_event` | Blueprint (follows `audit.v1`) | `tenant_id`, `id` (UUIDv7), `time` (blueprint `at`), `org_id`, `actor_kind`, `actor_id`, `on_behalf_of`, `action`, `resource_type` + `resource_id` (blueprint `target`), `decision_effect`, `rule_ids`, `rev`, `outcome`, `reason`, `before_digest`, `after_digest` (blueprint `before`, `after`), `trace_id`, `request_id`, `labels`, `seq`, `prev_hash`, `hash` | Append-only: UPDATE and DELETE are refused. Hash-chained. Copies can go to attache's evidence ledger. See [CONTRACTS.md](CONTRACTS.md). |
 | `resource_type` | New | `tenant_id`, `app`, `key`, `label`, `parent_types`, `container`, `starts` (open, private), `features`, `actions` (key → min level + grant key), `source` (manifest, console, onto), `rev` | Replaces the blueprint's fixed tree. Each app has its own namespace. |
 | `role` | New | `tenant_id`, `id`, `app` (null = tenant-wide), `key`, `name`, `kind` (seeded, custom), `levels` (type, `type.field` and `type.@feature` → level), `grants` (custom actions, admin keys), `assignable_to`, `rev` | A role with admin keys or owner-only custom actions cannot be assigned to an agent or a group. |
-| `group` (+ `group_member`) | New | `group`: `tenant_id`, `id`, `org_id`, `key`, `name`. `group_member`: `tenant_id`, `group_id`, `member_kind`, `member_id`, `added_by` | Groups may contain groups. A closure table makes membership one lookup. |
+| `group` (+ `group_member`) | New | `group`: `tenant_id`, `id`, `org_id`, `key`, `name`. `group_member`: `tenant_id`, `group_id`, `member_kind`, `member_id`, `added_by` | Groups may contain groups. The closure is read at query time (6.4). |
 | `ui_component` | New | `tenant_id`, `app`, `key`, `actions`, `fields`, `routes` (method + path), `when_denied` (show, disable, hide, readonly), `reason`, `rev` | Source for `tutela codegen` (React constants and route guards). |
 | `model_revision` | New | `tenant_id`, `rev`, `parent_rev`, `app`, `author`, `approvers`, `diff`, `class` (narrowing, neutral, widening), `impact`, `state` (draft, proposed, published, rejected), `created_at`, `published_at`, `bundle_digest`, `signature` | One row per model change. `rev` is the tenant revision at publish; the tenant revision goes up in the same transaction as every change, including binding changes (which are recorded in `audit_event`, not here). |
 

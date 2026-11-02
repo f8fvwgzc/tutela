@@ -76,6 +76,11 @@ struct RefusalLabels {
     step: String,
 }
 
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct SweepLabels {
+    result: String,
+}
+
 /// Latency buckets from 1 ms to about 16 s.
 fn latency_histogram() -> Histogram {
     Histogram::new(exponential_buckets(0.001, 2.0, 15))
@@ -90,6 +95,8 @@ pub struct Metrics {
     refusals: Family<RefusalLabels, Counter>,
     pool_size: Gauge,
     pool_available: Gauge,
+    expired: Counter,
+    sweeps: Family<SweepLabels, Counter>,
 }
 
 impl Default for Metrics {
@@ -134,6 +141,14 @@ impl Metrics {
             "Idle connections in the pool",
             pool_available.clone(),
         );
+        let expired = Counter::default();
+        registry.register(
+            "assignments_expired",
+            "Role assignments removed because they expired",
+            expired.clone(),
+        );
+        let sweeps = Family::<SweepLabels, Counter>::default();
+        registry.register("expiry_sweeps", "Expiry sweeps, by result", sweeps.clone());
         Self {
             registry,
             requests,
@@ -141,7 +156,24 @@ impl Metrics {
             refusals,
             pool_size,
             pool_available,
+            expired,
+            sweeps,
         }
+    }
+
+    /// Counts assignments the sweep removed.
+    pub fn add_expired(&self, n: usize) {
+        self.expired.inc_by(u64::try_from(n).unwrap_or(u64::MAX));
+    }
+
+    /// Counts one sweep.
+    pub fn count_sweep(&self, ok: bool) {
+        let result = if ok { "ok" } else { "failed" };
+        self.sweeps
+            .get_or_create(&SweepLabels {
+                result: result.to_owned(),
+            })
+            .inc();
     }
 
     /// Records the pool's sizes, read at scrape time.

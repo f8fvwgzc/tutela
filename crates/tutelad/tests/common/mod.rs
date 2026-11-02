@@ -289,6 +289,7 @@ pub fn config(database_url: &str, trust: TrustFile) -> Config {
         request_timeout: Duration::from_secs(5),
         shutdown_drain: Duration::ZERO,
         shutdown_timeout: Duration::from_secs(5),
+        expiry_sweep: Duration::from_secs(3600),
     }
 }
 

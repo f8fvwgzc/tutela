@@ -97,6 +97,13 @@ A `SafenetError` of kind `Http` also needs the chain now: its own text no longer
 
 `tutela_store::enter` is public, for a caller that runs its own statements. `check_isolation` and `grant_service` are new; a product in library mode can use them for its runtime role.
 
+## The bindings store
+
+- Run `tutela migrate`: migration 3 adds two indexes.
+- A role assignment with `expires_at` used to be ignored. It now counts until that time. Nothing in the store wrote `expires_at` before, so this only affects a row you wrote yourself.
+- `TenantBundle` has a new field, `next_expiry`. This view of the tenant is good until then: load again at that time.
+- In library mode nothing sweeps for you. Call `tutela_store::expire_assignments` on a timer, in a transaction per tenant, if you use `assign_until`. Until you do, an expired assignment already does not count, but the revision does not move.
+
 ## Other changes
 
 - `tutela_contracts::error_chain` is new and public.

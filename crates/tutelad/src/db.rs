@@ -146,6 +146,29 @@ impl Conn {
     }
 }
 
+impl Conn {
+    /// The tenants in the directory, for a job that serves all of them.
+    pub(crate) async fn tenants(&mut self) -> Result<Vec<TenantKey>, DbError> {
+        let tx = self.0.transaction().await?;
+        let tenants = tutela_store::tenants(&tx).await?;
+        tx.commit().await?;
+        Ok(tenants)
+    }
+
+    /// One tenant's expiry sweep, in its own transaction. A job has no token
+    /// to take a [`Tenant`] from, so this does the one thing it needs, and
+    /// a handler cannot reach it.
+    pub(crate) async fn expire(
+        &mut self,
+        tenant: &TenantKey,
+    ) -> Result<Option<tutela_store::Expired>, DbError> {
+        let tx = self.0.transaction().await?;
+        let gone = tutela_store::expire_assignments(&tx, tenant).await?;
+        tx.commit().await?;
+        Ok(gone)
+    }
+}
+
 /// A transaction inside one tenant. It reads as a
 /// [`tokio_postgres::Transaction`], so store calls take `&tx`. Dropping it
 /// rolls back.
