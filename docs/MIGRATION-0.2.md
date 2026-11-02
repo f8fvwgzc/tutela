@@ -234,3 +234,11 @@ These matter to whoever runs `tutelad`, and to a product that verifies its token
   5. To rotate: `tutela apps rotate` (or `POST /v1/admin/apps/{id}/rotate {overlap_secs}`) gives a new secret; deploy it within the overlap (default one hour). To revoke: `POST /v1/admin/apps/{id}/disable`; its tokens stop within `TUTELA_REVISION_CHECK_MS`.
 - **A browser app** (the Console) does not authenticate: an exchange with no client authentication still works, keeps the sign-in's `azp`, and may not name an app.
 - **`tutela-store`:** new `apps` items: `create_app`, `app`, `apps`, `app_secret`, `app_tenant`, `rotate_app_secret`, `disable_app`, `AppInfo`, `SecretHash`, `StoredSecret`. `set_disabled` and `revoke_sessions` take a service account too.
+
+## The audit producer key, sealed (part 4a)
+
+- **Migration 14** adds `tutela.audit_key` ([ADR-0045](DECISIONS.md#adr-0045-the-audit-producer-key-sealed-in-the-database-rotated-with-its-old-keys-kept)). Run `tutelad migrate` (it runs `grant_service` too: the runtime role may read, add and update audit keys, never delete one).
+- **For an operator who forwards to attache's ledger:** keep `TUTELA_AUDIT_KEY` set for the first start of this version. `tutelad` seals that seed into the database (`tutela_audit_key:import` in the deployment's chain) and forwards with the same key, so attache needs no change. Then remove `TUTELA_AUDIT_KEY` from the secret store: the stored key wins, and a different seed in the environment is ignored with a warning. Without `TUTELA_AUDIT_KEY` a new key is made at the first start; give attache the `key_id` and public key `tutelad` logs.
+- **Rotation:** add the new public key to attache's `ledger.producers[].keys` first, keep the old one, then `tutela keys rotate --audit`. Records already in the ledger keep verifying with the old key, which the database keeps.
+- **`tutelad::ledger`:** `LedgerConfig.key` is now `import: Option<…>`; `Forwarder::new` takes the vault; `key_id()` and `public_key()` became `producer()`; new `verify_record`. **`tutela-store`:** new `AuditKey`, `Ensured`, `audit_key_id`, `audit_keys`, `signing_audit_key`, `ensure_audit_key`, `rotate_audit_key`, `rewrap_audit_keys`.
+

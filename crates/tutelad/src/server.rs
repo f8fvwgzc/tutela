@@ -99,19 +99,40 @@ impl Server {
                 } else {
                     tutela_safenet::Policy::new()
                 };
+                // The producer key is sealed in the database (ADR-0045).
+                let ensured = state
+                    .db
+                    .conn()
+                    .await?
+                    .audit_key(
+                        &state.vault,
+                        &config.issuer,
+                        ledger.import.as_deref().map(|k| k.as_slice()),
+                    )
+                    .await
+                    .context("making sure an audit producer key signs")?;
+                if let tutela_store::Ensured::Kept { ignored: true, .. } = ensured {
+                    tracing::warn!(
+                        "TUTELA_AUDIT_KEY is set but the database holds another audit key, \
+                         which signs; remove TUTELA_AUDIT_KEY"
+                    );
+                }
                 let fwd = crate::ledger::Forwarder::new(
                     state.db.clone(),
                     ledger,
+                    Arc::clone(&state.vault),
                     policy,
                     uuid::Uuid::now_v7().to_string(),
                     Arc::clone(&state.metrics),
                 )
                 .context("setting up forwarding to the evidence ledger")?;
-                tracing::info!(
-                    key_id = fwd.key_id(),
-                    public_key = %fwd.public_key(),
-                    "audit records are forwarded to the evidence ledger"
-                );
+                if let Some((key_id, public_key)) = fwd.producer().await? {
+                    tracing::info!(
+                        key_id,
+                        public_key,
+                        "audit records are forwarded to the evidence ledger"
+                    );
+                }
                 Some(fwd)
             }
         };

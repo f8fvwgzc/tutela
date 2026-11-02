@@ -85,10 +85,12 @@ APPS_SRC = "crates/tutelad/src/apps.rs"
 ADMIN_APPS_SRC = "crates/tutelad/src/admin/apps.rs"
 STORE_APPS = "crates/tutela-store/src/apps.rs"
 APPS = ["-p", "tutelad", "--test", "apps"]
+STORE_AUDIT_KEYS = "crates/tutela-store/src/audit_keys.rs"
 
 # (id, file, what it breaks, old text, new text, cargo test arguments).
 # M01-M14 are part 4a's (#107): scopes, role assignments and groups.
 # C01-C08 are part 4a's apps and client authentication (#118).
+# V01-V03 are part 4a's sealed audit producer key (ADR-0045).
 # `old` must occur once.
 #
 # Not every guard can be a mutant. `models::principal` refuses agents, and
@@ -99,6 +101,18 @@ APPS = ["-p", "tutelad", "--test", "apps"]
 # it, so no agent can be found for one (an equivalent mutant, run and kept
 # out of this list).
 MUTANTS = [
+    ("V01", STORE_AUDIT_KEYS, "an old audit record stops verifying after a key rotation",
+     "FROM tutela.audit_key ORDER BY created_at, kid",
+     "FROM tutela.audit_key WHERE retired_at IS NULL ORDER BY created_at, kid",
+     LEDGER),
+    ("V02", STORE_AUDIT_KEYS, "the audit key's seed is stored in plain text",
+     "    let sealed = vault\n        .seal(PURPOSE, kid.as_bytes(), seed)\n",
+     "    let sealed = seed.to_vec();\n    let _ = vault\n        .seal(PURPOSE, kid.as_bytes(), seed)\n",
+     LEDGER),
+    ("V03", STORE_AUDIT_KEYS, "TUTELA_AUDIT_KEY wins over the stored key",
+     "    if let Some(k) = signing_audit_key(tx).await? {\n",
+     "    if let Some(k) = signing_audit_key(tx).await?.filter(|_| import.is_none()) {\n",
+     LEDGER),
     ("C01", APPS_SRC, "a client secret is stored in plain text (its own bytes, in hex)",
      "    d.as_ref().iter().map(|b| format!(\"{b:02x}\")).collect()\n",
      "    let _ = d;\n    key.as_bytes().iter().map(|b| format!(\"{b:02x}\")).collect()\n",
@@ -520,8 +534,8 @@ MUTANTS = [
      "                    tracing::warn!(reason = why, \"the ledger did not take a batch; it waits\");\n                    Some(last)\n",
      LEDGER),
     ("L02", LEDGER_SRC, "a record is signed over other bytes than its body",
-     "            let sig = self.pair.sign(e.body.as_bytes());\n",
-     "            let sig = self.pair.sign(e.id.as_bytes());\n",
+     "            let sig = pair.sign(e.body.as_bytes());\n",
+     "            let sig = pair.sign(e.id.as_bytes());\n",
      LEDGER),
     ("L03", STORE_AUDIT, "a second replica sends a chain another one holds",
      "             WHERE tenant_id = $1 AND (claimed_until IS NULL \\\n               OR claimed_until < clock_timestamp() OR claimed_by = $2) \\\n",

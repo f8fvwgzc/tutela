@@ -298,6 +298,41 @@ impl Conn {
         Ok(set)
     }
 
+    /// Makes sure an audit producer key signs (ADR-0045): the stored one, or
+    /// `import` (`TUTELA_AUDIT_KEY` from before) sealed, or a new one, with
+    /// its record in the deployment's audit chain, in one transaction.
+    pub(crate) async fn audit_key(
+        &mut self,
+        vault: &tutela_vault::Vault,
+        iss: &tutela_contracts::tenant::Issuer,
+        import: Option<&[u8]>,
+    ) -> Result<tutela_store::Ensured, DbError> {
+        let tx = self.0.transaction().await?;
+        let ensured = tutela_store::ensure_audit_key(&tx, vault, import).await?;
+        let record = match &ensured {
+            tutela_store::Ensured::Kept { .. } => None,
+            tutela_store::Ensured::Imported(kid) => {
+                Some(audit_key_record(iss, "import", kid)?.detail("kid", kid.clone()))
+            }
+            tutela_store::Ensured::Made(kid) => {
+                Some(audit_key_record(iss, "create", kid)?.detail("kid", kid.clone()))
+            }
+        };
+        deployment_audit(&tx, record.into_iter().collect()).await?;
+        tx.commit().await?;
+        Ok(ensured)
+    }
+
+    /// The audit producer key that signs now.
+    pub(crate) async fn signing_audit_key(
+        &mut self,
+    ) -> Result<Option<tutela_store::AuditKey>, DbError> {
+        let tx = self.0.transaction().await?;
+        let key = tutela_store::signing_audit_key(&tx).await?;
+        tx.commit().await?;
+        Ok(key)
+    }
+
     /// Rotates the signing key (`tutela_store::rotate_signing_key`), with its
     /// record in the deployment's audit chain, in one transaction.
     pub(crate) async fn rotate_signing_key(
@@ -440,6 +475,22 @@ fn key_record(
         tutela_contracts::audit::Actor::new(crate::audit::system()?),
         &format!("tutela_signing_key:{verb}"),
         ("tutela_signing_key", kid),
+    )
+    .allowed(0))
+}
+
+fn audit_key_record(
+    iss: &tutela_contracts::tenant::Issuer,
+    verb: &str,
+    kid: &str,
+) -> Result<crate::audit::Record, crate::audit::BuildError> {
+    let tid = tutela_store::audit::deployment_tenant()
+        .map_err(|_| crate::audit::BuildError::new("deployment tenant"))?;
+    Ok(crate::audit::Record::new(
+        &TenantKey::new(iss.clone(), tid),
+        tutela_contracts::audit::Actor::new(crate::audit::system()?),
+        &format!("tutela_audit_key:{verb}"),
+        ("tutela_audit_key", kid),
     )
     .allowed(0))
 }

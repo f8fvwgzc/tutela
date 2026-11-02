@@ -290,6 +290,8 @@ fn audit_label(resource_type: &str) -> &'static str {
         "tutela_group" => "group",
         "tutela_scope" => "scope",
         "tutela_role" => "role",
+        "tutela_audit_key" => "audit_key",
+        "tutela_app" => "app",
         _ => "write_check",
     }
 }
