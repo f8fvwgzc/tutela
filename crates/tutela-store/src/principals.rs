@@ -69,8 +69,9 @@ fn state(r: &Row) -> Result<PrincipalState, StoreError> {
 }
 
 /// The principal of the upstream account `(iss, sub)` in `tenant`, made
-/// the first time it is seen. `iss` is the external issuer, `sub` its own
-/// subject. Two accounts never merge, whatever their e-mail says.
+/// the first time it is seen, and `true` when this call made it. `iss` is
+/// the external issuer, `sub` its own subject. Two accounts never merge,
+/// whatever their e-mail says.
 ///
 /// Making a principal changes no decision, so it does not bump the
 /// revision: with no assignment, a new principal holds nothing.
@@ -85,7 +86,7 @@ pub async fn provision_user(
     tenant: &TenantKey,
     iss: &Issuer,
     sub: &str,
-) -> Result<PrincipalState, StoreError> {
+) -> Result<(PrincipalState, bool), StoreError> {
     if sub.is_empty() || sub.len() > 255 {
         return Err(StoreError::invalid("an upstream subject is 1 to 255 bytes"));
     }
@@ -101,7 +102,7 @@ pub async fn provision_user(
         .await
         .db()?
     {
-        return state(&r);
+        return Ok((state(&r)?, false));
     }
     let user = format!("user:usr_{}", uuid7()?);
     tx.execute(
@@ -122,7 +123,9 @@ pub async fn provision_user(
         .query_one(&find, &[&tid, &iss.as_str(), &sub])
         .await
         .db()?;
-    state(&r)
+    let found = state(&r)?;
+    let created = found.principal.to_string() == user;
+    Ok((found, created))
 }
 
 /// What the store knows of `principal` in `tenant`, or `None` when it has

@@ -110,6 +110,11 @@ impl Revocations {
             Identity::Delegated(c) => (&c.sub, c.epoch, c.act.chain()),
             _ => return Ok(()),
         };
+        // `tutelad` itself is the actor of the records it writes on its own
+        // (ADR-0034); no token may speak as it.
+        if sub.to_string() == crate::audit::SYSTEM {
+            return Err(Refusal::Revoked);
+        }
         let book = self.book(&Tenant::of(id)).await.map_err(Refusal::Problem)?;
         if book.current(sub, epoch) && !actors.iter().any(|a| book.disabled(a)) {
             Ok(())

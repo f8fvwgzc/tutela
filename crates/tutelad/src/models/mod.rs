@@ -10,6 +10,10 @@
 //! data that has just been checked: `read_audit` to look, `manage_access` and
 //! `manage_fields` to change. An agent never holds an admin key, and a
 //! delegated or an external token never passes one on.
+//!
+//! **Audit** (ADR-0034). A publish, a proposal and its end, a setting and an
+//! impact report each have an audit.v1 record: in the change's transaction,
+//! or for a refusal and a report, in one of their own before the answer.
 
 pub mod http;
 pub mod wire;
@@ -28,6 +32,7 @@ use tutela_store::approval;
 use tutela_store::{ActiveModel, StoreError, StoreErrorKind, TenantBundle, TenantPublish};
 
 use crate::api::{AppState, Problem};
+use crate::audit::{self, Record};
 use crate::authz::floor;
 use crate::cache::ActionClass;
 use crate::tenant::Tenant;
@@ -308,6 +313,82 @@ pub(crate) async fn approved(
     Ok(kid)
 }
 
+/// What a publish record holds (ADR-0034): the version, the revision, the
+/// author, the approvers, the class, `restores` and the impact report's
+/// digest, with the digests it went from and to.
+struct Published<'a> {
+    version: i64,
+    rev: u64,
+    author: &'a str,
+    approvers: Vec<serde_json::Value>,
+    class: &'a str,
+    restores: Option<i64>,
+    impact_digest: &'a str,
+    from: &'a str,
+    to: &'a str,
+}
+
+impl Published<'_> {
+    /// The record of this publish by `actor`, direct or through an approved
+    /// proposal.
+    fn record(self, tenant: &Tenant, actor: &Principal) -> Record {
+        Record::new(
+            tenant.key(),
+            tutela_contracts::audit::Actor::new(actor.clone()),
+            "tutela_model:publish",
+            ("tutela_model", &format!("v{}", self.version)),
+        )
+        .allowed(self.rev)
+        .detail("version", self.version)
+        .detail("rev", self.rev)
+        .detail("author", self.author)
+        .detail("approvers", self.approvers)
+        .detail("class", self.class)
+        .detail("restores", self.restores)
+        .detail("impact_digest", self.impact_digest)
+        .detail("from", self.from)
+        .detail("to", self.to)
+    }
+}
+
+/// What a refused publish or approval was about.
+struct Refused<'a> {
+    action: &'a str,
+    resource: (&'a str, &'a str),
+    rev: u64,
+    to: &'a str,
+}
+
+/// Writes the record of `p`, in its own transaction, when it is a refusal of
+/// the publish itself (`approval_required`, `two_person_required`,
+/// `same_person`): the change did not happen. Gives `p` back.
+async fn record_refusal(
+    state: &AppState,
+    tenant: &Tenant,
+    actor: &Principal,
+    what: Refused<'_>,
+    p: Problem,
+) -> Problem {
+    if !matches!(
+        p.code,
+        "approval_required" | "two_person_required" | "same_person"
+    ) {
+        return p;
+    }
+    let record = Record::new(
+        tenant.key(),
+        tutela_contracts::audit::Actor::new(actor.clone()),
+        what.action,
+        what.resource,
+    )
+    .denied(what.rev, p.code)
+    .detail("to", what.to);
+    match audit::write_alone(state, tenant, vec![record]).await {
+        Ok(()) => p,
+        Err(e) => e,
+    }
+}
+
 fn store_conflict(e: StoreError) -> Problem {
     match e.kind() {
         StoreErrorKind::Exists => conflict("version_conflict", "a newer model; compare again"),
@@ -354,9 +435,18 @@ pub async fn publish(
     let impact = ImpactOut::of(&report(state, &tenant, &now, Arc::clone(&candidate)).await?);
     let impact_text = serde_json::to_string(&impact).map_err(|_| Problem::stale("unavailable"))?;
     let mut approvers = Vec::new();
+    let refuse = |p| {
+        let what = Refused {
+            action: "tutela_model:publish",
+            resource: ("tutela_model", "publish"),
+            rev: now.bundle.rev,
+            to: &to,
+        };
+        record_refusal(state, &tenant, &actor, what, p)
+    };
     if d.is_widening() {
         let app = candidate.app().as_str();
-        let kid = approved(
+        match approved(
             state,
             &tenant,
             body.approval.as_deref(),
@@ -364,13 +454,16 @@ pub async fn publish(
             &now.active.digest,
             &to,
         )
-        .await?;
-        approvers.push(kid);
+        .await
+        {
+            Ok(kid) => approvers.push(kid),
+            Err(p) => return Err(refuse(p).await),
+        }
     }
     let author = actor.to_string();
     let mut conn = state.db.conn().await?;
     let tx = conn.begin(&tenant).await?;
-    let (version, rev) = tutela_store::publish_tenant_model(
+    let stored = tutela_store::publish_tenant_model(
         &tx,
         tenant.key(),
         &TenantPublish {
@@ -386,7 +479,37 @@ pub async fn publish(
         },
     )
     .await
-    .map_err(store_conflict)?;
+    .map_err(store_conflict);
+    let (version, rev) = match stored {
+        Ok(v) => v,
+        Err(p) => {
+            drop(tx);
+            return Err(refuse(p).await);
+        }
+    };
+    let class = d.class().as_str().to_ascii_lowercase();
+    audit::write(
+        state,
+        &tx,
+        vec![
+            Published {
+                version,
+                rev,
+                author: &author,
+                approvers: approvers
+                    .iter()
+                    .map(|k| serde_json::json!({ "key": k }))
+                    .collect(),
+                class: &class,
+                restores,
+                impact_digest: &impact.digest,
+                from: &now.active.digest,
+                to: &to,
+            }
+            .record(&tenant, &actor),
+        ],
+    )
+    .await?;
     tx.commit().await?;
     tracing::info!(version, rev, class = %d.class(), "a model was published");
     Ok(PublishResult {
@@ -411,19 +534,40 @@ pub async fn impact(
     body: PublishBody,
 ) -> Result<ChangeOut, Problem> {
     let tenant = Tenant::of(id);
-    admin(state, id, &tenant, &READ_KEYS).await?;
+    let actor = admin(state, id, &tenant, &READ_KEYS).await?;
     let (source, _) = candidate_text(state, &tenant, body.source, body.restore).await?;
     let candidate = compile(source.clone()).await?;
     let now = current(state, &tenant).await?;
     let (d, text) = diff_of(&now.model, &candidate)?;
     let report = report(state, &tenant, &now, Arc::new(candidate)).await?;
+    let impact = ImpactOut::of(&report);
+    // It shows other people's access: who asked is recorded first.
+    audit::write_alone(
+        state,
+        &tenant,
+        vec![
+            Record::new(
+                tenant.key(),
+                tutela_contracts::audit::Actor::new(actor),
+                "tutela_model:impact",
+                ("tutela_model", &format!("v{}", now.active.version)),
+            )
+            .allowed(now.bundle.rev)
+            .detail("version", now.active.version)
+            .detail("from", now.active.digest.clone())
+            .detail("to", tutela_store::digest(&source))
+            .detail("class", d.class().as_str().to_ascii_lowercase())
+            .detail("impact_digest", impact.digest.clone()),
+        ],
+    )
+    .await?;
     Ok(ChangeOut {
         version: now.active.version,
         from: now.active.digest.clone(),
         to: tutela_store::digest(&source),
         class: d.class().as_str().to_ascii_lowercase(),
         diff: text,
-        impact: ImpactOut::of(&report),
+        impact,
     })
 }
 
@@ -525,6 +669,28 @@ pub async fn set_settings(
     let mut conn = state.db.conn().await?;
     let tx = conn.begin(&tenant).await?;
     let t = tutela_store::set_two_person(&tx, tenant.key(), on, &actor.to_string()).await?;
+    let state_now = match (t.on, t.off_requested_by.is_some()) {
+        (true, true) => "off_asked",
+        (true, false) => "on",
+        (false, _) => "off",
+    };
+    let rev = tutela_store::rev(&tx, tenant.key()).await?;
+    audit::write(
+        state,
+        &tx,
+        vec![
+            Record::new(
+                tenant.key(),
+                tutela_contracts::audit::Actor::new(actor.clone()),
+                "tutela_setting:write",
+                ("tutela_setting", "two_person"),
+            )
+            .allowed(rev)
+            .detail("asked", if on { "on" } else { "off" })
+            .detail("two_person", state_now),
+        ],
+    )
+    .await?;
     tx.commit().await?;
     tracing::info!(
         on = t.on,
@@ -589,6 +755,26 @@ pub async fn propose(
     let stored = tutela_store::proposal(&tx, tenant.key(), &pid)
         .await?
         .ok_or_else(|| Problem::stale("unavailable"))?;
+    audit::write(
+        state,
+        &tx,
+        vec![
+            Record::new(
+                tenant.key(),
+                tutela_contracts::audit::Actor::new(actor.clone()),
+                "tutela_proposal:propose",
+                ("tutela_proposal", &pid),
+            )
+            .allowed(now.bundle.rev)
+            .detail("proposal", pid.clone())
+            .detail("base_version", expected)
+            .detail("class", d.class().as_str().to_ascii_lowercase())
+            .detail("restores", restores)
+            .detail("impact_digest", impact.digest.clone())
+            .detail("to", tutela_store::digest(&source)),
+        ],
+    )
+    .await?;
     tx.commit().await?;
     Ok(ProposalOut::of(stored))
 }
@@ -631,21 +817,50 @@ pub async fn proposal(state: &AppState, id: &Identity, pid: &str) -> Result<Prop
     open(state, &tenant, pid).await.map(ProposalOut::of)
 }
 
+/// Closes a proposal: rejected by `actor`, or stale (`why`) when `actor`
+/// tried to approve it. Its record is in the same transaction.
 async fn close(
     state: &AppState,
     tenant: &Tenant,
     pid: &str,
-    stale: bool,
-    by: Option<&str>,
+    actor: &Principal,
+    stale: Option<&'static str>,
 ) -> Result<(), Problem> {
+    let by = actor.to_string();
     let mut conn = state.db.conn().await?;
     let tx = conn.begin(tenant).await?;
-    tutela_store::close_proposal(&tx, tenant.key(), pid, stale, by)
-        .await
-        .map_err(|e| match e.kind() {
-            StoreErrorKind::NotFound => conflict("not_open", "this proposal is not open"),
-            _ => e.into(),
-        })?;
+    tutela_store::close_proposal(
+        &tx,
+        tenant.key(),
+        pid,
+        stale.is_some(),
+        stale.is_none().then_some(by.as_str()),
+    )
+    .await
+    .map_err(|e| match e.kind() {
+        StoreErrorKind::NotFound => conflict("not_open", "this proposal is not open"),
+        _ => e.into(),
+    })?;
+    let rev = tutela_store::rev(&tx, tenant.key()).await?;
+    let base = Record::new(
+        tenant.key(),
+        tutela_contracts::audit::Actor::new(actor.clone()),
+        if stale.is_some() {
+            "tutela_proposal:approve"
+        } else {
+            "tutela_proposal:reject"
+        },
+        ("tutela_proposal", pid),
+    )
+    .detail("proposal", pid);
+    let record = match stale {
+        Some(why) => base
+            .failed(rev, "stale_proposal")
+            .detail("state", "stale")
+            .detail("why", why),
+        None => base.allowed(rev).detail("state", "rejected"),
+    };
+    audit::write(state, &tx, vec![record]).await?;
     tx.commit().await?;
     Ok(())
 }
@@ -659,7 +874,7 @@ async fn close(
 pub async fn reject(state: &AppState, id: &Identity, pid: &str) -> Result<ProposalOut, Problem> {
     let tenant = Tenant::of(id);
     let actor = admin(state, id, &tenant, &WRITE_KEYS).await?;
-    close(state, &tenant, pid, false, Some(&actor.to_string())).await?;
+    close(state, &tenant, pid, &actor, None).await?;
     open(state, &tenant, pid).await.map(ProposalOut::of)
 }
 
@@ -689,11 +904,18 @@ pub async fn approve(
     }
     let by = actor.to_string();
     if by == p.proposed_by {
-        return Err(Problem::new(
+        let refusal = Problem::new(
             StatusCode::FORBIDDEN,
             "same_person",
             "the proposer cannot approve its own proposal",
-        ));
+        );
+        let what = Refused {
+            action: "tutela_proposal:approve",
+            resource: ("tutela_proposal", pid),
+            rev: p.rev,
+            to: &p.digest,
+        };
+        return Err(record_refusal(state, &tenant, &actor, what, refusal).await);
     }
     let source = p
         .source
@@ -713,22 +935,32 @@ pub async fn approve(
                 .then_some("its impact report would say something else now")
         };
         if let Some(why) = why {
-            close(state, &tenant, pid, true, None).await?;
+            close(state, &tenant, pid, &actor, Some(why)).await?;
             return Err(stale_proposal(why));
         }
         let mut approvers = Vec::new();
         if p.class == "widening" {
-            approvers.push(
-                approved(
-                    state,
-                    &tenant,
-                    body.approval.as_deref(),
-                    candidate.app().as_str(),
-                    &p.base_digest,
-                    &p.digest,
-                )
-                .await?,
-            );
+            match approved(
+                state,
+                &tenant,
+                body.approval.as_deref(),
+                candidate.app().as_str(),
+                &p.base_digest,
+                &p.digest,
+            )
+            .await
+            {
+                Ok(kid) => approvers.push(kid),
+                Err(e) => {
+                    let what = Refused {
+                        action: "tutela_proposal:approve",
+                        resource: ("tutela_proposal", pid),
+                        rev: now.bundle.rev,
+                        to: &p.digest,
+                    };
+                    return Err(record_refusal(state, &tenant, &actor, what, e).await);
+                }
+            }
         }
         let mut conn = state.db.conn().await?;
         let tx = conn.begin(&tenant).await?;
@@ -743,6 +975,34 @@ pub async fn approve(
         .await
         {
             Ok((version, rev)) => {
+                let approved_by = match approvers.first() {
+                    Some(k) => serde_json::json!({ "principal": by, "key": k }),
+                    None => serde_json::json!({ "principal": by }),
+                };
+                let publish = Published {
+                    version,
+                    rev,
+                    author: &p.proposed_by,
+                    approvers: vec![approved_by],
+                    class: &p.class,
+                    restores: p.restores,
+                    impact_digest: &p.impact_digest,
+                    from: &p.base_digest,
+                    to: &p.digest,
+                }
+                .record(&tenant, &actor)
+                .detail("proposal", pid);
+                let approval = Record::new(
+                    tenant.key(),
+                    tutela_contracts::audit::Actor::new(actor.clone()),
+                    "tutela_proposal:approve",
+                    ("tutela_proposal", pid),
+                )
+                .allowed(rev)
+                .detail("proposal", pid)
+                .detail("state", "published")
+                .detail("version", version);
+                audit::write(state, &tx, vec![approval, publish]).await?;
                 tx.commit().await?;
                 tracing::info!(version, rev, "a proposal was approved and published");
                 return Ok(PublishResult {

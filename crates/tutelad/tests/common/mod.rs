@@ -738,3 +738,33 @@ pub fn path(s: &Seed) -> Value {
         {"type": "org", "id": s.org.id.to_string()},
     ])
 }
+
+// ---------- The audit log (ADR-0034) ----------
+
+/// Every audit record of `key`, as JSON, after checking that the chain holds.
+pub async fn audit_of(owner: &mut Client, key: &tutela_contracts::tenant::TenantKey) -> Vec<Value> {
+    let tx = owner.transaction().await.unwrap();
+    let report = tutela_store::verify_audit_chain(&tx, key).await.unwrap();
+    assert!(report.is_intact(), "{report:?}");
+    let rows = tutela_store::audit_records(&tx, key, 0, 1000)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(rows.len() as u64, report.head);
+    rows.iter()
+        .map(|r| serde_json::from_str(&r.body).unwrap())
+        .collect()
+}
+
+/// The records of `key` whose `action` is `action`.
+pub async fn audited(
+    owner: &mut Client,
+    key: &tutela_contracts::tenant::TenantKey,
+    action: &str,
+) -> Vec<Value> {
+    audit_of(owner, key)
+        .await
+        .into_iter()
+        .filter(|r| r["action"] == action)
+        .collect()
+}

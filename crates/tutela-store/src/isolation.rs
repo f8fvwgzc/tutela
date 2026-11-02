@@ -24,6 +24,14 @@ const READ_ONLY: [&str; 4] = ["tenant", "app_manifest", "schema_migration", "app
 /// A trigger keeps a key's identity and its denial.
 const KEPT: [&str; 1] = ["signing_key"];
 
+/// Tables with tenant data where a runtime role gets less than read and
+/// write: the audit log is append-only (ADR-0034), and its head only moves
+/// forward. A trigger refuses the rest for every role as well.
+const LIMITED: [(&str, &str); 2] = [
+    ("audit_record", "SELECT, INSERT"),
+    ("audit_head", "SELECT, INSERT, UPDATE"),
+];
+
 /// A plain role name: it goes into `GRANT`, which takes no parameters.
 fn plain_role(role: &str) -> bool {
     !role.is_empty()
@@ -86,8 +94,13 @@ pub async fn grant_service(client: &mut Client, role: &str) -> Result<(), StoreE
         .db()?;
     for t in tables {
         let table: &str = t.try_get(0).db()?;
+        let privileges = LIMITED
+            .iter()
+            .find(|(name, _)| *name == table)
+            .map_or("SELECT, INSERT, UPDATE, DELETE", |(_, p)| *p);
         tx.batch_execute(&format!(
-            "GRANT SELECT, INSERT, UPDATE, DELETE ON tutela.\"{table}\" TO {role}"
+            "REVOKE ALL ON tutela.\"{table}\" FROM {role}; \
+             GRANT {privileges} ON tutela.\"{table}\" TO {role}"
         ))
         .await
         .db()?;
@@ -115,7 +128,9 @@ pub async fn grant_service(client: &mut Client, role: &str) -> Result<(), StoreE
 ///   create objects there;
 /// - every table with a `tenant_id` column, except the tenant directory, has
 ///   row-level security, `FORCE` and a policy;
-/// - the schema has no `SECURITY DEFINER` function and no owner-rights view.
+/// - the schema has no `SECURITY DEFINER` function and no owner-rights view;
+/// - the role may not change or remove an audit record, and the triggers
+///   that refuse it for every role are enabled (ADR-0034).
 ///
 /// `tutelad` refuses to serve when this fails. A product in library mode can
 /// call it at start-up too.
@@ -181,5 +196,29 @@ pub async fn check_isolation(client: &Client) -> Result<(), StoreError> {
     if schema.try_get::<_, bool>(2).db()? {
         return Err(StoreError::isolation("the schema has an owner-rights view"));
     }
-    Ok(())
+    let audit = client
+        .query_one(
+            "SELECT CASE WHEN to_regclass('tutela.audit_record') IS NULL THEN 0 \
+             WHEN has_table_privilege(current_user, 'tutela.audit_record', 'UPDATE') \
+               OR has_table_privilege(current_user, 'tutela.audit_record', 'DELETE') \
+               OR has_table_privilege(current_user, 'tutela.audit_record', 'TRUNCATE') \
+               OR has_table_privilege(current_user, 'tutela.audit_head', 'DELETE') \
+               OR has_table_privilege(current_user, 'tutela.audit_head', 'TRUNCATE') THEN 1 \
+             WHEN (SELECT count(*) FROM pg_trigger \
+                   WHERE tgrelid IN (to_regclass('tutela.audit_record'), to_regclass('tutela.audit_head')) \
+                   AND tgname IN ('audit_record_kept', 'audit_record_not_truncated', \
+                                  'audit_head_forward', 'audit_head_not_truncated') \
+                   AND tgenabled IN ('O', 'A')) <> 4 THEN 2 \
+             ELSE 0 END",
+            &[],
+        )
+        .await
+        .db()?;
+    match audit.try_get::<_, i32>(0).db()? {
+        0 => Ok(()),
+        1 => Err(StoreError::isolation("the role may change the audit log")),
+        _ => Err(StoreError::isolation(
+            "the audit log's append-only triggers are not enabled",
+        )),
+    }
 }

@@ -142,6 +142,7 @@ pub struct Metrics {
     key_refreshes: Family<SweepLabels, Counter>,
     published_keys: Gauge,
     token_operations: Family<DecisionLabels, Counter>,
+    audit_records: Family<DecisionLabels, Counter>,
 }
 
 impl Default for Metrics {
@@ -236,6 +237,12 @@ impl Metrics {
             "Token exchanges, by the kind of token asked for and how they ended",
             token_operations.clone(),
         );
+        let audit_records = Family::<DecisionLabels, Counter>::default();
+        registry.register(
+            "audit_records",
+            "Audit records, by what they are about and their outcome; `write`/`error` counts failed writes",
+            audit_records.clone(),
+        );
         Self {
             registry,
             requests,
@@ -252,7 +259,20 @@ impl Metrics {
             key_refreshes,
             published_keys,
             token_operations,
+            audit_records,
         }
+    }
+
+    /// Counts one audit record by what it is about (`model`, `token`, ...)
+    /// and its outcome (`success`, `failure`, `denied`), or a failed write
+    /// (`write`, `error`). The labels never hold a tenant or a principal.
+    pub fn count_audit(&self, about: &'static str, outcome: &'static str) {
+        self.audit_records
+            .get_or_create(&DecisionLabels {
+                operation: about.to_owned(),
+                outcome: outcome.to_owned(),
+            })
+            .inc();
     }
 
     /// Counts one load of the signing keys.

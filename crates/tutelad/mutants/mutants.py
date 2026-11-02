@@ -35,6 +35,12 @@ REVOCATION = "crates/tutelad/src/revocation.rs"
 PRINCIPALS = "crates/tutela-store/src/principals.rs"
 EXCHANGE = ["-p", "tutelad", "--test", "exchange"]
 DELEGATION = ["-p", "tutelad", "--test", "delegation"]
+STORE_AUDIT = "crates/tutela-store/src/audit.rs"
+ISOLATION = "crates/tutela-store/src/isolation.rs"
+AUDIT_SQL = "crates/tutela-store/migrations/0008_audit_log.sql"
+STORE_TM20 = ["-p", "tutela-store", "--lib", "tm20"]
+AUDIT = ["-p", "tutelad", "--test", "audit"]
+WRITE_SRC = "crates/tutelad/src/authz/write.rs"
 
 # (id, file, what it breaks, old text, new text, cargo test arguments).
 # `old` must occur once.
@@ -195,6 +201,55 @@ MUTANTS = [
      "        if book.current(sub, epoch) && !actors.iter().any(|a| book.disabled(a)) {\n",
      "        if book.current(sub, epoch) {\n",
      DELEGATION),
+    # The local audit log (ADR-0034).
+    ("A01", MODELS, "the publish record is written outside the change's transaction, before it",
+     "    let author = actor.to_string();\n    let mut conn = state.db.conn().await?;\n    let tx = conn.begin(&tenant).await?;\n    let stored = tutela_store::publish_tenant_model(\n",
+     "    let author = actor.to_string();\n    audit::write_alone(state, &tenant, vec![Published { version: expected + 1, rev: now.bundle.rev, author: &author, approvers: Vec::new(), class: \"neutral\", restores, impact_digest: &impact.digest, from: &now.active.digest, to: &to }.record(&tenant, &actor)]).await?;\n    let mut conn = state.db.conn().await?;\n    let tx = conn.begin(&tenant).await?;\n    let stored = tutela_store::publish_tenant_model(\n",
+     AUDIT),
+    ("A02", MODELS, "a close that did not happen is recorded as done",
+     "        StoreErrorKind::NotFound => conflict(\"not_open\", \"this proposal is not open\"),\n        _ => e.into(),\n    })?;\n    let rev = tutela_store::rev(&tx, tenant.key()).await?;\n",
+     "        StoreErrorKind::NotFound => conflict(\"not_open\", \"this proposal is not open\"),\n        _ => e.into(),\n    }).ok();\n    let rev = tutela_store::rev(&tx, tenant.key()).await?;\n",
+     AUDIT),
+    ("A03", STORE_AUDIT, "the verifier does not check the link to the record before",
+     "            } else if e.prev_hash != prev {\n",
+     "            } else if false && e.prev_hash != prev {\n",
+     STORE_TM20),
+    ("A04", STORE_AUDIT, "the verifier does not see a missing record",
+     "            let problem = if e.seq != expected {\n",
+     "            let problem = if false && e.seq != expected {\n",
+     STORE_TM20),
+    ("A05", STORE_AUDIT, "the verifier does not see the last records gone",
+     "    if last != head_seq || (head_seq > 0 && prev != head_hash) {\n",
+     "    if false && (last != head_seq || (head_seq > 0 && prev != head_hash)) {\n",
+     STORE_TM20),
+    ("A06", STORE_AUDIT, "a record of another tenant goes into this tenant's chain",
+     "    if drafts.iter().any(|d| d.tenant.tid != *tid) {\n",
+     "    if false && drafts.iter().any(|d| d.tenant.tid != *tid) {\n",
+     STORE_TM20),
+    ("A07", AUDIT_SQL, "the database lets a record be changed or removed",
+     "    RAISE EXCEPTION 'the audit log is append-only'\n        USING ERRCODE = 'integrity_constraint_violation';\n",
+     "    RETURN NULL;\n",
+     STORE_TM20),
+    ("A08", ISOLATION, "the service role may change the audit log",
+     "    (\"audit_record\", \"SELECT, INSERT\"),\n",
+     "    (\"audit_record\", \"SELECT, INSERT, UPDATE, DELETE\"),\n",
+     AUDIT),
+    ("A09", EXCHANGE_SRC, "a refused exchange of a known tenant leaves no record",
+     "    if let (Err(refusal), Some(tenant)) = (&result, &trail.tenant) {\n",
+     "    if let (Err(refusal), Some(tenant)) = (&result, &None::<Tenant>) {\n",
+     EXCHANGE),
+    ("A10", EXPLAIN, "an explain answers with no record of who asked",
+     "        record_asked(state, &tenant, id, OP, &ask, rev, e.decision.is_allowed()).await?;\n",
+     "",
+     AUDIT),
+    ("A11", WRITE_SRC, "a write-check deny leaves no record",
+     "    if d.effect == Effect::Allow && d.moved.is_none() && denied_links.is_empty() {\n",
+     "    if true || (d.effect == Effect::Allow && d.moved.is_none() && denied_links.is_empty()) {\n",
+     AUDIT),
+    ("A12", REVOCATION, "a token may speak as tutelad itself",
+     "        if sub.to_string() == crate::audit::SYSTEM {\n",
+     "        if false && sub.to_string() == crate::audit::SYSTEM {\n",
+     AUDIT),
 ]
 
 

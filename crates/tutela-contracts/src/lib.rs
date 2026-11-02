@@ -39,6 +39,7 @@ pub mod decision;
 pub mod encoding;
 pub mod events;
 pub mod id;
+pub mod jcs;
 pub mod keys;
 pub mod level;
 pub mod principal;

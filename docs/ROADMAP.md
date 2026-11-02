@@ -132,6 +132,7 @@ Done:
 | Token exchange (RFC 8693) at `POST /oauth2/token`: an external issuer's token for a Tutela access token, the tenant from the trust list, just-in-time provisioning by `(iss, sub)`, each external token once; own tokens for another audience; a raised `epoch` or a disabled principal refused on the API | Done (part 3a) | [ADR-0031](DECISIONS.md#adr-0031-token-exchange-the-tenant-from-the-trust-list-a-person-from-iss-sub) |
 | Admin tokens: `aud=tutela-admin` from token exchange, for a person after step-up (`TUTELA_ADMIN_ACR`), at most 300 s; the model routes, explain and simulate take them from a person and a `tutela-authz` token from a service (a pipeline); every other route refuses them | Done (part 3a) | [ADR-0032](DECISIONS.md#adr-0032-admin-tokens-a-person-steps-up-a-pipeline-keeps-its-service-token) |
 | Delegated agent tokens (RFC 8693, `act`, `typ: agent+jwt`) from token exchange, only for `delegation_aware` audiences, at most 4 actors, an agent registered and enabled in the tenant (an access token of an agent, or attache's JWT-SVID on `/ns/<ns>/svc/<service>`), 60 to 120 s; on in `verifier_config`; a disabled agent or person stops them | Done (part 3a) | [ADR-0033](DECISIONS.md#adr-0033-delegated-agent-tokens-from-token-exchange) |
+| Local hash-chained audit log: one chain per tenant in the change's transaction, `seq` from 1 with no gap, append-only in the database, a verifier that finds the first broken link; records for every token issued or refused, provisioning, publishes and their refusals, proposals, the two-person setting, impact, explain, simulate, write checks, the expiry sweep and signing keys; `details` added to audit.v1 | Done (part 3b) | [ADR-0034](DECISIONS.md#adr-0034-the-local-audit-log-one-chain-per-tenant-written-with-the-change) |
 
 Not started:
 
@@ -140,7 +141,6 @@ Not started:
 | Signed bundles for PDP caches and offline checks | 3b | After SSE ([ADR-0024](DECISIONS.md#adr-0024-signed-bundles-wait-for-part-3)). Their `expires_at` must honour `next_expiry`. |
 | `tutela apply` against `tutelad`, `tutela apps create`, `tutela keys rotate` | 4 | `tutela apply` calls `POST /v1/models/publish`, per tenant. |
 | Webhooks, SSE `/v1/events` | 3b | |
-| Local hash-chained audit log | 3b | `expire_assignments` returns what it removed, so the sweep can write audit in its transaction. |
 | `tutela.admin.v1`, agent principal management, org lifecycle events, soft-delete of tenants | 3c | `grant_service` gives no write on `tenant` yet. The store calls for agents and revocation exist (part 3a). |
 | A test of token exchange against a real Keycloak ([#87](https://github.com/f8fvwgzc/tutela/issues/87)) | open | No image could be pulled; tested against a local signer of Keycloak-shaped tokens. |
 | Client authentication at the token endpoint | 4 | With apps (`tutela apps create`): bind `azp` to the client (ADR-0031). |
