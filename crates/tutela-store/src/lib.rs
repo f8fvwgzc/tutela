@@ -33,6 +33,7 @@ pub mod approval;
 mod approvers;
 mod apps;
 pub mod audit;
+mod audit_keys;
 mod bindings;
 mod connect;
 pub mod events;
@@ -67,6 +68,10 @@ pub use apps::{
 pub use audit::{
     AuditEntry, BrokenLink, ChainProblem, ChainReport, append_audit, append_deployment_audit,
     audit_records, deployment_audit_records, verify_audit_chain, verify_deployment_audit_chain,
+};
+pub use audit_keys::{
+    AuditKey, Ensured, audit_key_id, audit_keys, ensure_audit_key, rewrap_audit_keys,
+    rotate_audit_key, signing_audit_key,
 };
 pub use bindings::{
     Assignment, AssignmentQuery, GroupInfo, GroupSummary, MAX_PAGE, ScopeInfo, ancestors,

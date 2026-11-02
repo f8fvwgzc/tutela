@@ -26,9 +26,10 @@ const READ_ONLY: [&str; 4] = ["tenant", "app_manifest", "schema_migration", "app
 const DIRECTORY_COLUMNS: &str = "name, deleted_at, purge_after, purged_at";
 
 /// Tables with no tenant data that a runtime role may read, add to and
-/// update, never delete from: the service's own signing keys (ADR-0030).
-/// A trigger keeps a key's identity and its denial.
-const KEPT: [&str; 1] = ["signing_key"];
+/// update, never delete from: the service's own signing keys (ADR-0030)
+/// and its audit producer keys (ADR-0045). A trigger keeps a key's identity,
+/// its denial and its retirement.
+const KEPT: [&str; 2] = ["signing_key", "audit_key"];
 
 /// Tables with tenant data where a runtime role gets less than read and
 /// write: the audit log is append-only (ADR-0034), and its head only moves

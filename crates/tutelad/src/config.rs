@@ -355,23 +355,28 @@ impl Config {
                     .ok_or_else(|| {
                         anyhow!("TUTELA_LEDGER_TOKEN is required with TUTELA_LEDGER_URL")
                     })?;
-                let key = get("TUTELA_AUDIT_KEY")
-                    .and_then(|k| {
+                // The producer key is sealed in the database (ADR-0045). A
+                // seed from before is imported once, if it is given.
+                let import = match get("TUTELA_AUDIT_KEY").filter(|k| !k.trim().is_empty()) {
+                    None => None,
+                    Some(k) => {
                         use base64::Engine as _;
-                        base64::engine::general_purpose::STANDARD
+                        let key = base64::engine::general_purpose::STANDARD
                             .decode(k.trim())
                             .ok()
-                    })
-                    .filter(|k| k.len() == 32)
-                    .ok_or_else(|| {
-                        anyhow!(
-                            "TUTELA_AUDIT_KEY must be 32 bytes in base64 with TUTELA_LEDGER_URL"
-                        )
-                    })?;
+                            .filter(|k| k.len() == 32)
+                            .ok_or_else(|| {
+                                anyhow!(
+                                    "TUTELA_AUDIT_KEY must be 32 bytes in base64 when it is set"
+                                )
+                            })?;
+                        Some(Zeroizing::new(key))
+                    }
+                };
                 Some(crate::ledger::LedgerConfig {
                     url,
                     token: Zeroizing::new(token),
-                    key: Zeroizing::new(key),
+                    import,
                 })
             }
         };
@@ -920,7 +925,6 @@ mod tests {
         );
         for (extra, why) in [
             (vec![url, key], "TUTELA_LEDGER_TOKEN is required"),
-            (vec![url, token], "TUTELA_AUDIT_KEY must be 32 bytes"),
             (
                 vec![url, token, ("TUTELA_AUDIT_KEY", "c2hvcnQ=")],
                 "TUTELA_AUDIT_KEY must be 32 bytes",
@@ -931,6 +935,9 @@ mod tests {
             assert!(!e.contains(token.1), "{e}");
         }
         assert!(run(&[url, token, key]).is_ok());
+        // The key lives in the database now (ADR-0045): without the
+        // variable a new one is made at start.
+        assert!(run(&[url, token]).is_ok());
         std::fs::remove_file(path).unwrap();
     }
 

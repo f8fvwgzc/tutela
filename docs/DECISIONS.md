@@ -61,6 +61,7 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0042](#adr-0042-the-audit-logs-leftovers-a-chain-check-on-a-timer-the-callers-trace-in-each-record) | The audit log's leftovers: a chain check on a timer, the caller's trace in each record | Accepted |
 | [0043](#adr-0043-scopes-assignments-and-groups-over-the-admin-api-checked-on-the-data-they-change) | Scopes, assignments and groups over the admin API, checked on the data they change | Accepted |
 | [0044](#adr-0044-apps-one-tenant-each-a-hashed-client-secret-and-azp-bound-to-the-client-that-authenticated) | Apps: one tenant each, a hashed client secret, and `azp` bound to the client that authenticated | Accepted |
+| [0045](#adr-0045-the-audit-producer-key-sealed-in-the-database-rotated-with-its-old-keys-kept) | The audit producer key sealed in the database, rotated with its old keys kept | Accepted |
 
 ---
 
@@ -1654,3 +1655,30 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 - **Refuse every exchange without client authentication once apps exist.** The Console and other browser apps could not sign in.
 - **Apps shared by tenants.** One app per tenant keeps its tenant in the record, never in a request, and lets the tenant's owner make and disable it.
 - **Private-key JWT client authentication (RFC 7523).** Stronger, but every product would need a key pair and a JWKS; it can come beside the secret later.
+
+---
+
+## ADR-0045: The audit producer key sealed in the database, rotated with its old keys kept
+
+**Status:** Accepted, 2026-11-02. Built in Phase B, part 4a. It changes how [ADR-0039](#adr-0039-forwarding-to-attaches-evidence-ledger-signed-acknowledged-resumable) holds the producer key: `TUTELA_AUDIT_KEY` in the environment becomes a one-time import.
+
+**Context.** Forwarding to attache's evidence ledger signs every record with the deployment's Ed25519 producer key (CONTRACTS.md 9.3). Part 3b read its seed from `TUTELA_AUDIT_KEY` on every replica. A secret in the environment of every replica is what ADR-0030 moved the token signing keys away from: they are sealed by `tutela-vault` in the database, rotated by the operator, and re-wrapped when the master key changes. There was no rotation for the producer key at all: a new seed would have left attache holding records it could no longer tie to a key.
+
+**Decision.**
+
+1. **Sealed in the database.** Migration 14 adds `tutela.audit_key` (`kid`, `public_key`, `sealed`, `origin`, `created_at`, `retired_at`): the seed only as a `tutela-vault` envelope, purpose `audit_key`, additional data its `kid` (the RFC 7638 thumbprint, `signature.key_id`). It is the deployment's, not a tenant's: no row-level security; the runtime role may read, add and update, never delete (`grant_service`).
+2. **One key signs; old keys stay.** The key with no `retired_at` signs (a unique index allows one). A trigger keeps every key's identity and public key, keeps a retirement, and refuses a delete, for every role. So a record signed by any key, ever, verifies against the table (`tutelad::ledger::verify_record`), and attache's operator keeps every public key the deployment has used in `ledger.producers[].keys`.
+3. **Made at start, when forwarding is on.** With `TUTELA_LEDGER_URL` set, `tutelad` makes sure a key signs before it forwards (`tutela_store::ensure_audit_key`), records `tutela_audit_key:create` or `tutela_audit_key:import` in the deployment's chain, and logs the `key_id` and public key for attache.
+4. **The migration path.** A deployment that set `TUTELA_AUDIT_KEY` keeps it set for its first start on this version: with no key in the table, that seed is sealed and signs (`origin = imported`), so attache needs no change. After that the stored key wins: an env seed that differs is ignored with a warning, and the variable can be removed. `TUTELA_AUDIT_KEY` is no longer required with `TUTELA_LEDGER_URL`; without it a new key is made.
+5. **Rotation.** `tutela keys rotate --audit` (the operator, with `TUTELA_MASTER_KEY`) retires the key that signs and makes the next, in one transaction, recorded as `tutela_audit_key:rotate` with both `kid`s. Every replica signs with the new key from its next tick, because the forwarder reads the key that signs at each tick. A record is signed when it is forwarded, so records written before the rotation and not yet shipped are signed by the new key; those already shipped keep the old key's signature, which still verifies. The operator adds the new public key to attache before rotating, or attache refuses the next batch until it has it (the batch waits, nothing is lost: ADR-0039).
+6. **Re-wrap.** `tutela keys rewrap` seals the audit keys again under the current master key, with the signing keys.
+
+**Consequences.**
+- No replica holds the producer seed in its environment after the first start; a leaked environment no longer leaks it.
+- Rotating the producer key is an operator command, recorded, with no gap in what verifies.
+- A deployment that never set `TUTELA_AUDIT_KEY` gets a new key at its first start with forwarding on; its operator gives attache the logged public key.
+
+**Alternatives considered.**
+- **Keep the seed in the environment.** Every replica holds it, and no rotation keeps old records tied to their key.
+- **Sign records when they are written, not when forwarded.** It would freeze a key into each local record; the local log is hash-chained already (ADR-0034), and signing at forwarding keeps one key to rotate.
+- **Delete retired keys after a while.** A record in attache's ledger could then never be checked again against Tutela's keys.

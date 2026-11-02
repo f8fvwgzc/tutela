@@ -5,7 +5,7 @@
 //! [`Forwarder`] walks each chain (every tenant of the directory, and the
 //! deployment's own): it claims the chain for a lease, reads up to
 //! [`BATCH`] records past what the ledger has acknowledged, signs each with
-//! the service's Ed25519 producer key (`TUTELA_AUDIT_KEY`), and sends them
+//! the deployment's Ed25519 producer key, and sends them
 //! to attache's acknowledged Append API, `POST /api/v1/ledger/append`, with
 //! its token (`TUTELA_LEDGER_TOKEN`). Only a `200` that acknowledges every
 //! record moves the chain's `shipped_seq`; anything else leaves it, and the
@@ -22,11 +22,20 @@
 //! and `signature.value` base64url without padding. attache's operator
 //! names the public key in `ledger.producers` (its `operations.md`); this
 //! logs it at start.
+//!
+//! **The producer key is sealed in the database** (ADR-0045), as signing
+//! keys are: `tutela_store::audit_keys`, under `TUTELA_MASTER_KEY`. Each
+//! tick signs with the key that signs then, so a rotation (`tutela keys
+//! rotate --audit`) takes effect at the next tick on every replica. A
+//! retired key keeps its public key, so every record it signed stays
+//! verifiable ([`verify_record`]). `TUTELA_AUDIT_KEY`, where a deployment
+//! still sets it, is imported once at start and never wins over the stored
+//! key.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair as _};
+use aws_lc_rs::signature::{ED25519, Ed25519KeyPair, KeyPair as _, UnparsedPublicKey};
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD as B64};
 use serde_json::Value;
@@ -50,8 +59,10 @@ pub struct LedgerConfig {
     pub url: String,
     /// The `att_` token of the producer (attache's `auth.tokens`).
     pub token: Zeroizing<String>,
-    /// The 32-byte Ed25519 seed of the producer key.
-    pub key: Zeroizing<Vec<u8>>,
+    /// `TUTELA_AUDIT_KEY`, the 32-byte Ed25519 seed of a deployment from
+    /// before ADR-0045: sealed into the database at the first start when it
+    /// holds no key, and ignored after that.
+    pub import: Option<Zeroizing<Vec<u8>>>,
 }
 
 impl std::fmt::Debug for LedgerConfig {
@@ -66,8 +77,8 @@ impl std::fmt::Debug for LedgerConfig {
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum LedgerError {
-    /// `TUTELA_AUDIT_KEY` is not a 32-byte Ed25519 seed.
-    #[error("TUTELA_AUDIT_KEY is not a 32-byte Ed25519 seed in base64")]
+    /// The producer key cannot be used.
+    #[error("the audit producer key cannot be used")]
     Key,
     /// The URL is not one `tutela-safenet` sends to.
     #[error("TUTELA_LEDGER_URL is not an https URL")]
@@ -104,8 +115,7 @@ pub struct Forwarder {
     db: Db,
     url: String,
     token: Zeroizing<String>,
-    pair: Ed25519KeyPair,
-    kid: String,
+    vault: Arc<tutela_vault::Vault>,
     client: Client,
     replica: String,
     lease: Duration,
@@ -116,7 +126,6 @@ impl std::fmt::Debug for Forwarder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Forwarder")
             .field("url", &self.url)
-            .field("kid", &self.kid)
             .finish_non_exhaustive()
     }
 }
@@ -132,12 +141,11 @@ impl Forwarder {
     pub fn new(
         db: Db,
         ledger: &LedgerConfig,
+        vault: Arc<tutela_vault::Vault>,
         policy: Policy,
         replica: String,
         metrics: Arc<Metrics>,
     ) -> Result<Self, LedgerError> {
-        let pair =
-            Ed25519KeyPair::from_seed_unchecked(&ledger.key).map_err(|_| LedgerError::Key)?;
         let url = tutela_safenet::Url::parse(&ledger.url).map_err(|_| LedgerError::Url)?;
         let host = url.host_str().ok_or(LedgerError::Url)?;
         let policy = policy
@@ -147,13 +155,11 @@ impl Forwarder {
             .max_body(1024 * 1024);
         tutela_safenet::check_url(&ledger.url, &policy).map_err(|_| LedgerError::Url)?;
         let client = Client::new(policy).map_err(|_| LedgerError::Url)?;
-        let kid = key_id(pair.public_key().as_ref());
         Ok(Self {
             db,
             url: ledger.url.clone(),
             token: ledger.token.clone(),
-            pair,
-            kid,
+            vault,
             client,
             replica,
             lease: Duration::from_secs(60),
@@ -161,17 +167,27 @@ impl Forwarder {
         })
     }
 
-    /// The producer key's id (`signature.key_id`).
-    #[must_use]
-    pub fn key_id(&self) -> &str {
-        &self.kid
+    /// The key that signs now, opened: its id and its pair.
+    async fn signer(&self) -> Result<Option<(String, Ed25519KeyPair)>, DbError> {
+        let Some(key) = self.db.conn().await?.signing_audit_key().await? else {
+            return Ok(None);
+        };
+        let pair = key.pair(&*self.vault)?;
+        Ok(Some((key.kid, pair)))
     }
 
-    /// The producer's public key in standard base64, for attache's
+    /// The producer key that signs now: its id (`signature.key_id`) and its
+    /// public key in standard base64, for attache's
     /// `ledger.producers[].keys`.
-    #[must_use]
-    pub fn public_key(&self) -> String {
-        STANDARD.encode(self.pair.public_key().as_ref())
+    ///
+    /// # Errors
+    ///
+    /// The database or the vault failed.
+    pub async fn producer(&self) -> Result<Option<(String, String)>, DbError> {
+        Ok(self
+            .signer()
+            .await?
+            .map(|(kid, pair)| (kid, STANDARD.encode(pair.public_key().as_ref()))))
     }
 
     /// One pass over every chain: each tenant of the directory, then the
@@ -181,6 +197,10 @@ impl Forwarder {
     ///
     /// When no connection can be had, or the tenants cannot be listed.
     pub async fn tick(&self) -> Result<Forwarded, DbError> {
+        let Some(signer) = self.signer().await? else {
+            tracing::warn!("no audit producer key: nothing is forwarded");
+            return Ok(Forwarded::default());
+        };
         let tenants = self.db.conn().await?.tenants().await?;
         let mut out = Forwarded::default();
         let chains = tenants
@@ -188,7 +208,7 @@ impl Forwarder {
             .map(Chain::Tenant)
             .chain(std::iter::once(Chain::Deployment));
         for chain in chains {
-            if let Err(e) = self.chain(&chain, &mut out).await {
+            if let Err(e) = self.chain(&chain, &signer, &mut out).await {
                 out.failed += 1;
                 tracing::error!(
                     error = %e,
@@ -201,7 +221,12 @@ impl Forwarder {
         Ok(out)
     }
 
-    async fn chain(&self, chain: &Chain, out: &mut Forwarded) -> Result<(), DbError> {
+    async fn chain(
+        &self,
+        chain: &Chain,
+        signer: &(String, Ed25519KeyPair),
+        out: &mut Forwarded,
+    ) -> Result<(), DbError> {
         let mut conn = self.db.conn().await?;
         let Some(entries) = conn
             .forward_claim(chain, &self.replica, self.lease, BATCH)
@@ -213,7 +238,7 @@ impl Forwarder {
         let last = entries.last().map(|e| e.seq);
         let acked = match last {
             None => None,
-            Some(last) => match self.send(&entries).await {
+            Some(last) => match self.send(&entries, signer).await {
                 Ok(()) => {
                     out.shipped += entries.len();
                     self.metrics
@@ -235,17 +260,21 @@ impl Forwarder {
 
     /// Signs `entries` and sends them. `Err` names why the ledger did not
     /// take them, never a record or the token.
-    async fn send(&self, entries: &[tutela_store::AuditEntry]) -> Result<(), &'static str> {
+    async fn send(
+        &self,
+        entries: &[tutela_store::AuditEntry],
+        (kid, pair): &(String, Ed25519KeyPair),
+    ) -> Result<(), &'static str> {
         let mut records = Vec::with_capacity(entries.len());
         for e in entries {
             let mut v: Value = serde_json::from_str(&e.body).map_err(|_| "body")?;
-            let sig = self.pair.sign(e.body.as_bytes());
+            let sig = pair.sign(e.body.as_bytes());
             let Value::Object(map) = &mut v else {
                 return Err("body");
             };
             map.insert(
                 "signature".to_owned(),
-                serde_json::json!({ "key_id": self.kid, "value": B64.encode(sig.as_ref()) }),
+                serde_json::json!({ "key_id": kid, "value": B64.encode(sig.as_ref()) }),
             );
             records.push(v);
         }
@@ -273,6 +302,55 @@ impl Forwarder {
             Err("acknowledgement")
         }
     }
+}
+
+/// Why a forwarded record did not verify.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum VerifyError {
+    /// It has no `signature`, or its body is not canonical JSON.
+    #[error("the record is not a signed audit.v1 record")]
+    Shape,
+    /// No key of the deployment has its `key_id`.
+    #[error("no audit key has this key id")]
+    UnknownKey,
+    /// The signature does not match the body.
+    #[error("the signature does not verify")]
+    Signature,
+}
+
+/// Verifies a forwarded record (CONTRACTS.md 9.3) against the deployment's
+/// audit keys, the retired ones included: the `kid` that signed it. A
+/// record signed before a rotation verifies with the key it was signed
+/// with, which the store keeps for good.
+///
+/// # Errors
+///
+/// [`VerifyError`].
+pub fn verify_record(
+    keys: &[tutela_store::AuditKey],
+    record: &Value,
+) -> Result<String, VerifyError> {
+    let kid = record["signature"]["key_id"]
+        .as_str()
+        .ok_or(VerifyError::Shape)?;
+    let value = record["signature"]["value"]
+        .as_str()
+        .ok_or(VerifyError::Shape)?;
+    let sig = B64.decode(value).map_err(|_| VerifyError::Shape)?;
+    let key = keys
+        .iter()
+        .find(|k| k.kid == kid)
+        .ok_or(VerifyError::UnknownKey)?;
+    let mut body = record.clone();
+    body.as_object_mut()
+        .ok_or(VerifyError::Shape)?
+        .remove("signature");
+    let msg = tutela_contracts::jcs::to_canonical_string(&body).map_err(|_| VerifyError::Shape)?;
+    UnparsedPublicKey::new(&ED25519, &key.public_key)
+        .verify(msg.as_bytes(), &sig)
+        .map_err(|_| VerifyError::Signature)?;
+    Ok(kid.to_owned())
 }
 
 /// Runs `fwd` every `every` until `stop` turns true.
