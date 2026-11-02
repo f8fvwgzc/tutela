@@ -9,7 +9,7 @@ use axum::extract::{DefaultBodyLimit, Extension, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{get, patch, post, put};
 use axum::{Json, Router, middleware};
 use serde::Serialize;
 use tower::ServiceExt as _;
@@ -61,6 +61,12 @@ pub struct AppState {
     pub events: Arc<crate::stream::Hub>,
     /// `TUTELA_BUNDLE_TTL_SECS`: the longest a signed bundle lasts.
     pub bundle_ttl: Duration,
+    /// `TUTELA_PURGE_GRACE_SECS`: how long a soft-deleted tenant or org
+    /// keeps its data (ADR-0041).
+    pub purge_grace: Duration,
+    /// `TUTELA_ISSUER`: the service's own issuer, also the issuer of the
+    /// deployment's own audit chain (ADR-0034 item 10).
+    pub own: tutela_contracts::tenant::Issuer,
 }
 
 /// An error answer: `application/problem+json` (RFC 9457, CONTRACTS.md 7.1).
@@ -306,6 +312,25 @@ pub fn api_router(state: &AppState, grpc: Router, request_timeout: Duration) -> 
             post(admin::http::revoke_sessions),
         )
         .route("/v1/admin/boundaries", put(admin::http::set_boundary))
+        .route(
+            "/v1/admin/tenant",
+            get(admin::http::tenant)
+                .patch(admin::http::update_tenant)
+                .delete(admin::http::delete_tenant),
+        )
+        .route(
+            "/v1/admin/orgs",
+            get(admin::http::orgs).post(admin::http::create_org),
+        )
+        .route(
+            "/v1/admin/orgs/{org}",
+            patch(admin::http::update_org).delete(admin::http::delete_org),
+        )
+        .route(
+            "/v1/admin/orgs/{org}/restore",
+            post(admin::http::restore_org),
+        )
+        .route("/v1/admin/users/delete", post(admin::http::delete_user))
         .route(
             "/v1/admin/resource-types",
             post(admin::http::put_resource_types)

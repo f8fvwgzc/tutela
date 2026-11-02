@@ -197,3 +197,15 @@ These matter to whoever runs `tutelad`, and to a product that verifies its token
 - **For onto-intelli, when it adopts Tutela:** push types with `PutResourceTypes` (`POST /v1/admin/resource-types`). Its service account needs `manage_access` and `manage_fields` at every org. The answer is a proposal: a tenant admin approves it.
 - **`tutela-store`:** new `agents` (a page of a tenant's agents) and `MAX_AGENT_PAGE`.
 
+## The lifecycle of tenants, orgs and people (part 3c)
+
+- **Migration 12** adds the lifecycle columns to `tutela.tenant`, `tutela.org` and `tutela.principal`, row-level security on the directory for updates, and lets a tenant's purge delete its model versions ([ADR-0041](DECISIONS.md#adr-0041-the-lifecycle-of-tenants-orgs-and-people-the-operator-makes-a-tenant-soft-delete-with-a-grace-a-purge-that-keeps-the-audit-chain)). Run `tutela migrate` (or `tutelad migrate`) as the owner, then `grant_service` again: the service role gets `UPDATE (name, deleted_at, purge_after, purged_at)` on the directory, never `INSERT` or `DELETE`. `check_isolation` now fails when a runtime role may add or remove tenants.
+- **Making a tenant** is the operator's: `tutelad tenant create --name <name> --admin <user:… or sa:…> --admin-upstream <iss>=<sub>` with `TUTELA_OWNER_DATABASE_URL` and `TUTELA_ISSUER`. It prints the new `tid`. Then map your external issuer to it in `tutelad`'s trust file. `tutelad tenant restore <tid>` undoes a soft delete before the purge.
+- **New setting:** `TUTELA_PURGE_GRACE_SECS` (default 2592000, 30 days; at least 3600). `deploy/tutelad.env` has it.
+- **`tutela-store`, in library mode too:**
+  - `enter` refuses a soft-deleted tenant (`UnknownTenant`), unless the transaction entered it before; `tenants` leaves it out. `audit_records` and `verify_audit_chain` still read its chain.
+  - The load leaves out a soft-deleted org and everything under it, and a write under it is `NotFound`.
+  - `set_disabled(.., false)` on a deleted person is `Invalid`: it is never enabled again.
+  - New module `lifecycle`: `tenant_info`, `set_tenant_name`, `delete_tenant`, `restore_tenant`, `due_tenant_purges`, `purge_tenant`, `orgs`, `org`, `set_org_name`, `delete_org`, `restore_org`, `due_org_purges`, `purge_org`, `delete_user`, `TenantInfo`, `OrgInfo`.
+- **For attache and texc-symphony, when they bump:** listen for `tutela.org.deleted.v1` (remove your container for the org at `purge_after`, or hide it at once) and `tutela.user.deleted.v1` (delete or pseudonymise your copies of the person). A soft-deleted tenant answers 403 `unknown_tenant` and sends no more events.
+

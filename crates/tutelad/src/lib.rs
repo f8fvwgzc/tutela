@@ -19,6 +19,8 @@
 //!   revision.
 //! - [`keys`]: the service's own issuer: its signing keys and its JWKS.
 //! - [`ledger`]: forwarding audit records to attache's evidence ledger.
+//! - [`lifecycle`]: making and restoring a tenant (the operator's), and the
+//!   purge after a soft delete.
 //! - [`events`]: the CloudEvents envelope of the outbox's events.
 //! - [`exchange`]: token exchange (RFC 8693) at `POST /oauth2/token`.
 //! - [`revocation`]: raised epochs and disabled principals, per tenant.
@@ -41,6 +43,7 @@ pub mod exchange;
 pub mod expiry;
 pub mod keys;
 pub mod ledger;
+pub mod lifecycle;
 pub mod models;
 pub mod revocation;
 pub mod server;

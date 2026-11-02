@@ -62,6 +62,12 @@ ADMIN_BOUNDARIES = "crates/tutelad/src/admin/boundaries.rs"
 ADMIN_TYPES = "crates/tutelad/src/admin/types.rs"
 ADMIN = ["-p", "tutelad", "--test", "admin"]
 ADMIN_LIB = ["-p", "tutelad", "--lib", "admin::"]
+STORE_LIFECYCLE = "crates/tutela-store/src/lifecycle.rs"
+STORE_BINDINGS = "crates/tutela-store/src/bindings.rs"
+STORE_WRITE = "crates/tutela-store/src/write.rs"
+ADMIN_LIFECYCLE = "crates/tutelad/src/admin/lifecycle.rs"
+LIFECYCLE_SQL = "crates/tutela-store/migrations/0012_lifecycle.sql"
+LIFECYCLE = ["-p", "tutelad", "--test", "lifecycle"]
 
 # (id, file, what it breaks, old text, new text, cargo test arguments).
 # `old` must occur once.
@@ -447,6 +453,43 @@ MUTANTS = [
      "        &AGENT_KEYS,\n        action,\n        (\"tutela_principal\", \"agent\"),\n",
      "        &[],\n        action,\n        (\"tutela_principal\", \"agent\"),\n",
      ADMIN),
+    # The lifecycle of tenants, orgs and people (ADR-0041).
+    ("G01", STORE_LIB, "a soft-deleted tenant still answers",
+     "        None if deleted => Err(StoreError::unknown_tenant()),\n",
+     "        None if false && deleted => Err(StoreError::unknown_tenant()),\n",
+     LIFECYCLE),
+    ("G02", STORE_LIFECYCLE, "a purge deletes the audit chain",
+     "const PURGED: [&str; 16] = [\n    \"webhook_delivery\",\n",
+     "const PURGED: [&str; 17] = [\n    \"audit_record\",\n    \"webhook_delivery\",\n",
+     LIFECYCLE),
+    ("G03", STORE_BINDINGS, "the jobs still visit a soft-deleted tenant",
+     "FROM tutela.tenant WHERE deleted_at IS NULL ORDER BY tenant_id",
+     "FROM tutela.tenant ORDER BY tenant_id",
+     LIFECYCLE),
+    ("G04", ADMIN_LIFECYCLE, "a tenant's deletion leaves no audit record",
+     "    audit::write(\n        state,\n        &tx,\n        vec![\n            Record::new(\n                tenant.key(),\n                Actor::new(by.clone()),\n                action,\n                (\"tutela_tenant\", &tid),\n            )\n            .allowed(rev)\n            .detail(\"purge_after\", when.clone()),\n        ],\n    )\n    .await?;\n",
+     "    let _ = rev;\n",
+     LIFECYCLE),
+    ("G05", STORE_WRITE, "new data is written under a soft-deleted org",
+     "                 AND deleted_at IS NULL\",\n                &[&tid, &org.to_string()],\n",
+     "                 \",\n                &[&tid, &org.to_string()],\n",
+     LIFECYCLE),
+    ("G06", ADMIN_LIFECYCLE, "a new org gets no owner, so its tenant has no admin",
+     "RoleKey::parse(crate::lifecycle::OWNER_ROLE)",
+     "RoleKey::parse(\"reader\")",
+     LIFECYCLE),
+    ("G07", STORE_LIFECYCLE, "a deleted person keeps its upstream account",
+     "\"DELETE FROM tutela.upstream_account WHERE tenant_id = $1 AND principal = $2\"",
+     "\"DELETE FROM tutela.upstream_account WHERE false AND tenant_id = $1 AND principal = $2\"",
+     LIFECYCLE),
+    ("G08", ADMIN_LIFECYCLE, "an org is renamed without manage_access on it",
+     "        if !d.is_allowed() {\n",
+     "        if false && !d.is_allowed() {\n",
+     LIFECYCLE),
+    ("G09", LIFECYCLE_SQL, "the service role updates any tenant of the directory",
+     "    USING (tenant_id = current_setting('tutela.tenant_id', true))\n    WITH CHECK (tenant_id = current_setting('tutela.tenant_id', true));\n",
+     "    USING (true)\n    WITH CHECK (true);\n",
+     LIFECYCLE),
 ]
 
 

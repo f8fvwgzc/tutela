@@ -138,6 +138,7 @@ pub struct Metrics {
     decisions: Family<DecisionLabels, Counter>,
     model_operations: Family<DecisionLabels, Counter>,
     admin_operations: Family<DecisionLabels, Counter>,
+    purges: Family<DecisionLabels, Counter>,
     revision_checks: Family<SweepLabels, Counter>,
     tenant_loads: Family<SweepLabels, Counter>,
     key_refreshes: Family<SweepLabels, Counter>,
@@ -212,6 +213,12 @@ impl Metrics {
             "admin_operations",
             "Calls of the admin API (tutela.admin.v1), by operation and how they ended",
             admin_operations.clone(),
+        );
+        let purges = Family::<DecisionLabels, Counter>::default();
+        registry.register(
+            "purges",
+            "Purges of soft-deleted tenants and orgs after their grace, by kind and outcome",
+            purges.clone(),
         );
         let decisions = Family::<DecisionLabels, Counter>::default();
         registry.register(
@@ -297,6 +304,7 @@ impl Metrics {
             decisions,
             model_operations,
             admin_operations,
+            purges,
             revision_checks,
             tenant_loads,
             key_refreshes,
@@ -431,6 +439,16 @@ impl Metrics {
             .get_or_create(&DecisionLabels {
                 operation: operation.to_owned(),
                 outcome: outcome.to_owned(),
+            })
+            .inc();
+    }
+
+    /// Counts one purge: `tenant` or `org`, `done` or `failed`.
+    pub fn count_purge(&self, kind: &'static str, ok: bool) {
+        self.purges
+            .get_or_create(&DecisionLabels {
+                operation: kind.to_owned(),
+                outcome: (if ok { "done" } else { "failed" }).to_owned(),
             })
             .inc();
     }

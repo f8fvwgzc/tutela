@@ -104,6 +104,10 @@ pub struct Config {
     /// 3600 s (ADR-0038). A bundle ends sooner at the first assignment in
     /// it that expires.
     pub bundle_ttl: Duration,
+    /// `TUTELA_PURGE_GRACE_SECS`: how long a soft-deleted tenant or org
+    /// keeps its data before the purge (ADR-0041), at least one hour;
+    /// default 30 days.
+    pub purge_grace: Duration,
     /// `TUTELA_LEDGER_URL`, `TUTELA_LEDGER_TOKEN` and `TUTELA_AUDIT_KEY`:
     /// forwarding of audit records to attache's evidence ledger (ADR-0039).
     /// `None`: off.
@@ -373,6 +377,11 @@ impl Config {
             (1..=3600).contains(&bundle_ttl.as_secs()),
             "TUTELA_BUNDLE_TTL_SECS must be from 1 to 3600"
         );
+        let purge_grace = seconds(&get, "TUTELA_PURGE_GRACE_SECS", "2592000")?;
+        ensure!(
+            purge_grace >= Duration::from_secs(3600),
+            "TUTELA_PURGE_GRACE_SECS must be at least 3600 (one hour)"
+        );
         let streams = crate::stream::StreamSettings {
             poll: Duration::from_millis(parsed(&get, "TUTELA_EVENTS_POLL_MS", "500")?),
             max_streams: parsed(&get, "TUTELA_SSE_MAX_STREAMS", "1000")?,
@@ -414,6 +423,7 @@ impl Config {
             event_retention,
             streams,
             bundle_ttl,
+            purge_grace,
             ledger,
         })
     }

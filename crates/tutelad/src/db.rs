@@ -178,6 +178,61 @@ impl Conn {
 }
 
 impl Conn {
+    /// The soft-deleted tenants whose grace has passed (ADR-0041).
+    pub(crate) async fn due_tenant_purges(&mut self) -> Result<Vec<TenantKey>, DbError> {
+        let tx = self.0.transaction().await?;
+        let due = tutela_store::due_tenant_purges(&tx).await?;
+        tx.commit().await?;
+        Ok(due)
+    }
+
+    /// Purges one soft-deleted tenant whose grace has passed, in a
+    /// transaction of its own, with its record last in the tenant's own
+    /// chain, which stays. `false` when it is not due, or another replica
+    /// purged it first.
+    pub(crate) async fn purge_tenant(&mut self, key: &TenantKey) -> Result<bool, DbError> {
+        let tx = self.0.transaction().await?;
+        if !tutela_store::purge_tenant(&tx, key).await? {
+            return Ok(false);
+        }
+        tutela_store::append_audit(&tx, key, &crate::lifecycle::purge_records(key)?).await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    /// Purges the deleted orgs of one tenant whose grace has passed, each in
+    /// a transaction of its own with its record. Returns how many.
+    pub(crate) async fn purge_orgs(&mut self, key: &TenantKey) -> Result<usize, DbError> {
+        let tx = self.0.transaction().await?;
+        let due = tutela_store::due_org_purges(&tx, key).await?;
+        tx.commit().await?;
+        let mut done = 0;
+        for org in due {
+            let tx = self.0.transaction().await?;
+            if let Some(rev) = tutela_store::purge_org(&tx, key, &org).await? {
+                let drafts = crate::lifecycle::org_purge_records(key, &org, rev)?;
+                tutela_store::append_audit(&tx, key, &drafts).await?;
+                tx.commit().await?;
+                done += 1;
+            }
+        }
+        Ok(done)
+    }
+
+    /// Writes `records` to the deployment's own chain, in a transaction of
+    /// their own.
+    pub(crate) async fn deployment_records(
+        &mut self,
+        records: Vec<crate::audit::Record>,
+    ) -> Result<(), DbError> {
+        let tx = self.0.transaction().await?;
+        deployment_audit(&tx, records).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+}
+
+impl Conn {
     /// The signing keys, in a transaction of their own: they are the
     /// deployment's, not a tenant's (ADR-0030). With no key that may sign,
     /// one is made; a key sealed under a previous master key is re-wrapped.

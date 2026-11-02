@@ -19,6 +19,12 @@ use crate::{DbResult as _, StoreError};
 /// manifest.
 const READ_ONLY: [&str; 4] = ["tenant", "app_manifest", "schema_migration", "approver_key"];
 
+/// The columns of the tenant directory a runtime role may update: a tenant's
+/// name and its soft delete (ADR-0041). Row-level security on the directory
+/// lets it update only the tenant its transaction entered. It never adds or
+/// removes a tenant: the operator does, as the owner.
+const DIRECTORY_COLUMNS: &str = "name, deleted_at, purge_after, purged_at";
+
 /// Tables with no tenant data that a runtime role may read, add to and
 /// update, never delete from: the service's own signing keys (ADR-0030).
 /// A trigger keeps a key's identity and its denial.
@@ -119,6 +125,11 @@ pub async fn grant_service(client: &mut Client, role: &str) -> Result<(), StoreE
         .await
         .db()?;
     }
+    tx.batch_execute(&format!(
+        "GRANT UPDATE ({DIRECTORY_COLUMNS}) ON tutela.tenant TO {role}"
+    ))
+    .await
+    .db()?;
     tx.commit().await.db()
 }
 
@@ -132,7 +143,10 @@ pub async fn grant_service(client: &mut Client, role: &str) -> Result<(), StoreE
 ///   row-level security, `FORCE` and a policy;
 /// - the schema has no `SECURITY DEFINER` function and no owner-rights view;
 /// - the role may not change or remove an audit record, and the triggers
-///   that refuse it for every role are enabled (ADR-0034).
+///   that refuse it for every role are enabled (ADR-0034);
+/// - the role may not add or remove a tenant of the directory, and the
+///   directory has row-level security for the updates it may make
+///   (ADR-0041).
 ///
 /// `tutelad` refuses to serve when this fails. A product in library mode can
 /// call it at start-up too.
@@ -217,10 +231,38 @@ pub async fn check_isolation(client: &Client) -> Result<(), StoreError> {
         .await
         .db()?;
     match audit.try_get::<_, i32>(0).db()? {
+        0 => {}
+        1 => return Err(StoreError::isolation("the role may change the audit log")),
+        _ => {
+            return Err(StoreError::isolation(
+                "the audit log's append-only triggers are not enabled",
+            ));
+        }
+    }
+    // Before migration 12 the directory has no lifecycle; readiness then
+    // reports the schema version instead.
+    let directory = client
+        .query_one(
+            "SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM pg_attribute \
+                 WHERE attrelid = 'tutela.tenant'::regclass AND attname = 'deleted_at') THEN 0 \
+             WHEN has_table_privilege(current_user, 'tutela.tenant', 'INSERT') \
+               OR has_table_privilege(current_user, 'tutela.tenant', 'DELETE') \
+               OR has_table_privilege(current_user, 'tutela.tenant', 'TRUNCATE') THEN 1 \
+             WHEN NOT (SELECT relrowsecurity FROM pg_class WHERE oid = 'tutela.tenant'::regclass) \
+               OR NOT EXISTS (SELECT 1 FROM pg_policy \
+                 WHERE polrelid = 'tutela.tenant'::regclass AND polname = 'directory_update') THEN 2 \
+             ELSE 0 END",
+            &[],
+        )
+        .await
+        .db()?;
+    match directory.try_get::<_, i32>(0).db()? {
         0 => Ok(()),
-        1 => Err(StoreError::isolation("the role may change the audit log")),
+        1 => Err(StoreError::isolation(
+            "the role may add or remove tenants of the directory",
+        )),
         _ => Err(StoreError::isolation(
-            "the audit log's append-only triggers are not enabled",
+            "the tenant directory has no row-level security for updates",
         )),
     }
 }

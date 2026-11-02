@@ -1,13 +1,13 @@
 //! The HTTP side of the admin API: thin adapters over [`crate::admin`].
 
 use axum::Json;
-use axum::extract::{Extension, Query, State};
+use axum::extract::{Extension, Path, Query, State};
 use tutela_sdk::Identity;
 
 use super::observed;
 use super::wire::{
-    AgentsOut, AgentsQuery, BoundaryBody, PrincipalBody, PrincipalOut, RegisterAgentBody,
-    ResourceTypesBody, RevOut, SetDisabledBody,
+    AgentsOut, AgentsQuery, BoundaryBody, NameBody, OrgOut, OrgsOut, PrincipalBody, PrincipalOut,
+    RegisterAgentBody, ResourceTypesBody, RevOut, SetDisabledBody, TenantOut,
 };
 use crate::api::{AppState, Problem};
 use crate::authz::http::Body;
@@ -81,4 +81,92 @@ pub async fn put_resource_types(
 ) -> Result<Json<ProposalOut>, Problem> {
     let out = super::types::put_resource_types(&state, &id, body).await;
     observed(&state, "put_resource_types", out).map(Json)
+}
+
+/// `GET /v1/admin/tenant`.
+pub async fn tenant(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+) -> Result<Json<TenantOut>, Problem> {
+    let out = super::lifecycle::tenant(&state, &id).await;
+    observed(&state, "get_tenant", out).map(Json)
+}
+
+/// `PATCH /v1/admin/tenant`.
+pub async fn update_tenant(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Body(body): Body<NameBody>,
+) -> Result<Json<TenantOut>, Problem> {
+    let out = super::lifecycle::update_tenant(&state, &id, body).await;
+    observed(&state, "update_tenant", out).map(Json)
+}
+
+/// `DELETE /v1/admin/tenant`.
+pub async fn delete_tenant(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+) -> Result<Json<TenantOut>, Problem> {
+    let out = super::lifecycle::delete_tenant(&state, &id).await;
+    observed(&state, "delete_tenant", out).map(Json)
+}
+
+/// `GET /v1/admin/orgs`.
+pub async fn orgs(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+) -> Result<Json<OrgsOut>, Problem> {
+    let out = super::lifecycle::orgs(&state, &id).await;
+    observed(&state, "list_orgs", out).map(Json)
+}
+
+/// `POST /v1/admin/orgs`.
+pub async fn create_org(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Body(body): Body<NameBody>,
+) -> Result<Json<OrgOut>, Problem> {
+    let out = super::lifecycle::create_org(&state, &id, body).await;
+    observed(&state, "create_org", out).map(Json)
+}
+
+/// `PATCH /v1/admin/orgs/{org}`.
+pub async fn update_org(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(org): Path<String>,
+    Body(body): Body<NameBody>,
+) -> Result<Json<OrgOut>, Problem> {
+    let out = super::lifecycle::update_org(&state, &id, &org, body).await;
+    observed(&state, "update_org", out).map(Json)
+}
+
+/// `DELETE /v1/admin/orgs/{org}`.
+pub async fn delete_org(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(org): Path<String>,
+) -> Result<Json<OrgOut>, Problem> {
+    let out = super::lifecycle::delete_org(&state, &id, &org).await;
+    observed(&state, "delete_org", out).map(Json)
+}
+
+/// `POST /v1/admin/orgs/{org}/restore`.
+pub async fn restore_org(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(org): Path<String>,
+) -> Result<Json<OrgOut>, Problem> {
+    let out = super::lifecycle::restore_org(&state, &id, &org).await;
+    observed(&state, "restore_org", out).map(Json)
+}
+
+/// `POST /v1/admin/users/delete`.
+pub async fn delete_user(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Body(body): Body<PrincipalBody>,
+) -> Result<Json<PrincipalOut>, Problem> {
+    let out = super::lifecycle::delete_user(&state, &id, body).await;
+    observed(&state, "delete_user", out).map(Json)
 }

@@ -28,7 +28,7 @@ use tokio_postgres::Transaction;
 use tutela_contracts::audit::AuditDraft;
 use tutela_contracts::tenant::{TenantId, TenantKey};
 
-use crate::{DbResult as _, StoreError, enter, set_tenant};
+use crate::{DbResult as _, StoreError, enter, enter_kept, set_tenant};
 
 /// The `prev_hash` of a chain's first record.
 pub const GENESIS: &str = "0000000000000000000000000000000000000000000000000000000000000000";
@@ -215,7 +215,8 @@ pub async fn audit_records(
     after: u64,
     limit: usize,
 ) -> Result<Vec<AuditEntry>, StoreError> {
-    enter(tx, tenant).await?;
+    // A soft-deleted tenant's chain is kept, and still read (ADR-0041).
+    enter_kept(tx, tenant).await?;
     page(tx, &tenant.tid, after, limit).await
 }
 
@@ -322,7 +323,7 @@ pub async fn verify_audit_chain(
     tx: &Transaction<'_>,
     tenant: &TenantKey,
 ) -> Result<ChainReport, StoreError> {
-    enter(tx, tenant).await?;
+    enter_kept(tx, tenant).await?;
     verify(tx, &tenant.tid).await
 }
 

@@ -36,6 +36,7 @@ mod bindings;
 mod connect;
 pub mod events;
 mod isolation;
+pub mod lifecycle;
 mod load;
 mod manifest;
 mod migrate;
@@ -72,6 +73,11 @@ pub use events::{
     prune_events,
 };
 pub use isolation::{check_isolation, grant_service};
+pub use lifecycle::{
+    MAX_NAME, OrgInfo, TenantInfo, delete_org, delete_tenant, delete_user, due_org_purges,
+    due_tenant_purges, org, orgs, purge_org, purge_tenant, restore_org, restore_tenant,
+    set_org_name, set_tenant_name, tenant_info,
+};
 pub use load::{ScopePathSnapshot, TenantBundle, load, rev};
 pub use manifest::{Publish, StoredManifest, applied_manifest, digest, manifest, publish_manifest};
 pub use migrate::{applied as applied_migration, latest as latest_migration, migrate};
@@ -298,12 +304,39 @@ fn new_rule_id(prefix: &str) -> Result<tutela_contracts::decision::RuleId, Store
 /// A transaction belongs to one tenant. Entering a second one fails, so a
 /// bug that passes the wrong key is an error and never a switch.
 ///
+/// A soft-deleted tenant (ADR-0041) is refused, unless this transaction
+/// entered it before: the transaction that deletes a tenant keeps it until
+/// it ends, to write its audit record last.
+///
 /// # Errors
 ///
 /// [`UnknownTenant`](StoreErrorKind::UnknownTenant) for an unknown (iss,
 /// tid), [`TenantMismatch`](StoreErrorKind::TenantMismatch) when this
 /// transaction already entered another tenant, or a database error.
 pub async fn enter(tx: &Transaction<'_>, tenant: &TenantKey) -> Result<(), StoreError> {
+    let tid = tenant.tid.to_string();
+    let row = tx
+        .query_opt(
+            "SELECT current_setting('tutela.tenant_id', true), deleted_at IS NOT NULL \
+             FROM tutela.tenant WHERE tenant_id = $1 AND iss = $2",
+            &[&tid, &tenant.iss.as_str()],
+        )
+        .await
+        .db()?
+        .ok_or(StoreError::unknown_tenant())?;
+    let current: Option<&str> = row.try_get(0).db()?;
+    let deleted: bool = row.try_get(1).db()?;
+    match current.filter(|c| !c.is_empty()) {
+        Some(c) if c == tid => Ok(()),
+        Some(_) => Err(StoreError(Repr::TenantMismatch)),
+        None if deleted => Err(StoreError::unknown_tenant()),
+        None => set_tenant(tx, &tenant.tid).await,
+    }
+}
+
+/// Enters a tenant of the directory, a soft-deleted one too: for reading
+/// its audit chain, which is kept (ADR-0041). Nothing else uses it.
+pub(crate) async fn enter_kept(tx: &Transaction<'_>, tenant: &TenantKey) -> Result<(), StoreError> {
     let tid = tenant.tid.to_string();
     let row = tx
         .query_opt(
