@@ -1,6 +1,6 @@
 # Tutela roadmap
 
-Status: **pre-alpha**. As of the first commit, only the design docs, the `tutela-contracts` crate and CI exist. Nothing is usable in production yet.
+Status: **pre-alpha**. `v0.1.0` is a pre-release of the Rust crates in library mode. Part 1 of Phase B is merged: the `tutelad` service, tenant isolation and the bindings store. `tutelad` serves no permission API yet. Nothing is usable in production yet. See [Phase B status](#phase-b-status).
 
 This file lists the four phases (A, B, C, D), what each one builds, how we know it is done, and how long it takes. The reasons behind the big choices are in [DECISIONS.md](DECISIONS.md). The design is in [ARCHITECTURE.md](ARCHITECTURE.md) and [PERMISSION-MODEL.md](PERMISSION-MODEL.md).
 
@@ -84,12 +84,12 @@ A gate is a list of checks. A phase is not done until its gate passes. No produc
 
 **Work list.**
 
-- Tenants with row-level security: `tenant_id` on every row, `FORCE ROW LEVEL SECURITY`, tenant set with `SET LOCAL` per transaction from the verified token.
-- Bindings and groups store with a per-tenant revision.
+- Tenants with row-level security: `tenant_id` on every row, `FORCE ROW LEVEL SECURITY`, tenant set with `SET LOCAL` per transaction from the verified token. **Done** (see [Phase B status](#phase-b-status)).
+- Bindings and groups store with a per-tenant revision. **Done.**
 - AuthZEN 1.0-shaped API: `/access/v1/evaluation`, `/access/v1/evaluations`, `/access/v1/search/resource`, `/access/v1/search/subject`; gRPC `tutela.authz.v1`.
 - Permission map for UIs: `POST /v1/authz/permissions` with ETag/304.
 - Model versioning, impact report ("12 users gain read on contract"), explain and simulate, two-person publish (optional per tenant).
-- Moves and links across scopes: `moves_out`, `moves_in`, `on_looser` and `links_from` from `boundary_rule`, checked in `write_check` with the before/after impact calculation (PERMISSION-MODEL §9, §10). Assignment expiry with a revision bump when it passes ([ADR-0014](DECISIONS.md#adr-0014-tutela-store-in-phase-a-the-schema-row-level-security-and-checked-writes)).
+- Moves and links across scopes: `moves_out`, `moves_in`, `on_looser` and `links_from` from `boundary_rule`, checked in `write_check` with the before/after impact calculation (PERMISSION-MODEL §9, §10). Assignment expiry with a revision bump when it passes ([ADR-0014](DECISIONS.md#adr-0014-tutela-store-in-phase-a-the-schema-row-level-security-and-checked-writes)): **done** ([ADR-0020](DECISIONS.md#adr-0020-the-bindings-store-closures-at-read-time-and-assignment-expiry)).
 - CLI: `tutela apply` against `tutelad` (adds the impact report and approvals; still refuses a widening diff without an approval token), `tutela apps create`, `tutela keys rotate`.
 - Webhooks (transactional outbox, Standard Webhooks signatures) and SSE `/v1/events`.
 - Local hash-chained audit log. Optional forwarding to attache's evidence ledger through its Append API.
@@ -106,6 +106,60 @@ A gate is a list of checks. A phase is not done until its gate passes. No produc
 - A revoked role takes effect within the documented delay.
 - 2+ replicas run.
 - The service gate passes.
+
+### Phase B status
+
+**State on 2026-11-02: part 1 of 4 is merged. Phase B is not done, and the service gate does not pass yet.** v0.2.0 is not tagged. attache and texc-symphony stay on `v0.1.0`.
+
+Done:
+
+| Work | State | Where |
+|---|---|---|
+| Public errors made opaque, for v0.2.0 | Done | [ADR-0017](DECISIONS.md#adr-0017-opaque-public-errors-for-the-crates-that-touch-the-outside-world), [MIGRATION-0.2.md](MIGRATION-0.2.md) |
+| `tutelad`: config, the API port (HTTP and gRPC), the ops port, metrics, JSON logs, graceful shutdown, bearer tokens through `tutela-sdk`, `tutelad migrate`, `deploy/` | Done | [ADR-0018](DECISIONS.md#adr-0018-tutelad-the-stack-the-two-ports-and-the-config) |
+| Tenants with row-level security: `FORCE`, a non-owner role, the tenant only from the verified token with `SET LOCAL`, `check_isolation` | Done | [ADR-0019](DECISIONS.md#adr-0019-tenants-in-tutelad-the-tenant-comes-from-the-token-and-rls-is-checked) |
+| Bindings and groups store with a per-tenant revision; assignment expiry with a revision bump | Done | [ADR-0020](DECISIONS.md#adr-0020-the-bindings-store-closures-at-read-time-and-assignment-expiry) |
+
+Not started. These are parts 2 to 4:
+
+| Work | Note |
+|---|---|
+| AuthZEN API and gRPC `tutela.authz.v1` | Signed bundles come with it. Their `expires_at` must honour `next_expiry`. |
+| Permission map, `POST /v1/authz/permissions` | |
+| Model versioning, impact report, explain and simulate, two-person publish | |
+| Moves and links in `write_check` | |
+| `tutela apply` against `tutelad`, `tutela apps create`, `tutela keys rotate` | `grant_service` gives no write on `app_manifest` yet. |
+| Webhooks, SSE `/v1/events` | |
+| Local hash-chained audit log | `expire_assignments` returns what it removed, so the sweep can write audit in its transaction. |
+| Token-exchange service | The trust file is static. Tenants made at runtime need the service's own issuer to trust the directory. |
+| Delegated agent tokens | Off in the verifier today (`verifier_config`). |
+| `tutela.admin.v1`, org lifecycle events, soft-delete of tenants | `grant_service` gives no write on `tenant` yet. |
+| Tutela Console and embeddable admin components | |
+| Helm chart and bootstrap job; the OCI image ([#49](https://github.com/f8fvwgzc/tutela/issues/49)) | The chart must set the values in `deploy/tutelad.env`, including `RUST_BACKTRACE=1` and `RUST_LIB_BACKTRACE=0`. |
+| OTLP export of traces | Logs carry the `traceparent` trace id today. |
+
+The service gate:
+
+| Check | State |
+|---|---|
+| A query with no tenant set returns zero rows | **Passes** on a real Postgres (`crates/tutelad/tests/rls.rs`) |
+| A cross-tenant read fails at RLS, even with an injected code bug | **Passes**, with a control that shows the same request leaks when RLS is off |
+| Group and path closure p99 | **Passes** the 5 ms threshold going up: 1.44 ms, 1.46 ms at 32 levels, 0.67 ms for a path. Going down (`scopes_below`) is 11 ms, not gated ([ADR-0020](DECISIONS.md#adr-0020-the-bindings-store-closures-at-read-time-and-assignment-expiry)) |
+| 2+ replicas | **Not tested.** Two sweeps at once are tested in `tutela-store`, but two `tutelad` processes have not run together |
+| Bundle expiry | **Not built** |
+| A revoked role takes effect within the documented delay | **Not measured**: it needs bundles |
+| Sign-in, the permission map and runtime role editing, end to end | **Not built** |
+
+#### Notes for part 2
+
+- **Crate layout.** `crates/tutelad` is a library and a thin binary. `api` has the routers, `config` the settings, `db` the pool, `tenant` the tenant, `expiry` the sweep, `telemetry` logs and metrics, and `server` the listeners and shutdown. Add an HTTP route in `api::api_router`, and a gRPC service next to the health service in `Server::bind`. Tests run the real `Server` on port 0; `tests/common/mod.rs` has the Postgres harness and a signing issuer.
+- **How a request gets its tenant.** `AuthLayer` verifies the token and puts the `Identity` in the request. A handler takes a `Tenant` argument, which can only come from that `Identity`. It then calls `db.conn().await?`, `conn.begin(&tenant).await?`, passes `&tx` to the store, and calls `tx.commit().await?`. Returning `Result<_, Problem>` maps errors: an unknown tenant is 403, and the rest is a closed 503. Do not add a way to make a `Tenant` from a key. A background job gets a narrow crate-private method on `Conn`, as the sweep does.
+- **How the revision works.** `tenant_rev` goes up in the same transaction as every change, and a write locks that row first. The exception is expiry, which has two halves: a read drops a row past its expiry at once, and the sweep bumps the revision up to `TUTELA_EXPIRY_SWEEP_SECS` later. So two loads at one revision can differ, in the narrowing direction only. **A signed bundle's `expires_at` must be no later than `TenantBundle::next_expiry`.**
+- **A write reads the whole tenant** (about 48 ms at the benchmark's size, ADR-0014 item 4). Plan bulk work around it.
+- **A SQL `ScopePaths::below` would not use the GIN index** under row-level security. The in-memory `ScopePathSnapshot` is fine.
+- **Secrets.** Nothing reads `TUTELA_MASTER_KEY` or `TUTELA_KEY_PEPPER` yet. The part that adds signing keys or API keys must make them required at start-up (TM-22).
+- **Upgrades.** Old replicas stop answering when a migration lands (ADR-0018 item 5). The deploy order is `tutelad migrate`, then new replicas at once.
+- **`make` is the gate.** Check its exit code before a merge. `tests/*.rs` need `#![cfg(test)]`, or clippy denies `unwrap` in helpers there.
 
 ## Phase C: own login server (optional)
 
