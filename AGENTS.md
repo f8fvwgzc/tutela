@@ -27,6 +27,7 @@ Tutela is security code. A small mistake here can give one tenant another tenant
 - If the docs and the code disagree, stop and say so. Do not pick one quietly.
 - Mark unfinished or future work with its phase (A, B, C, D). Never write that something works when it does not.
 - Write docs in plain, simple English with short sentences. The owner is not a native English speaker.
+- This repo uses [Symposium](https://github.com/symposium-dev/symposium) for its Rust skills. Set it up once: `cargo install symposium --locked`, then `cargo agents init --add-agent claude`.
 
 ## 2. Repo layout
 
