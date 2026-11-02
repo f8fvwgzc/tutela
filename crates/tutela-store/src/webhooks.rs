@@ -655,3 +655,51 @@ pub async fn prune(
     .await
     .db()
 }
+
+/// Webhook `id` of `tenant`, if it has one.
+///
+/// # Errors
+///
+/// [`UnknownTenant`](crate::StoreErrorKind::UnknownTenant), or a database
+/// error.
+pub async fn webhook(
+    tx: &Transaction<'_>,
+    tenant: &TenantKey,
+    id: &str,
+) -> Result<Option<Webhook>, StoreError> {
+    Ok(webhooks(tx, tenant).await?.into_iter().find(|w| w.id == id))
+}
+
+/// The most deliveries [`delivery_page`] returns at once.
+pub const MAX_DELIVERY_PAGE: usize = 1000;
+
+/// Up to `limit` (1 to [`MAX_DELIVERY_PAGE`]) deliveries of webhook `id`
+/// after event number `after`, by number; with `dead_only`, the dead ones
+/// only, for the Console to send again.
+///
+/// # Errors
+///
+/// [`UnknownTenant`](crate::StoreErrorKind::UnknownTenant), or a database
+/// error.
+pub async fn delivery_page(
+    tx: &Transaction<'_>,
+    tenant: &TenantKey,
+    id: &str,
+    after: u64,
+    limit: usize,
+    dead_only: bool,
+) -> Result<Vec<Delivery>, StoreError> {
+    enter(tx, tenant).await?;
+    let limit = i64::try_from(limit.clamp(1, MAX_DELIVERY_PAGE)).unwrap_or(1);
+    let after = i64::try_from(after).map_err(|_| StoreError::invalid("after"))?;
+    let rows = tx
+        .query(
+            "SELECT webhook_id, seq, state, attempts, last_status, last_error \
+             FROM tutela.webhook_delivery WHERE tenant_id = $1 AND webhook_id = $2 \
+             AND seq > $3 AND (NOT $4 OR state = 'dead') ORDER BY seq LIMIT $5",
+            &[&tenant.tid.to_string(), &id, &after, &dead_only, &limit],
+        )
+        .await
+        .db()?;
+    rows.iter().map(delivery).collect()
+}

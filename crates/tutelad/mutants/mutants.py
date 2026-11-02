@@ -68,6 +68,8 @@ STORE_WRITE = "crates/tutela-store/src/write.rs"
 ADMIN_LIFECYCLE = "crates/tutelad/src/admin/lifecycle.rs"
 LIFECYCLE_SQL = "crates/tutela-store/migrations/0012_lifecycle.sql"
 LIFECYCLE = ["-p", "tutelad", "--test", "lifecycle"]
+ADMIN_HOOKS = "crates/tutelad/src/admin/webhooks.rs"
+ADMIN_WEBHOOKS = ["-p", "tutelad", "--test", "admin_webhooks"]
 
 # (id, file, what it breaks, old text, new text, cargo test arguments).
 # `old` must occur once.
@@ -490,6 +492,27 @@ MUTANTS = [
      "    USING (tenant_id = current_setting('tutela.tenant_id', true))\n    WITH CHECK (tenant_id = current_setting('tutela.tenant_id', true));\n",
      "    USING (true)\n    WITH CHECK (true);\n",
      LIFECYCLE),
+    # Webhooks over the admin API (ADR-0036 item 9).
+    ("H01", ADMIN_HOOKS, "read_audit alone registers a webhook",
+     "pub const WEBHOOK_KEYS: [&str; 2] = [\"read_audit\", \"manage_access\"];",
+     "pub const WEBHOOK_KEYS: [&str; 2] = [\"read_audit\", \"read_audit\"];",
+     ADMIN_WEBHOOKS),
+    ("H02", ADMIN_HOOKS, "a webhook secret is shown twice: in the audit log",
+     "            .detail(\"host\", host(&url))\n            .detail(\"types\", names.clone()),\n",
+     "            .detail(\"host\", host(&url))\n            .detail(\"secret\", secret.expose())\n            .detail(\"types\", names.clone()),\n",
+     ADMIN_WEBHOOKS),
+    ("H03", ADMIN_HOOKS, "an audit record holds the whole URL, query and all",
+     "            .detail(\"host\", host(&url))\n            .detail(\"types\", names.clone()),\n",
+     "            .detail(\"host\", url.clone())\n            .detail(\"types\", names.clone()),\n",
+     ADMIN_WEBHOOKS),
+    ("H04", HOOKS_SRC, "a webhook's URL is not checked when it is registered",
+     "    client.check(url).await.map_err(|e| {\n",
+     "    client.check(\"https://93.184.215.14/\").await.map_err(|e| {\n",
+     ADMIN_WEBHOOKS),
+    ("H05", ADMIN_HOOKS, "a disabled webhook keeps getting events",
+     "    tutela_store::webhooks::disable_webhook(&tx, tenant.key(), wid)\n",
+     "    tutela_store::webhooks::redeliver(&tx, tenant.key(), wid, 0)\n",
+     ADMIN_WEBHOOKS),
 ]
 
 

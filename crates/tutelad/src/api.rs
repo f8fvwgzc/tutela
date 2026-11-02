@@ -67,6 +67,11 @@ pub struct AppState {
     /// `TUTELA_ISSUER`: the service's own issuer, also the issuer of the
     /// deployment's own audit chain (ADR-0034 item 10).
     pub own: tutela_contracts::tenant::Issuer,
+    /// The vault that seals webhook secrets (`TUTELA_MASTER_KEY`).
+    pub vault: Arc<tutela_vault::Vault>,
+    /// The outbound client that checks a webhook's URL and its DNS answer
+    /// when it is registered (TM-18): loopback `http` only in dev mode.
+    pub safenet: Arc<tutela_safenet::Client>,
 }
 
 /// An error answer: `application/problem+json` (RFC 9457, CONTRACTS.md 7.1).
@@ -331,6 +336,26 @@ pub fn api_router(state: &AppState, grpc: Router, request_timeout: Duration) -> 
             post(admin::http::restore_org),
         )
         .route("/v1/admin/users/delete", post(admin::http::delete_user))
+        .route(
+            "/v1/admin/webhooks",
+            get(admin::http::webhooks).post(admin::http::register_webhook),
+        )
+        .route(
+            "/v1/admin/webhooks/{id}/rotate",
+            post(admin::http::rotate_webhook),
+        )
+        .route(
+            "/v1/admin/webhooks/{id}/disable",
+            post(admin::http::disable_webhook),
+        )
+        .route(
+            "/v1/admin/webhooks/{id}/deliveries",
+            get(admin::http::deliveries),
+        )
+        .route(
+            "/v1/admin/webhooks/{id}/deliveries/{seq}/redeliver",
+            post(admin::http::redeliver),
+        )
         .route(
             "/v1/admin/resource-types",
             post(admin::http::put_resource_types)

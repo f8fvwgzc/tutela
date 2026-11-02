@@ -1580,6 +1580,21 @@ An org is `{"org", "name"?, "created_at", "deleted_at"?, "purge_after"?, "purged
 
 **The purge.** After `purge_after`, every replica's sweep (`TUTELA_EXPIRY_SWEEP_SECS`) removes a deleted tenant's data, every row of its tables, and keeps its audit chain, its revision row and its directory row (`purged_at`), so a tenant id is never reused. A deleted org's purge removes its scopes, assignments and rules, and keeps its row and its groups. Each purge is recorded in the tenant's chain, a tenant's also in the deployment's. `tutelad_purges_total{operation, outcome}` counts them (`tenant`, `org`; `done`, `failed`).
 
+#### 7.13.6 Webhooks
+
+**Built in part 3c**, under [ADR-0036](DECISIONS.md#adr-0036-webhooks-delivered-from-the-outbox-registered-by-part-3c) item 9. Every route needs `org:read_audit` **and** `org:manage_access` at every org: a webhook gets every event of its types in the tenant, at a URL the tenant names. A webhook id (`whk_<uuidv7>`) may be in a URL path.
+
+| Route | gRPC | Does |
+|---|---|---|
+| `POST /v1/admin/webhooks` `{"url", "types"?}` | `RegisterWebhook` | Checks the URL and its DNS answer with `tutela-safenet` (https, no credentials, every resolved address public; `http` on loopback only in dev mode), then registers it for `types` (event types of 8.3; missing or empty: every type). Answers `{"webhook": <webhook>, "secret": "whsec_…"}`. **The secret is shown this once.** A refused URL is 400 `invalid_url`, and is recorded in the audit log by its host. |
+| `GET /v1/admin/webhooks` | `ListWebhooks` | `{"webhooks": [<webhook>…]}`, oldest first. Never a secret. |
+| `POST /v1/admin/webhooks/{id}/rotate` `{"overlap_secs"?}` | `RotateWebhookSecret` | A new secret, answered as at registration and shown this once. The old one keeps signing for `overlap_secs` (default 3600, at most 604800), so the receiver can move (8.4). |
+| `POST /v1/admin/webhooks/{id}/disable` | `DisableWebhook` | It gets no new event, and its pending deliveries are not sent. Answers the webhook. |
+| `GET /v1/admin/webhooks/{id}/deliveries?state=dead&after=&limit=` | `ListDeliveries` | `{"deliveries": [{"webhook", "seq", "state", "attempts", "last_status"?, "last_error"?}…], "next_after"?}` by event number, at most 1000 (default 100); `state=dead` for the dead ones only. `state` is `pending`, `delivered` or `dead`; `last_error` is a code (`status`, `timeout`, `not_public`, `url`, `connect`, `pruned`, …), never a body. |
+| `POST /v1/admin/webhooks/{id}/deliveries/{seq}/redeliver` | `Redeliver` | A dead delivery is pending and due now; answers it. One that is not dead is 404. |
+
+A webhook is `{"id", "url", "types", "disabled", "created_by"}`. A webhook of another tenant is 404. Every call is recorded with who asked; a record names the webhook and the URL's host, never the secret or the rest of the URL (a query may hold a receiver's token).
+
 ## 8. Events
 
 **First commit:** the CloudEvents envelope and the event type grammar and names are in `tutela-contracts`. **Built in Phase B, part 3b:** the transactional outbox ([ADR-0035](DECISIONS.md#adr-0035-the-outbox-events-numbered-per-tenant-in-commit-order)). Webhook delivery, signing and SSE are Phase B.
