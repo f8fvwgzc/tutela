@@ -126,7 +126,7 @@ Each threat has an id (TM-01 ... TM-23). Its tests carry the id in their name, f
 | TM-11 | Field leaks into search, vectors, exports, audit, prompts | Field masks on every exit path | A, B | No |
 | TM-12 | UI-only checks | Codegen route guards; SDK refuses to start without them | A | No |
 | TM-13 | Stale permission caches and slow revocation | `rev`, bundle expiry, refuse lower rev, documented delay | A, B | **Partly**: `tutela-pdp` refuses a lower or stale revision (`tm13_*`) |
-| TM-14 | Row-level security mistakes | `FORCE` RLS, `SET LOCAL`, app roles own no tables | A, B | No |
+| TM-14 | Row-level security mistakes | `FORCE` RLS, `SET LOCAL`, app roles own no tables | A, B | **Yes** for `tutela-store` and `tutelad`: forced RLS on every tenant table, the tenant only from the verified token, a non-owner role, `check_isolation` at start-up and in readiness. Tested on a real Postgres in `crates/tutelad/tests/rls.rs` ([ADR-0019](DECISIONS.md#adr-0019-tenants-in-tutelad-the-tenant-comes-from-the-token-and-rls-is-checked)). Soft-delete of tenants is not built |
 | TM-15 | Signing key theft and rotation mistakes | `Signer` trait, per-tenant keys, KMS option, rotation timing, kid deny-list | B, C | **Partly**: `tutela-vault` master-key rotation (old blobs open with `TUTELA_MASTER_KEY_PREVIOUS` and are re-wrapped, `tm15_*`) and its KMS trait; token signing keys are Phase B; the `tutela-sdk` `kid` deny-list, the rate-limited refetch of an unknown `kid`, and fail-closed stale keys (`tm15_*`) |
 | TM-16 | API key theft | Separate, versioned pepper; hashed keys | B | No |
 | TM-17 | Secrets and personal data in logs, URLs, traces | Redacted types; no tokens in URLs | A, B | **Partly**: the `ApiKey` type in `tutela-contracts` never prints its secret |
@@ -344,6 +344,11 @@ Each threat has an id (TM-01 ... TM-23). Its tests carry the id in their name, f
   - `tutela-store` ships the same pattern, so library-mode products get it too.
 - **Phase.** A (`tutela-store` migrations). B (`tutelad`; service gate).
 - **Test.** A query with no tenant set returns zero rows. Phase B exit: a cross-tenant read fails at RLS even with an injected code bug (a query with the tenant filter removed). Pooled-connection test: after a tenant-A transaction, the next transaction on the same connection sees nothing until it runs its own `SET LOCAL`. A CI check fails if the app role owns a table or has `BYPASSRLS`.
+- **Built.** `crates/tutelad/tests/rls.rs` runs each of these on a real Postgres, with the service's own role and pool.
+  - `with_no_tenant_set_every_table_returns_zero_rows` covers every tenant table the catalog lists, and fails if a new one has no seed rows.
+  - `a_cross_tenant_read_fails_at_rls_with_an_injected_bug` puts a handler with no tenant filter behind the real token check. It then turns RLS off and shows the same request leaks, so RLS is what stopped it.
+  - `an_unsafe_role_or_schema_is_refused` is the check on the role and the schema. `tutelad` runs the same check at start-up and in readiness (`tutela_store::check_isolation`).
+- **Known limit.** RLS trusts `tutela.tenant_id`. SQL injection that can call `set_config` could change it, so `tutela-store` binds every value, and a transaction refuses a second tenant through the store's own calls.
 
 ### 5.4 Keys and secrets
 

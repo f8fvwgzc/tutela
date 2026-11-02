@@ -106,6 +106,26 @@ async fn make_role(admin: &Client, role: &str, password: &str) {
     }
 }
 
+/// A database with the schema and the service role's grants.
+pub async fn migrated() -> Option<TestDb> {
+    let mut d = db().await?;
+    tutela_store::migrate(&mut d.owner).await.unwrap();
+    tutela_store::grant_service(&mut d.owner, SERVICE)
+        .await
+        .unwrap();
+    Some(d)
+}
+
+/// A new tenant of [`ISS`].
+pub async fn tenant(owner: &mut Client) -> tutela_contracts::tenant::TenantKey {
+    let tx = owner.transaction().await.unwrap();
+    let t = tutela_store::create_tenant(&tx, &ISS.parse().unwrap())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    t
+}
+
 /// A new database with no schema.
 pub async fn db() -> Option<TestDb> {
     let base = base_url()?;
@@ -131,6 +151,18 @@ pub async fn db() -> Option<TestDb> {
 }
 
 impl TestDb {
+    /// A superuser connection to this database.
+    pub async fn superuser(&self) -> Client {
+        let parts: Vec<String> = self
+            .base
+            .split_whitespace()
+            .filter(|p| !p.starts_with("dbname="))
+            .map(str::to_owned)
+            .chain([format!("dbname={}", self.name)])
+            .collect();
+        connect(&parts.join(" ")).await
+    }
+
     pub async fn finish(self) {
         drop(self.owner);
         self.admin

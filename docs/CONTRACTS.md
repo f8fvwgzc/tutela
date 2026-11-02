@@ -1117,7 +1117,8 @@ Auth as in 7.1. The response is:
   "iss": "https://auth.example.test",
   "tid": "ten_0193a1b2-c3d4-7e5f-8a6b-7c8d9e0f1a2b",
   "sub": "user:usr_0193a1b2-c3d4-7a11-8b22-3c4d5e6f7081",
-  "kind": "access"
+  "kind": "access",
+  "rev": 42
 }
 ```
 
@@ -1126,6 +1127,9 @@ Auth as in 7.1. The response is:
 | `iss`, `tid` | The tenant key (1.6), from the verified token. |
 | `sub` | The subject. For an external issuer (4.6) this is the issuer's own subject. |
 | `kind` | `access`, `delegated` or `external`. |
+| `rev` | The tenant's current revision, read inside the tenant. |
+
+A verified token for a tenant that is not in the directory gets 403 `unknown_tenant`. A database failure, or a role that does not isolate tenants, gets 503 `unavailable`. A caller never names a tenant: a header, a query or a body has no effect.
 
 ### 7.8 Ports and operations
 

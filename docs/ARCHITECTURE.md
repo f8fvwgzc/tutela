@@ -236,7 +236,10 @@ Built so far ([ADR-0018](DECISIONS.md#adr-0018-tutelad-the-stack-the-two-ports-a
 service itself. Config from `TUTELA_*` and a trust file, the API port (HTTP and
 gRPC, axum and tonic, every request behind `tutela-sdk`'s `AuthLayer`), the ops
 port (`/healthz`, `/readyz`, `/metrics`), JSON logs and the graceful shutdown.
-Production settings are in `deploy/`. The rest of this list is planned.
+Tenant isolation is built too
+([ADR-0019](DECISIONS.md#adr-0019-tenants-in-tutelad-the-tenant-comes-from-the-token-and-rls-is-checked)).
+`tutelad migrate` runs the migrations and grants as the owner, apart from the
+service. Production settings are in `deploy/`. The rest of this list is planned.
 
 - **Check API** (AuthZEN 1.0 shape): `POST /access/v1/evaluation`,
   `/access/v1/evaluations` (up to 200 items), `/access/v1/search/resource`,

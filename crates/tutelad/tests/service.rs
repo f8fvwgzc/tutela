@@ -6,7 +6,9 @@ mod common;
 
 use std::time::Duration;
 
-use common::{ISS, Issuer, USER, config, db, http, now, start, state, trust};
+use common::{
+    ISS, Issuer, SERVICE, USER, config, db, http, migrated, now, start, state, tenant, trust,
+};
 use reqwest::StatusCode;
 use serde_json::Value;
 
@@ -40,11 +42,16 @@ async fn the_api_port_answers_nothing_without_a_token() {
 
 #[tokio::test]
 async fn a_verified_token_gets_through_and_every_bad_one_gets_the_same_401() {
+    let Some(mut d) = migrated().await else {
+        return;
+    };
+    let t = tenant(&mut d.owner).await;
+    let tid = t.tid.to_string();
     let issuer = Issuer::new();
-    let cfg = config(NO_DB, trust(&[TID.to_owned()]));
+    let cfg = config(&d.service_url, trust(std::slice::from_ref(&tid)));
     let s = start(&cfg, state(&cfg, &issuer)).await;
     let c = http();
-    let token = issuer.sign(ISS, TID, AUD, now());
+    let token = issuer.sign(ISS, &tid, AUD, now());
     let r = c
         .get(s.api_url("/v1/whoami"))
         .bearer_auth(&token)
@@ -55,9 +62,10 @@ async fn a_verified_token_gets_through_and_every_bad_one_gets_the_same_401() {
     assert!(r.headers().contains_key("x-request-id"));
     let body: Value = r.json().await.unwrap();
     assert_eq!(body["iss"], ISS);
-    assert_eq!(body["tid"], TID);
+    assert_eq!(body["tid"], tid);
     assert_eq!(body["sub"], USER);
     assert_eq!(body["kind"], "access");
+    assert_eq!(body["rev"], 0);
 
     // An unknown path behind a good token is a plain 404.
     let r = c
@@ -69,12 +77,12 @@ async fn a_verified_token_gets_through_and_every_bad_one_gets_the_same_401() {
     assert_eq!(r.status(), StatusCode::NOT_FOUND);
     assert_eq!(r.headers()["content-type"], "application/problem+json");
 
-    let other_key = Issuer::new().sign(ISS, TID, AUD, now());
+    let other_key = Issuer::new().sign(ISS, &tid, AUD, now());
     let bad = [
-        issuer.sign(ISS, TID, "another-audience", now()),
+        issuer.sign(ISS, &tid, "another-audience", now()),
         issuer.sign(ISS, OTHER_TID, AUD, now()),
-        issuer.sign("https://evil.example.test", TID, AUD, now()),
-        issuer.sign(ISS, TID, AUD, now() - 3600),
+        issuer.sign("https://evil.example.test", &tid, AUD, now()),
+        issuer.sign(ISS, &tid, AUD, now() - 3600),
         other_key,
         "not-a-token".to_owned(),
     ];
@@ -116,8 +124,9 @@ async fn a_verified_token_gets_through_and_every_bad_one_gets_the_same_401() {
         !text.contains("nothing/here"),
         "an unknown URL became a label"
     );
-    assert!(!text.contains(TID), "a tenant became a label");
+    assert!(!text.contains(&tid), "a tenant became a label");
     s.stop().await.unwrap();
+    d.finish().await;
 }
 
 #[tokio::test]
@@ -138,16 +147,7 @@ async fn health_needs_no_database_and_readiness_does() {
 
 #[tokio::test]
 async fn readiness_needs_the_schema_this_build_knows() {
-    let Some(mut d) = db().await else { return };
-    tutela_store::migrate(&mut d.owner).await.unwrap();
-    d.owner
-        .batch_execute(&format!(
-            "GRANT USAGE ON SCHEMA tutela TO {s}; \
-             GRANT SELECT ON tutela.schema_migration TO {s};",
-            s = common::SERVICE
-        ))
-        .await
-        .unwrap();
+    let Some(d) = migrated().await else { return };
     let issuer = Issuer::new();
     let cfg = config(&d.service_url, trust(&[TID.to_owned()]));
     let s = start(&cfg, state(&cfg, &issuer)).await;
@@ -209,12 +209,17 @@ async fn grpc_is_on_the_api_port_behind_the_same_token_check() {
 /// finishes, then the service exits cleanly.
 #[tokio::test]
 async fn a_shutdown_fails_readiness_first_and_finishes_running_requests() {
+    let Some(mut d) = migrated().await else {
+        return;
+    };
+    let t = tenant(&mut d.owner).await;
+    let tid = t.tid.to_string();
     let issuer = Issuer::new();
-    let mut cfg = config(NO_DB, trust(&[TID.to_owned()]));
+    let mut cfg = config(&d.service_url, trust(std::slice::from_ref(&tid)));
     cfg.shutdown_drain = Duration::from_millis(600);
     let s = start(&cfg, state(&cfg, &issuer)).await;
     let c = http();
-    let token = issuer.sign(ISS, TID, AUD, now());
+    let token = issuer.sign(ISS, &tid, AUD, now());
     let (api, ops) = (s.api_url("/v1/whoami"), s.ops_url("/readyz"));
     let stopping = tokio::spawn(s.stop());
 
@@ -228,6 +233,7 @@ async fn a_shutdown_fails_readiness_first_and_finishes_running_requests() {
 
     stopping.await.unwrap().unwrap();
     assert!(c.get(&api).bearer_auth(&token).send().await.is_err());
+    d.finish().await;
 }
 
 /// The real binary: it starts from the environment, logs JSON with no
@@ -344,4 +350,59 @@ async fn a_lost_database_does_not_fail_liveness() {
         StatusCode::SERVICE_UNAVAILABLE
     );
     s.stop().await.unwrap();
+}
+
+/// The deploy step: as the owner, migrations and grants. Nothing else is
+/// needed for the service to be ready.
+#[tokio::test]
+async fn tutelad_migrate_makes_the_schema_and_the_grants() {
+    let Some(d) = db().await else { return };
+    let run = |vars: Vec<(&'static str, String)>| {
+        let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_tutelad"));
+        cmd.arg("migrate").env_clear().envs(vars);
+        async move { cmd.output().await.unwrap() }
+    };
+    let out = run(vec![]).await;
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("TUTELA_OWNER_DATABASE_URL is not set"),
+        "{err}"
+    );
+
+    let vars = vec![
+        ("TUTELA_OWNER_DATABASE_URL", d.owner_url.clone()),
+        ("TUTELA_SERVICE_ROLE", SERVICE.to_owned()),
+    ];
+    let out = run(vars.clone()).await;
+    assert!(out.status.success(), "{out:?}");
+    // It may run again.
+    let out = run(vars).await;
+    assert!(out.status.success(), "{out:?}");
+
+    let issuer = Issuer::new();
+    let cfg = config(&d.service_url, trust(&[TID.to_owned()]));
+    let st = state(&cfg, &issuer);
+    st.db.check_ready().await.unwrap();
+    d.finish().await;
+}
+
+/// A token the trust list allows, for a tenant the directory does not have.
+#[tokio::test]
+async fn a_tenant_that_is_not_in_the_directory_is_refused() {
+    let Some(d) = migrated().await else { return };
+    let issuer = Issuer::new();
+    let cfg = config(&d.service_url, trust(&[TID.to_owned()]));
+    let s = start(&cfg, state(&cfg, &issuer)).await;
+    let r = http()
+        .get(s.api_url("/v1/whoami"))
+        .bearer_auth(issuer.sign(ISS, TID, AUD, now()))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    let body: Value = r.json().await.unwrap();
+    assert_eq!(body["type"], "urn:tutela:problem:unknown_tenant");
+    s.stop().await.unwrap();
+    d.finish().await;
 }

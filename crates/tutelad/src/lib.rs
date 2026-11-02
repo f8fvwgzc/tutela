@@ -7,7 +7,9 @@
 //! - [`api`]: the API port (HTTP and gRPC on one listener, every request
 //!   behind [`tutela_sdk::http::AuthLayer`]) and the ops port (`/healthz`,
 //!   `/readyz`, `/metrics`).
-//! - [`db`]: the connection pool.
+//! - [`tenant`]: how a request gets its tenant, from the verified token only.
+//! - [`db`]: the connection pool, and [`db::Conn::begin`], the one way to
+//!   run a query as a tenant.
 //! - [`telemetry`]: JSON logs and Prometheus metrics.
 //! - [`server`]: the two listeners and the graceful shutdown.
 
@@ -16,6 +18,7 @@ pub mod config;
 pub mod db;
 pub mod server;
 pub mod telemetry;
+pub mod tenant;
 
 pub use config::Config;
 pub use server::{Server, run};

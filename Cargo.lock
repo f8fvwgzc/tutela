@@ -2486,6 +2486,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tutela-contracts",
+ "tutela-pdp",
  "tutela-safenet",
  "tutela-sdk",
  "tutela-store",

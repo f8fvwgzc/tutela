@@ -45,3 +45,4 @@ aws-lc-rs = { version = "1.18.2", default-features = false, features = ["aws-lc-
 base64 = "0.23.1"
 reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
 tokio = { version = "1.54.1", features = ["io-util", "process"] }
+tutela-pdp = { workspace = true }
