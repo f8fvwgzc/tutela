@@ -50,7 +50,15 @@ fn change(rng: &mut Rng, w: &World, t: &Tenant, data: &mut TenantData) {
     // The org, from the first node's path.
     scopes.push(t.nodes[0].path.last().cloned().unwrap());
     let groups: Vec<GroupKey> = data.groups.iter().map(|g| g.key.clone()).collect();
-    match rng.below(6) {
+    // A group that conditions may name before it exists (testgen's "nope").
+    let nope = GroupKey::parse("nope").unwrap();
+    match rng.below(7) {
+        6 if !groups.contains(&nope) => {
+            data.groups.push(crate::Group {
+                key: nope,
+                members: Vec::new(),
+            });
+        }
         0 | 1 => {
             let subject = if !groups.is_empty() && rng.chance(30) {
                 Subject::Group(rng.pick(&groups).clone())
@@ -502,4 +510,148 @@ fn a_granter_with_a_condition_is_held_at_its_lowest() {
         r.lines.iter().any(|l| l.key == "contract" && l.conditional),
         "{r:?}"
     );
+}
+
+/// A role whose condition reads group membership: `in_group` and its
+/// negation, on a group that exists and on one that does not yet.
+const GROUP_MODEL: &str = r#"
+version = 1
+[app]
+name = "grants"
+
+[types.project]
+parent = "org"
+container = true
+
+[types.contract]
+parent = "project"
+
+[types.contract.fields]
+title = { sensitivity = "internal" }
+
+[roles.reader]
+grants = { project = "read", contract = "read" }
+
+[roles.editor_in_group]
+grants = { project = "write", contract = "write" }
+
+[roles.editor_outside]
+grants = { project = "write", contract = "write" }
+
+[[conditions]]
+role = "editor_in_group"
+type = "contract"
+when = { in_group = "editors" }
+else = "read"
+
+[[conditions]]
+role = "editor_outside"
+type = "contract"
+when = { not = { in_group = "outsiders" } }
+else = "read"
+"#;
+
+/// A change of group membership, or a new group, can make a condition that
+/// reads groups hold where it failed: the member gains with no assignment
+/// changed. The granter must hold that gain. Found by the property test
+/// (seed 5412397625890240684): before, `grant_excess` paired the condition
+/// across the two sides and saw no gain.
+#[test]
+fn tm08_a_group_change_that_makes_a_condition_hold_is_a_grant() {
+    use crate::tests_check::{entry, tenant};
+    let org = PathEntry::org(&org_id(1)).unwrap();
+    let p1 = entry("project", "p1");
+    let (granter, member, other) = (user(1), user(2), user(3));
+    let group = |key: &str, members: &[&Principal]| crate::Group {
+        key: GroupKey::parse(key).unwrap(),
+        members: members
+            .iter()
+            .map(|p| Member::Principal((*p).clone()))
+            .collect(),
+    };
+    let data = TenantData {
+        orgs: [org_id(1)].into(),
+        bindings: vec![
+            binding("ra_1", direct(&granter), "reader", p1.clone()),
+            binding("ra_2", direct(&member), "editor_in_group", p1.clone()),
+            binding("ra_3", direct(&other), "editor_outside", p1.clone()),
+        ],
+        groups: vec![group("editors", &[]), group("sales", &[])],
+        ..TenantData::default()
+    };
+    let model = Arc::new(Model::from_toml(GROUP_MODEL).unwrap());
+    let load = |d: TenantData, rev| {
+        let mut pdp = Pdp::new();
+        pdp.load(tenant(1), rev, Arc::clone(&model), d).unwrap();
+        pdp
+    };
+    let paths = Paths {
+        map: [((tenant(1), p1.clone()), vec![org.clone()])]
+            .into_iter()
+            .collect(),
+        ..Paths::default()
+    };
+    let before = load(data.clone(), 1);
+    let excess = |after: TenantData| {
+        grant_excess(
+            &before,
+            &load(after, 2),
+            &tenant(1),
+            &paths,
+            &granter,
+            MAX_IMPACT_WORK,
+        )
+        .unwrap()
+    };
+
+    // The member joins `editors`: its condition now holds, and it writes
+    // contracts at p1, which the reader does not.
+    let mut joined = data.clone();
+    joined.groups[0]
+        .members
+        .push(Member::Principal(member.clone()));
+    let r = excess(joined);
+    assert!(
+        r.lines
+            .iter()
+            .any(|l| l.key == "contract" && l.to == "write" && l.scopes == vec![p1.clone()]),
+        "{r:?}"
+    );
+
+    // A new group named by a negated condition: before, the condition named
+    // a group that did not exist and failed for everyone (MANIFEST.md 8);
+    // now it holds for whoever is not in the group.
+    let mut made = data.clone();
+    made.groups.push(group("outsiders", &[]));
+    let r = excess(made);
+    assert!(
+        r.lines
+            .iter()
+            .any(|l| l.key == "contract" && l.to == "write"),
+        "{r:?}"
+    );
+
+    // Joining a group no condition reads changes nothing for anyone.
+    let mut sales = data.clone();
+    sales.groups[1]
+        .members
+        .push(Member::Principal(member.clone()));
+    assert!(excess(sales).no_impact());
+
+    // A granter who holds the gain may make it.
+    let mut owner_data = data.clone();
+    owner_data.bindings[0] = binding("ra_1", direct(&granter), "owner", p1.clone());
+    let before_owner = load(owner_data.clone(), 1);
+    let mut joined = owner_data;
+    joined.groups[0].members.push(Member::Principal(member));
+    let r = grant_excess(
+        &before_owner,
+        &load(joined, 2),
+        &tenant(1),
+        &paths,
+        &granter,
+        MAX_IMPACT_WORK,
+    )
+    .unwrap();
+    assert!(r.no_impact(), "{r:?}");
 }

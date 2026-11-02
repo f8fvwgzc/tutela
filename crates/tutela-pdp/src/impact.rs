@@ -22,7 +22,7 @@ use crate::data::ScopeIndex;
 use crate::eval::{
     ActionKind, Ctx, Outcome, Side, Walk, action_kind, closest_cap, resolve_unseen, rule_nodes,
 };
-use crate::model::{ADMIN_KEYS, Condition, Model, Role, RoleKey};
+use crate::model::{ADMIN_KEYS, Condition, GroupKey, Model, Role, RoleKey, Template};
 use crate::pdp::{Bundle, Pdp};
 
 /// One thing a principal can hold on one type.
@@ -203,6 +203,17 @@ impl<'s, 'm> Seat<'s, 'm> {
         (at(|h| h.floor), at(|h| h.base))
     }
 
+    /// `true` when a condition of a role it holds reads the membership of
+    /// one of `groups` (`in_group`, MANIFEST.md 8): its answer then depends
+    /// on them, not only on the row.
+    fn reads_groups(&self, groups: &BTreeSet<&GroupKey>) -> bool {
+        !groups.is_empty()
+            && self
+                .held
+                .iter()
+                .any(|h| h.conditions.iter().any(|c| names_a_group(&c.when, groups)))
+    }
+
     /// `true` when `other` holds the same roles with the same conditions, so
     /// one set of field values fails the same conditions on both sides.
     fn same_conditions(&self, other: &Self) -> bool {
@@ -217,6 +228,19 @@ impl<'s, 'm> Seat<'s, 'm> {
                             .all(|(x, y)| x.when == y.when && x.otherwise == y.otherwise)
                 })
             })
+    }
+}
+
+/// `true` if the template reads the membership of one of `groups`.
+fn names_a_group(t: &Template, groups: &BTreeSet<&GroupKey>) -> bool {
+    match t {
+        Template::InGroup { group } => groups.contains(group),
+        Template::And(v) | Template::Or(v) => v.iter().any(|x| names_a_group(x, groups)),
+        Template::Not(x) => names_a_group(x, groups),
+        Template::Eq { .. }
+        | Template::In { .. }
+        | Template::Contains { .. }
+        | Template::IsPrincipal { .. } => false,
     }
 }
 
@@ -245,8 +269,17 @@ pub(crate) struct Delta {
     pub conditional: bool,
 }
 
-/// The gain and the loss on `a`, if there can be one.
-fn compare_key(before: &Seat<'_, '_>, after: &Seat<'_, '_>, a: &Access, out: &mut Vec<Delta>) {
+/// The gain and the loss on `a`, if there can be one. `moved`: the groups
+/// whose membership of the principal, or whose existence, differs between
+/// the two sides, so a condition that reads one can fail on one side and
+/// hold on the other for the same row.
+fn compare_key(
+    before: &Seat<'_, '_>,
+    after: &Seat<'_, '_>,
+    a: &Access,
+    moved: &BTreeSet<&GroupKey>,
+    out: &mut Vec<Delta>,
+) {
     let (lo0, hi0) = before.range(a);
     let (lo1, hi1) = after.range(a);
     let mut push = |change, from, to, conditional| {
@@ -266,7 +299,13 @@ fn compare_key(before: &Seat<'_, '_>, after: &Seat<'_, '_>, a: &Access, out: &mu
         }
         return;
     }
-    let (gain, lose) = if before.same_conditions(after) {
+    // One row fails the same conditions on both sides only when nothing a
+    // condition reads changed: the row's fields, and the principal's groups
+    // for a condition that reads them. Otherwise each side may be anywhere
+    // in its range.
+    let correlate =
+        before.same_conditions(after) && !before.reads_groups(moved) && !after.reads_groups(moved);
+    let (gain, lose) = if correlate {
         correlated(before, after, a)
     } else {
         (hi1 > lo0, hi0 > lo1)
@@ -321,11 +360,26 @@ impl Budget {
     }
 }
 
-/// Every change between two seats on `keys`. `None` when the budget ran out.
+/// Every change between two seats on `keys`, for a principal whose groups
+/// are the same on both sides. `None` when the budget ran out.
 pub(crate) fn compare(
     before: &Seat<'_, '_>,
     after: &Seat<'_, '_>,
     keys: &[Access],
+    budget: &mut Budget,
+) -> Option<Vec<Delta>> {
+    compare_with(before, after, keys, &BTreeSet::new(), budget)
+}
+
+/// [`compare`], where `moved` names the groups whose membership of the
+/// principal, or whose existence, differs between the two sides (a change of
+/// group membership, or a group made or deleted): a condition that reads one
+/// of them is then not paired across the sides.
+pub(crate) fn compare_with(
+    before: &Seat<'_, '_>,
+    after: &Seat<'_, '_>,
+    keys: &[Access],
+    moved: &BTreeSet<&GroupKey>,
     budget: &mut Budget,
 ) -> Option<Vec<Delta>> {
     if !budget.take(keys.len()) {
@@ -333,7 +387,7 @@ pub(crate) fn compare(
     }
     let mut out = Vec::new();
     for a in keys {
-        compare_key(before, after, a, &mut out);
+        compare_key(before, after, a, moved, &mut out);
     }
     Some(out)
 }
