@@ -69,7 +69,7 @@ A phase is not done, and nothing from it ships, until its gate passes. Gates add
 | Gate | Pass condition |
 |------|----------------|
 | Tenant isolation (RLS) | A cross-tenant read fails at row-level security even with an injected code bug. A query with no tenant set returns zero rows. `FORCE ROW LEVEL SECURITY` on every table; app roles never own tables. |
-| Closure | Group and hierarchy closure stays correct and inside its latency budget |
+| Closure | Group and hierarchy closure stays correct and inside its latency budget (p99 under 5 ms). Passes: `cargo bench -p tutela-store --bench closure`, [ADR-0020](docs/DECISIONS.md#adr-0020-the-bindings-store-closures-at-read-time-and-assignment-expiry) |
 | Revocation | A revoked role takes effect within the documented delay |
 | Stale data | The decision engine refuses a lower revision than it has seen and refuses expired bundles (reads return 503, never a stale allow) |
 | High availability | 2+ `tutelad` replicas |
