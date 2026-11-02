@@ -707,7 +707,7 @@ Again: **UI hiding is never security. Every server checks again.**
 
 A tenant's **model** is its resource types, fields, roles, field rules, boundary rules, conditions and UI keys. Model changes come from four places: the Tutela Console, the embeddable admin parts, `tutela apply` (a product's manifest), and onto-intelli's PutResourceTypes import.
 
-**Bindings** (role assignments and group memberships) are day-to-day admin work. An owner with `manage_access` adds or removes people directly, as in the blueprint. Binding changes still pass role-on-diff and the narrow-only rule, bump the tenant revision and are audited. They do not go through the impact-report and approval steps below (steps 3–4).
+**Bindings** (role assignments and group memberships) are day-to-day admin work. An owner with `manage_access` adds or removes people directly, as in the blueprint. Binding changes still pass role-on-diff and the narrow-only rule, bump the tenant revision and are audited. They do not go through the impact-report and approval steps below (steps 3–4). Built in `tutelad` (CONTRACTS.md 7.13.7, [ADR-0043](DECISIONS.md#adr-0043-scopes-assignments-and-groups-over-the-admin-api-checked-on-the-data-they-change)): every binding change, a removal too, is compared before and after for everyone it reaches, and a gain above what the editor holds at the same place is refused.
 
 ### 15.1 Every change goes through the same steps
 

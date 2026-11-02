@@ -110,6 +110,29 @@ impl ScopePaths for ScopePathSnapshot {
     }
 }
 
+/// Starts a change that needs to read the tenant first: enters the tenant
+/// and locks its revision row for update, as a write does, so no other
+/// write commits until the caller's transaction ends. Returns the current
+/// revision. A [`load`] after it in the same transaction reads what the
+/// caller's own writes will change, and nothing else.
+///
+/// # Errors
+///
+/// [`UnknownTenant`](crate::StoreErrorKind::UnknownTenant), or a database
+/// error.
+pub async fn lock(tx: &Transaction<'_>, tenant: &TenantKey) -> Result<u64, StoreError> {
+    enter(tx, tenant).await?;
+    let row = tx
+        .query_opt(
+            "SELECT rev FROM tutela.tenant_rev WHERE tenant_id = $1 FOR UPDATE",
+            &[&tenant.tid.to_string()],
+        )
+        .await
+        .db()?
+        .ok_or(StoreError::corrupt("tenant revision row"))?;
+    to_rev(row.try_get(0).db()?)
+}
+
 /// The tenant's current revision.
 ///
 /// # Errors
@@ -400,6 +423,21 @@ async fn tenant_view(
         });
     }
     Ok((data, next_expiry))
+}
+
+/// A boundary rule from its stored columns.
+pub(crate) fn boundary_of(
+    moves_out: Option<&str>,
+    moves_in: Option<&str>,
+    looser: Option<&str>,
+    links: Option<&str>,
+) -> Result<BoundaryRule, StoreError> {
+    Ok(BoundaryRule {
+        moves_out: move_rule(moves_out)?,
+        moves_in: move_rule(moves_in)?,
+        on_looser: on_looser(looser)?,
+        links_from: links_from(links)?,
+    })
 }
 
 fn move_rule(text: Option<&str>) -> Result<Option<MoveRule>, StoreError> {

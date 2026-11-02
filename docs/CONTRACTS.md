@@ -1514,7 +1514,7 @@ Every answer on the API port has `x-request-id`: the one the caller sent (AuthZE
 - **Who may ask:** the admin keys below, on data that has just been checked. A refusal for want of a key is recorded in the audit log, with who asked, before the answer.
 - **The tenant** comes from the token, as everywhere. A principal of another tenant is not there: 404.
 - Principals go in the JSON body, never in the URL (9.5: they are personal data).
-- **Errors:** the problem documents of 7.1, plus `not_found` (404), and `exists`, `not_additive`, `no_change`, `version_conflict` (409). gRPC codes: 400 `INVALID_ARGUMENT`, 401 `UNAUTHENTICATED`, 403 `PERMISSION_DENIED`, 404 `NOT_FOUND`, 409 `ABORTED`, else `UNAVAILABLE`; the message is `<code>: <text>`.
+- **Errors:** the problem documents of 7.1, plus `not_found` (404), `not_held` and `move_refused` (403, 7.13.7), and `exists`, `not_additive`, `no_change`, `version_conflict`, `refused` (409). gRPC codes: 400 `INVALID_ARGUMENT`, 401 `UNAUTHENTICATED`, 403 `PERMISSION_DENIED`, 404 `NOT_FOUND`, 409 `ABORTED`, else `UNAVAILABLE`; the message is `<code>: <text>`.
 - `tutelad_admin_operations_total{operation, outcome}` counts each call: `ok`, `forbidden`, `refused`, `not_found`, `conflict`, `invalid`, `error`.
 
 #### 7.13.1 Agent principals and people
@@ -1542,7 +1542,7 @@ The answer is the principal's state:
 |---|---|---|---|
 | `PUT /v1/admin/boundaries` `{"scope": {"type", "id"}, "moves_out"?, "moves_in"?, "on_looser"?, "links_from"?}` | `SetBoundary` | `<type>:manage_boundaries` on the scope, at the path the store holds for it | Replaces the scope's move and link rules (PERMISSION-MODEL.md 9, 10): `moves_out` and `moves_in` are `members`, `owners` or `none`; `on_looser` is `approve` or `block`; `links_from` is `any`, `team` or `none`; a rule left out is not set. An org is 400; an unregistered scope 404. Bumps the revision and emits `tutela.permissions.changed.v1`. Answers `{"rev"}`. |
 
-There is no route for `move_scope`: a move is the product's write after `write_check` (6.7). Registering, moving and deleting scopes, role assignments and groups in service mode are not built ([#107](https://github.com/f8fvwgzc/tutela/issues/107)).
+Registering, moving and deleting scopes, their private flag, role assignments and groups are 7.13.7.
 
 #### 7.13.3 Resource types (`PutResourceTypes`)
 
@@ -1594,6 +1594,56 @@ An org is `{"org", "name"?, "created_at", "deleted_at"?, "purge_after"?, "purged
 | `POST /v1/admin/webhooks/{id}/deliveries/{seq}/redeliver` | `Redeliver` | A dead delivery is pending and due now; answers it. One that is not dead is 404. |
 
 A webhook is `{"id", "url", "types", "disabled", "created_by"}`. A webhook of another tenant is 404. Every call is recorded with who asked; a record names the webhook and the URL's host, never the secret or the rest of the URL (a query may hold a receiver's token).
+
+#### 7.13.7 Scopes, role assignments and groups
+
+**Built in part 4a** ([ADR-0043](DECISIONS.md#adr-0043-scopes-assignments-and-groups-over-the-admin-api-checked-on-the-data-they-change), [#107](https://github.com/f8fvwgzc/tutela/issues/107)). What a product calls in service mode where library mode calls `tutela-store`, and what the Console's members, groups and roles pages call. A scope in a body is `{"type", "id"}`; in a query `type:id`. A subject or member is a principal or `group:<key>`. A group key and an assignment id (`ra_<uuidv7>`) may be in a URL path; a principal never is.
+
+| Route | gRPC | Needs | Does |
+|---|---|---|---|
+| `GET /v1/admin/scopes?under=&after=&limit=` | `ListScopes` | `read_audit` or `manage_access` on `under` (an org or a scope) | A page of the registered scopes below it: `{"scopes": [<scope>…], "next_after"?}`. |
+| `POST /v1/admin/scopes` `{"scope", "parent", "private"?}` | `PutScope` | `write` on the parent | Registers a scope under its parent (an org of the tenant or a registered scope); its path is the parent's, from the store. The type must be a container of the model whose `parent` allows the parent's type (400). `private` missing: what the type `starts` as. 409 `exists`. Answers `{"scope": <scope>, "rev"}`. |
+| `POST /v1/admin/scopes/move` `{"scope", "parent", "approved_by"?}` | `MoveScope` | the move verdict of `write_check` (6.7) for the caller | Runs the verdict on the new path and, only when it allows the move, moves the scope and every scope below it, in one transaction under the tenant's write lock. A verdict that refuses or waits is 403 `move_refused`; its detail names the scopes where an owner must agree. `approved_by` (principals) from a service only (7.8). Answers `{"scope", "rev"}`. |
+| `POST /v1/admin/scopes/delete` `{"scope"}` | `DeleteScope` | `delete` on the scope | The scope and every registered scope below it, with their assignments and rules, in one revision. Answers `{"rev"}`. |
+| `PUT /v1/admin/scopes/private` `{"scope", "private"}` | `SetPrivate` | `manage_boundaries` on the scope | Sets or clears the private flag. Answers `{"rev"}`. |
+| `POST /v1/admin/assignments/list` `{"scope"?, "subject"?, "after"?, "limit"?}` | `ListAssignments` | with `scope`: `read_audit` or `manage_access` there; without: `org:read_audit` at every org | A page of the assignments that still count, by id: `{"assignments": [<assignment>…], "next_after"?}`. |
+| `POST /v1/admin/assignments` `{"subject", "role", "scope", "expires_at"?}` | `Assign` | `<type>:manage_access` on the scope | Gives the role, until `expires_at` (RFC 3339, in the future) if set. The role must be in the tenant's model and may be given to that kind of subject (400). One per subject and scope (409 `exists`). Answers `{"assignment", "rev"}`. |
+| `PATCH /v1/admin/assignments/{id}` `{"expires_at"}` | `SetAssignmentExpiry` | as above, on its scope | A new end, or `null` for none (the field is required). A later end is checked as a new grant. Answers `{"assignment", "rev"}`. |
+| `DELETE /v1/admin/assignments/{id}` | `Unassign` | as above | Answers `{"rev"}`. |
+| `GET /v1/admin/groups?org=&after=&limit=` | `ListGroups` | with `org`: `read_audit` or `manage_access` there; without: `org:read_audit` at every org | `{"groups": [<group>…], "next_after"?}` by key. |
+| `POST /v1/admin/groups` `{"org", "key", "name"}` | `CreateGroup` | `org:manage_access` on that org | A new, empty group; the key is unique in the tenant (409 `exists`). Answers the group with `rev`. |
+| `DELETE /v1/admin/groups/{key}` | `DeleteGroup` | `org:manage_access` on its org | The group, its assignments and its places in other groups, in one revision. Answers `{"rev"}`. |
+| `GET /v1/admin/groups/{key}/members?after=&limit=` | `ListGroupMembers` | `read_audit` or `manage_access` on its org | `{"members": ["user:usr_…", "group:<key>"…], "next_after"?}`, direct members, by text. |
+| `POST /v1/admin/groups/{key}/members` `{"member"}`, `POST …/members/remove` | `AddGroupMember`, `RemoveGroupMember` | `org:manage_access` on its org | A cycle, nesting deeper than 32 or a closure over its limits is 409 `refused` (PERMISSION-MODEL.md 6.4); a member that is (add) or is not (remove) there is 409 / 404. Answers `{"rev"}`. |
+| `GET /v1/admin/roles?scope=` | `ListRoles` | with `scope`: `read_audit` or `manage_access` there; without: `org:read_audit` at every org | The active model's roles and types, the permission matrix (below). |
+
+- **Nobody grants what they do not hold** (PERMISSION-MODEL.md 7.1 step 6). Every change above but a move is compared before and after for everyone it reaches; a gain above what the caller holds at the same place, before the change, is 403 `not_held`, with what is gained in plain words and counts in the detail ("1 user gains write on invoice in 1 scope"), never a principal. A removal that uncovers wider access counts. A caller whose role has conditions is taken at its lowest. A check that reaches its bound refuses.
+- The keys and the rule are checked on the data the change writes, in its transaction, under the tenant's write lock. The store bumps the revision and emits `tutela.permissions.changed.v1` in that transaction. Every change and every refusal is recorded with who asked.
+- The JSON shapes:
+
+```json
+{ "scope": {"type": "project", "id": "p-1"},
+  "ancestors": [{"type": "org", "id": "org_…"}],
+  "private": false, "moves_out"?: "owners", "moves_in"?: "members",
+  "on_looser"?: "approve", "links_from"?: "team" }
+
+{ "id": "ra_…", "subject": "user:usr_…", "role": "reader",
+  "scope": {"type": "project", "id": "p-1"},
+  "granted_by"?: "user:usr_…", "created_at"?: "2026-11-02T10:00:00Z",
+  "expires_at"?: "2026-12-01T00:00:00Z" }
+
+{ "key": "legal", "org": "org_…", "name": "Legal", "created_at"?: "…", "members"?: 3, "rev"?: 51 }
+
+{ "version": 4,
+  "roles": [{ "key": "approver", "label"?: "…", "seeded"?: "member",
+              "levels": {"invoice": "write", "project": "write"},
+              "field_levels": {"invoice.amount": "read"},
+              "grants": ["invoice:approve"], "assignable_to": ["user", "sa", "group"] }],
+  "types": [{ "name": "invoice", "label"?: "…", "parents": ["project"], "container": false,
+              "starts_private": false,
+              "fields": [{"name": "amount", "sensitivity": "confidential"}],
+              "features": ["@ai"], "actions": ["approve"] }] }
+```
 
 ## 8. Events
 

@@ -234,3 +234,32 @@ K04: caught by 1 test(s) - the chain check never runs
       tm20_the_chain_check_finds_a_broken_link_and_reports_it
 K05: caught by 1 test(s) - an offline PDP answers past exp after tutelad stopped
       tm13_an_offline_pdp_outlives_a_stopped_tutelad_process_until_exp
+
+M01: caught by 2 test(s) - a move over the admin API skips write_check's verdict
+      a_move_goes_through_write_check_and_its_boundary_rules, tm01_every_route_refuses_the_tokens_the_admin_api_refuses
+M02: caught by 2 test(s) - an assignment needs no manage_access on its scope
+      tm08_nobody_grants_what_they_do_not_hold, tm01_every_route_refuses_the_tokens_the_admin_api_refuses
+M03: caught by 2 test(s) - a change may give more than its caller holds
+      tm08_nobody_grants_what_they_do_not_hold, the_grpc_methods_answer_what_the_routes_answer
+M04: caught by 2 test(s) - the granter's holding is read after the change
+      tests_grant::tm08_the_grant_test_compares_enough, tests_grant::tm08_a_change_that_passes_gives_nobody_more_than_the_granter
+M05: caught by 1 test(s) - a group is managed with read on its org
+      tm01_every_route_refuses_the_tokens_the_admin_api_refuses
+M06: caught by 1 test(s) - an org of another tenant is a place to write in
+      tm05_a_tenant_admin_reaches_its_own_tenant_only
+M07: caught by 1 test(s) - a scope is registered with read on its parent
+      tm01_every_route_refuses_the_tokens_the_admin_api_refuses
+M08: caught by 1 test(s) - a scope is deleted with read on it
+      tm01_every_route_refuses_the_tokens_the_admin_api_refuses
+M09: caught by 2 test(s) - anyone may list a scope's assignments
+      tm05_a_tenant_admin_reaches_its_own_tenant_only, tm01_every_route_refuses_the_tokens_the_admin_api_refuses
+M10: caught by 1 test(s) - a later end of an assignment is not a grant
+      tm08_nobody_grants_what_they_do_not_hold
+M11: caught by 1 test(s) - a grant is checked at its own scope only, not below it
+      tests_grant::a_grant_is_held_up_to_the_granter_below_the_scope_too
+M12: caught by 2 test(s) - the granter is taken at its highest
+      tests_grant::a_granter_with_a_condition_is_held_at_its_lowest, tests_grant::tm08_a_change_that_passes_gives_nobody_more_than_the_granter
+M13: caught by 1 test(s) - a person names who approved a move
+      a_move_goes_through_write_check_and_its_boundary_rules
+M14: caught by 2 test(s) - the private flag needs no manage_boundaries
+      a_move_goes_through_write_check_and_its_boundary_rules, tm01_every_route_refuses_the_tokens_the_admin_api_refuses

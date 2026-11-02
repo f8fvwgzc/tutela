@@ -26,6 +26,7 @@ mod data;
 mod eval;
 mod explain;
 mod filter;
+mod grant;
 mod impact;
 pub mod model;
 mod moves;
@@ -42,6 +43,8 @@ mod tests_check;
 mod tests_explain;
 #[cfg(test)]
 mod tests_filter;
+#[cfg(test)]
+mod tests_grant;
 #[cfg(test)]
 mod tests_impact;
 #[cfg(test)]
@@ -66,6 +69,7 @@ pub use filter::{
     FilterExpr, FilterSize, FilterValue, ListFilter, MAX_CONTAINER_IN, MAX_FILTER_DEPTH,
     MAX_FILTER_ENTRIES, MAX_FILTER_NODES, MAX_IDS_IN,
 };
+pub use grant::grant_excess;
 pub use impact::{Change, ImpactLine, ImpactReport, MAX_IMPACT_WORK, model_impact};
 pub use moves::{MAX_MOVE_CANDIDATES, MAX_MOVE_LINES, MAX_MOVE_WORK};
 pub use pdp::Pdp;

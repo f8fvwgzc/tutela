@@ -97,7 +97,7 @@ A gate is a list of checks. A phase is not done until its gate passes. No produc
 - **Token-exchange service**: accepts the Keycloak token and issues a short-lived Tutela access token, with just-in-time user provisioning.
 - **Delegated agent tokens** (RFC 8693, `act` claim, `typ: agent+jwt`, only for `delegation_aware` audiences). Not optional.
 - Org lifecycle events (`tutela.org.created|updated|deleted.v1`, `tutela.user.deleted.v1`, ...): **done** in part 3c, with soft delete and a purge of tenants and orgs ([ADR-0041](DECISIONS.md#adr-0041-the-lifecycle-of-tenants-orgs-and-people-the-operator-makes-a-tenant-soft-delete-with-a-grace-a-purge-that-keeps-the-audit-chain)).
-- Admin API `tutela.admin.v1` over gRPC and HTTP: **done** in part 3c for agent principals, people, the model, `PutResourceTypes`, boundary rules, tenants, orgs and webhooks ([ADR-0040](DECISIONS.md#adr-0040-tutelaadminv1-one-code-path-the-admin-token-rule-on-grpc-and-keys-at-every-org)); scopes, role assignments and groups are part 4's ([#107](https://github.com/f8fvwgzc/tutela/issues/107)).
+- Admin API `tutela.admin.v1` over gRPC and HTTP: **done** in part 3c for agent principals, people, the model, `PutResourceTypes`, boundary rules, tenants, orgs and webhooks ([ADR-0040](DECISIONS.md#adr-0040-tutelaadminv1-one-code-path-the-admin-token-rule-on-grpc-and-keys-at-every-org)); scopes, role assignments and groups in part 4a ([#107](https://github.com/f8fvwgzc/tutela/issues/107), [ADR-0043](DECISIONS.md#adr-0043-scopes-assignments-and-groups-over-the-admin-api-checked-on-the-data-they-change)).
 - Tutela Console, plus embeddable admin components (RoleEditor, MembersTable, permission matrix) using a separate `aud=tutela-admin` token.
 - A Helm bootstrap job that creates client credentials and webhook secrets before other charts start.
 
@@ -143,13 +143,13 @@ Done:
 | Webhooks over the admin API: register (the URL and its DNS answer checked), list, rotate with an overlap, disable, list deliveries and send a dead one again; `read_audit` and `manage_access` at every org; a secret shown once | Done (part 3c) | [ADR-0036](DECISIONS.md#adr-0036-webhooks-delivered-from-the-outbox-registered-by-part-3c) item 9, CONTRACTS.md 7.13.6 |
 | The audit log's leftovers: every chain walked on a timer (`TUTELA_AUDIT_VERIFY_SECS`), a broken link reported as an error log and `tutelad_audit_chains_broken`; `request_id`, `trace_id` and `span_id` in each record of a request; the two-process bundle test | Done (part 3c) | [ADR-0042](DECISIONS.md#adr-0042-the-audit-logs-leftovers-a-chain-check-on-a-timer-the-callers-trace-in-each-record) |
 | Forwarding of audit records to attache's evidence ledger through its acknowledged Append API, off unless `TUTELA_LEDGER_URL` is set: each record signed by the deployment's Ed25519 producer key over its body, marked shipped only on acknowledgement, one replica per chain at a time, resuming after the last acknowledged `seq`; nothing changed in attache | Done (part 3b) | [ADR-0039](DECISIONS.md#adr-0039-forwarding-to-attaches-evidence-ledger-signed-acknowledged-resumable) |
+| Scopes, role assignments and groups over `tutela.admin.v1` and its HTTP routes: register, move (behind `write_check`'s verdict, on the data it writes), delete and the private flag of scopes; assign, end and remove roles; groups and their members; the roles and types of the model; pages with `next_after`. Every binding change, a removal too, is held to the narrow-only rule before and after (`tutela_pdp::grant_excess`), under the tenant's write lock | Done (part 4a, [#107](https://github.com/f8fvwgzc/tutela/issues/107)) | [ADR-0043](DECISIONS.md#adr-0043-scopes-assignments-and-groups-over-the-admin-api-checked-on-the-data-they-change), CONTRACTS.md 7.13.7 |
 
 Not started:
 
 | Work | Part | Note |
 |---|---|---|
 | `tutela apply` against `tutelad`, `tutela apps create`, `tutela keys rotate` | 4 | `tutela apply` calls `POST /v1/models/publish`, per tenant. |
-| Scopes, role assignments and groups over the admin API, with a move behind `write_check` ([#107](https://github.com/f8fvwgzc/tutela/issues/107)) | 4 | Library mode calls the store; service mode has no route yet (ADR-0040 item 8). |
 | A test of token exchange against a real Keycloak ([#87](https://github.com/f8fvwgzc/tutela/issues/87)) | open | No image could be pulled; tested against a local signer of Keycloak-shaped tokens. |
 | Client authentication at the token endpoint | 4 | With apps (`tutela apps create`): bind `azp` to the client (ADR-0031). |
 | Tutela Console and embeddable admin components | 4 | |

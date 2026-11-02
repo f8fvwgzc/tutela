@@ -192,7 +192,7 @@ impl<'s, 'm> Seat<'s, 'm> {
 
     /// The lowest and the highest answer on `a`. Roles combine by taking the
     /// highest, and every level function only goes up with the item level.
-    fn range(&self, a: &Access) -> (Level, Level) {
+    pub(crate) fn range(&self, a: &Access) -> (Level, Level) {
         let at = |l: fn(&Held<'m>) -> Level| {
             self.held
                 .iter()

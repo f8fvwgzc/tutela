@@ -94,6 +94,45 @@ service Admin {
   rpc ListDeliveries(ListDeliveriesRequest) returns (ListDeliveriesResponse);
   // POST /v1/admin/webhooks/{id}/deliveries/{seq}/redeliver.
   rpc Redeliver(RedeliverRequest) returns (Delivery);
+
+  // ---------- Scopes, role assignments and groups (CONTRACTS.md 7.13.7) ----------
+  //
+  // Each answers the JSON of its route as `result_json`. A change is
+  // refused with PERMISSION_DENIED `not_held` when it gives anyone more
+  // than the caller holds (ADR-0043).
+
+  // GET /v1/admin/scopes?under=: a page of the registered scopes below one.
+  rpc ListScopes(ListScopesRequest) returns (JsonResult);
+  // POST /v1/admin/scopes: registers a scope under its parent.
+  rpc PutScope(PutScopeRequest) returns (JsonResult);
+  // POST /v1/admin/scopes/move: moves a scope when write_check allows it.
+  rpc MoveScope(MoveScopeRequest) returns (JsonResult);
+  // POST /v1/admin/scopes/delete: the scope and every scope below it.
+  rpc DeleteScope(ScopeRequest) returns (JsonResult);
+  // PUT /v1/admin/scopes/private: the private flag.
+  rpc SetPrivate(SetPrivateRequest) returns (JsonResult);
+  // POST /v1/admin/assignments/list: a page of role assignments.
+  rpc ListAssignments(ListAssignmentsRequest) returns (JsonResult);
+  // POST /v1/admin/assignments: gives a role at a scope.
+  rpc Assign(AssignRequest) returns (JsonResult);
+  // PATCH /v1/admin/assignments/{id}: when it ends.
+  rpc SetAssignmentExpiry(SetAssignmentExpiryRequest) returns (JsonResult);
+  // DELETE /v1/admin/assignments/{id}.
+  rpc Unassign(AssignmentRequest) returns (JsonResult);
+  // GET /v1/admin/groups: a page of groups.
+  rpc ListGroups(ListGroupsRequest) returns (JsonResult);
+  // POST /v1/admin/groups: a new group in an org.
+  rpc CreateGroup(CreateGroupRequest) returns (JsonResult);
+  // DELETE /v1/admin/groups/{key}.
+  rpc DeleteGroup(GroupRequest) returns (JsonResult);
+  // GET /v1/admin/groups/{key}/members: a page of direct members.
+  rpc ListGroupMembers(ListGroupMembersRequest) returns (JsonResult);
+  // POST /v1/admin/groups/{key}/members.
+  rpc AddGroupMember(GroupMemberRequest) returns (JsonResult);
+  // POST /v1/admin/groups/{key}/members/remove.
+  rpc RemoveGroupMember(GroupMemberRequest) returns (JsonResult);
+  // GET /v1/admin/roles: the roles and types of the active model.
+  rpc ListRoles(ListRolesRequest) returns (JsonResult);
 }
 
 
@@ -321,4 +360,103 @@ message ListDeliveriesResponse {
 message RedeliverRequest {
   string id = 1;
   uint64 seq = 2;
+}
+
+// ---------- Scopes, role assignments and groups (CONTRACTS.md 7.13.7) ----------
+
+message ListScopesRequest {
+  // `type:id` of an org or a registered scope.
+  string under = 1;
+  // The `next_after` of the page before. Empty: from the start.
+  string after = 2;
+  // At most 1000. 0: 100.
+  uint32 limit = 3;
+}
+
+message PutScopeRequest {
+  PathEntry scope = 1;
+  // An org of the tenant or a registered scope.
+  PathEntry parent = 2;
+  // Not set: what the scope's type starts as.
+  optional bool private = 3;
+}
+
+message MoveScopeRequest {
+  PathEntry scope = 1;
+  PathEntry parent = 2;
+  // Who agreed to a move into a looser scope. A service only.
+  repeated string approved_by = 3;
+}
+
+message ScopeRequest {
+  PathEntry scope = 1;
+}
+
+message SetPrivateRequest {
+  PathEntry scope = 1;
+  bool private = 2;
+}
+
+message ListAssignmentsRequest {
+  // Not set: every scope.
+  PathEntry scope = 1;
+  // A principal or `group:<key>`. Empty: every subject.
+  string subject = 2;
+  string after = 3;
+  uint32 limit = 4;
+}
+
+message AssignRequest {
+  // A principal or `group:<key>`.
+  string subject = 1;
+  string role = 2;
+  PathEntry scope = 3;
+  // RFC 3339. Empty: it does not end.
+  string expires_at = 4;
+}
+
+message SetAssignmentExpiryRequest {
+  // `ra_<uuidv7>`.
+  string id = 1;
+  // RFC 3339. Not set: it does not end.
+  optional string expires_at = 2;
+}
+
+message AssignmentRequest {
+  string id = 1;
+}
+
+message ListGroupsRequest {
+  // Empty: every org.
+  string org = 1;
+  string after = 2;
+  uint32 limit = 3;
+}
+
+message CreateGroupRequest {
+  string org = 1;
+  string key = 2;
+  string name = 3;
+}
+
+message GroupRequest {
+  string key = 1;
+}
+
+message ListGroupMembersRequest {
+  string key = 1;
+  string after = 2;
+  uint32 limit = 3;
+}
+
+message GroupMemberRequest {
+  string key = 1;
+  // A principal or `group:<key>`.
+  string member = 2;
+}
+
+message ListRolesRequest {
+  // `type:id` of the org or registered scope the caller manages. Empty: the
+  // whole tenant.
+  string scope = 1;
 }
