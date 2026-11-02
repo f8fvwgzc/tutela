@@ -12,6 +12,13 @@
 //! grantee is taken at the highest it can get and the granter at the lowest
 //! it can hold. A granter whose own role has conditions may be refused a
 //! grant it could make on some rows: the rule errs on the side of refusing.
+//!
+//! A condition can read group membership (`in_group`). A change of a
+//! principal's groups, or of the tenant's group keys (a group made or
+//! deleted), can make such a condition hold where it failed before, with no
+//! assignment changed. So such a principal is compared at every place it
+//! holds a role, and its conditions that read groups are not paired across
+//! the two sides: it is taken at its lowest before and its highest after.
 
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -25,9 +32,9 @@ use crate::api::{PathEntry, PdpError, ScopePaths};
 use crate::data::{Index, ScopeIndex};
 use crate::eval::{Ctx, Walk, resolve_unseen, rule_nodes};
 use crate::impact::{
-    Access, Budget, Change, Delta, ImpactReport, Seat, Tally, compare, keys_of, types_below,
+    Access, Budget, Change, Delta, ImpactReport, Seat, Tally, compare_with, keys_of, types_below,
 };
-use crate::model::Model;
+use crate::model::{GroupKey, Model};
 use crate::pdp::{Bundle, Pdp};
 
 /// What one principal is given, and where: (scope, role, direct). A direct
@@ -50,6 +57,61 @@ fn given(index: &Index, p: &Principal) -> Given {
         }
     }
     out
+}
+
+/// The key of each group of `index`, by its number there.
+fn group_names(index: &Index) -> Vec<Option<&GroupKey>> {
+    let mut out = vec![None; index.by_group.len()];
+    for (key, &i) in &index.group_ids {
+        if let Some(slot) = out.get_mut(i) {
+            *slot = Some(key);
+        }
+    }
+    out
+}
+
+/// The keys of every group `p` is in, directly or through groups.
+fn groups_by_key<'i>(
+    index: &Index,
+    names: &[Option<&'i GroupKey>],
+    p: &Principal,
+) -> BTreeSet<&'i GroupKey> {
+    index
+        .groups_of(p)
+        .iter()
+        .filter_map(|&i| names.get(i).copied().flatten())
+        .collect()
+}
+
+/// What a change does to group membership: the tenant's group keys, and the
+/// groups of each principal, before and after.
+struct GroupFacts<'i> {
+    names: (Vec<Option<&'i GroupKey>>, Vec<Option<&'i GroupKey>>),
+    /// The groups made or deleted: a condition that names one can change its
+    /// answer for everyone (MANIFEST.md 8: a group that does not exist makes
+    /// the whole condition false).
+    made_or_deleted: BTreeSet<&'i GroupKey>,
+}
+
+impl<'i> GroupFacts<'i> {
+    fn of(b0: &'i Index, b1: &'i Index) -> Self {
+        let k0: BTreeSet<&GroupKey> = b0.group_ids.keys().collect();
+        let k1: BTreeSet<&GroupKey> = b1.group_ids.keys().collect();
+        Self {
+            names: (group_names(b0), group_names(b1)),
+            made_or_deleted: k0.symmetric_difference(&k1).copied().collect(),
+        }
+    }
+
+    /// The groups whose `in_group` can answer differently for `p` after the
+    /// change: those it joined or left, and those made or deleted.
+    fn moved_for(&self, b0: &Index, b1: &Index, p: &Principal) -> BTreeSet<&'i GroupKey> {
+        let g0 = groups_by_key(b0, &self.names.0, p);
+        let g1 = groups_by_key(b1, &self.names.1, p);
+        let mut out: BTreeSet<&GroupKey> = g0.symmetric_difference(&g1).copied().collect();
+        out.extend(self.made_or_deleted.iter().copied());
+        out
+    }
 }
 
 /// What a scope says to everyone: its private flag and its field rules.
@@ -158,16 +220,22 @@ pub fn grant_excess<P: ScopePaths + ?Sized>(
 }
 
 /// The scopes where something changed for `p`, the scope facts that changed
-/// for everyone included.
+/// for everyone included. When `p`'s groups moved, every scope where it holds
+/// a role: a condition there that reads groups can answer differently.
 fn changed_for(
     b0: &Bundle,
     b1: &Bundle,
     p: &Principal,
     all: &BTreeSet<PathEntry>,
+    groups_moved: bool,
 ) -> BTreeSet<PathEntry> {
     let (g0, g1) = (given(&b0.index, p), given(&b1.index, p));
     let mut out = all.clone();
-    out.extend(g0.symmetric_difference(&g1).map(|(s, _, _)| s.clone()));
+    if groups_moved {
+        out.extend(g0.union(&g1).map(|(s, _, _)| s.clone()));
+    } else {
+        out.extend(g0.symmetric_difference(&g1).map(|(s, _, _)| s.clone()));
+    }
     out
 }
 
@@ -185,6 +253,7 @@ fn beyond(
     here: &[(ResourceType, Vec<Access>)],
     p: &Principal,
     granter: &Principal,
+    moved: &BTreeSet<&GroupKey>,
     budget: &mut Budget,
 ) -> Option<Vec<Delta>> {
     let (ctx0, ctx1) = side.ctx;
@@ -194,10 +263,11 @@ fn beyond(
     for (t, keys) in here {
         let s0 = resolve_unseen(ctx0, w0, t, p);
         let s1 = resolve_unseen(ctx1, w1, t, p);
-        let deltas = compare(
+        let deltas = compare_with(
             &Seat::unseen(ctx0, r0, &s0),
             &Seat::unseen(ctx1, r1, &s1),
             keys,
+            moved,
             budget,
         )?;
         let gains: Vec<Delta> = deltas
@@ -235,9 +305,13 @@ fn excess<'b, P: ScopePaths + ?Sized>(
         .filter(|s| f0.get(*s) != f1.get(*s))
         .cloned()
         .collect();
+    let groups = GroupFacts::of(&b0.index, &b1.index);
     let mut who: BTreeSet<&'b Principal> = named(&b0.index).chain(named(&b1.index)).collect();
     if everyone.is_empty() {
-        who.retain(|p| given(&b0.index, p) != given(&b1.index, p));
+        who.retain(|p| {
+            given(&b0.index, p) != given(&b1.index, p)
+                || !groups.moved_for(&b0.index, &b1.index, p).is_empty()
+        });
     }
     // Every place where an answer can differ from its parent's, with its path.
     let mut places: BTreeMap<&PathEntry, Vec<PathEntry>> = BTreeMap::new();
@@ -249,12 +323,13 @@ fn excess<'b, P: ScopePaths + ?Sized>(
     }
     let (ctx0, ctx1) = (b0.ctx(), b1.ctx());
     let mut types: HashMap<&PathEntry, Vec<(ResourceType, Vec<Access>)>> = HashMap::new();
-    // One answer per place and per pair of deciding assignments: a group of
-    // thousands costs one comparison at a place.
-    type Key = (Vec<usize>, Vec<usize>, bool);
-    let mut seen: HashMap<(&PathEntry, Key), Vec<Delta>> = HashMap::new();
+    // One answer per place, per pair of deciding assignments and per state
+    // of the groups: a group of thousands costs one comparison at a place.
+    type Key<'k> = (Vec<usize>, Vec<usize>, bool, Vec<&'k GroupKey>);
+    let mut seen: HashMap<(&PathEntry, Key<'_>), Vec<Delta>> = HashMap::new();
     for p in who {
-        let changed = changed_for(b0, b1, p, &everyone);
+        let moved = groups.moved_for(&b0.index, &b1.index, p);
+        let changed = changed_for(b0, b1, p, &everyone, !moved.is_empty());
         for (place, path) in &places {
             let reached = changed.contains(*place) || path.iter().any(|a| changed.contains(a));
             if !reached {
@@ -282,6 +357,7 @@ fn excess<'b, P: ScopePaths + ?Sized>(
                 s0.roles.iter().map(|r| r.binding).collect(),
                 s1.roles.iter().map(|r| r.binding).collect(),
                 s0.is_agent(),
+                moved.iter().copied().collect(),
             );
             let found = match seen.entry((*place, key)) {
                 Entry::Occupied(o) => o.into_mut(),
@@ -291,7 +367,7 @@ fn excess<'b, P: ScopePaths + ?Sized>(
                         walks: (&w0, &w1),
                         rules: (&r0, &r1),
                     };
-                    let Some(found) = beyond(&side, here, p, granter, budget) else {
+                    let Some(found) = beyond(&side, here, p, granter, &moved, budget) else {
                         return Ok(false);
                     };
                     v.insert(found)
