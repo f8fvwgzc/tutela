@@ -41,7 +41,7 @@ Only the left column exists in `tutela-contracts` after the first commit. Everyt
 | 5 | API keys | Parse, format check, display prefix | Hashing, storage, verification, rotation (A, B) |
 | 6 | Decision | The Decision object: effect, level, field mask, rule ids, reason, rev, obligations | `Pdp::check`, `Pdp::batch`, `Pdp::list_filter`, `Pdp::write_check` (A; built in `tutela-pdp`, [ADR-0013](DECISIONS.md#adr-0013-the-evaluator-deciding-roles-reasons-scope-paths-and-phase-a-limits)) |
 | 7 | Remote check API | — | Built in `tutelad` (B): evaluation, search, the permission map, write-check and gRPC. |
-| 8 | Events | CloudEvents envelope, event type grammar and names | Outbox (B, **built**: 8.5, [ADR-0035](DECISIONS.md#adr-0035-the-outbox-events-numbered-per-tenant-in-commit-order)), webhooks, SSE (B) |
+| 8 | Events | CloudEvents envelope, event type grammar and names | Outbox and webhook delivery (B, **built**: 8.4, 8.5, [ADR-0035](DECISIONS.md#adr-0035-the-outbox-events-numbered-per-tenant-in-commit-order), [ADR-0036](DECISIONS.md#adr-0036-webhooks-delivered-from-the-outbox-registered-by-part-3c)), SSE (B) |
 | 9 | audit.v1 | The audit.v1 record | Local hash chain and sequence numbers (B, **built**: 9.4, [ADR-0034](DECISIONS.md#adr-0034-the-local-audit-log-one-chain-per-tenant-written-with-the-change)); producer signatures and forwarding to attache's evidence ledger (B) |
 | 10 | Versioning | The rules apply from the first commit | Deprecation headers on live endpoints (B) |
 
@@ -1571,6 +1571,7 @@ Each delivery is an HTTP `POST` of the event JSON with `Content-Type: applicatio
 - Signed content: `<webhook-id>.<webhook-timestamp>.<raw body>`.
 - The secret has the form `whsec_<base64 of 32 random bytes>`. The HMAC key is the decoded bytes. Each endpoint has its own secret.
 - Receivers must: check the signature in constant time; refuse a timestamp more than 5 minutes away from their clock; dedupe by `webhook-id`; answer 2xx quickly; then re-read state through the API.
+- **Built** ([ADR-0036](DECISIONS.md#adr-0036-webhooks-delivered-from-the-outbox-registered-by-part-3c)): the HMAC is over the UTF-8 text `<webhook-id>.<webhook-timestamp>.` followed by the raw body, and the signature is standard base64 with padding, as the Standard Webhooks test vector has it. A rotation (`rotate_webhook_secret`) keeps the old secret signing for the overlap the operator gives; then only the new one signs. `traceparent` is never in a webhook's body.
 
 ### 8.5 Delivery guarantees (Phase B)
 
@@ -1578,7 +1579,8 @@ Each delivery is an HTTP `POST` of the event JSON with `Content-Type: applicatio
 - **What is emitted** today: `tutela.permissions.changed.v1` by every data write and the expiry sweep; `tutela.model.published.v1` by a publish (an app publish sends it to each tenant that follows the app, and `permissions.changed` to a tenant with its own model); `tutela.user.created.v1` by just-in-time provisioning; `tutela.session.revoked.v1` by revoking a user's sessions; `tutela.principal.disabled.v1` (and `tutela.user.disabled.v1` for a user) and `tutela.principal.enabled.v1` by disabling and enabling. Org lifecycle events and `tutela.user.deleted.v1` come with part 3c; `tutela.key.*` with API keys (part 4); `tutela.membership.changed.v1` when membership is modeled.
 - **At least once.** The same event can arrive more than once. Dedupe by `id`.
 - **Order per subject** (per endpoint). An event for subject S waits until the earlier events for S are delivered or dead-lettered. Events for different subjects can arrive in any order.
-- **Retries** with exponential backoff and jitter, for at least 24 hours. Then the event is dead-lettered, shown in the Tutela Console, and can be sent again by hand. The exact schedule is fixed in Phase B.
+- **Retries** with exponential backoff and jitter, for at least 24 hours. Then the event is dead-lettered, shown in the Tutela Console, and can be sent again by hand. **The schedule** (ADR-0036): try n+1 waits 5 s × 2^(n−1), at most 1 hour, minus up to a fifth at random; a delivery not delivered 24 hours after its first try is dead (about 30 tries).
+- **One replica at a time:** a delivery is claimed for a 60 s lease before it is sent, so two replicas never send one event to one webhook at once.
 - An attempt counts as delivered on any 2xx answer within 15 seconds. Redirects are not followed.
 - Endpoints are https only. `tutela-safenet` checks them when they are registered and again before each send: no loopback, private, link-local or cloud-metadata addresses, and DNS is checked again each time.
 
@@ -1781,6 +1783,6 @@ When a credential format or key changes:
 | 3 | The final names of the obligation kinds (6.3). The admin action names (2.3) are **fixed** ([MANIFEST.md §6](MANIFEST.md#6-admin-keys), [ADR-0012](DECISIONS.md#adr-0012-manifest-v1-seeded-roles-org-root-rules-and-what-counts-as-widening)). | As written in this file. | Phase A |
 | 4 | The env name for the previous key pepper. | `TUTELA_KEY_PEPPER_PREVIOUS`. | Phase A |
 | 5 | Limits of `list_filter`: AST nodes, depth, size of `ids_in`; the ancestors column shape. | **Answered** by [ADR-0011](DECISIONS.md#adr-0011-week-1-spike-go-for-the-native-evaluator): limits in §6.6; an array of ancestor ids with a GIN index. | Week-1 spike |
-| 6 | The exact AuthZEN 1.0 page field names, and the retry schedule for webhooks. | Follow the final AuthZEN 1.0 text; at least 24 hours of retries. | Phase B |
+| 6 | The exact AuthZEN 1.0 page field names, and the retry schedule for webhooks. | Follow the final AuthZEN 1.0 text. The webhook schedule is **answered** by [ADR-0036](DECISIONS.md#adr-0036-webhooks-delivered-from-the-outbox-registered-by-part-3c) (8.5). | Phase B |
 
 Answers go into [DECISIONS.md](DECISIONS.md), and this file changes in the same commit.

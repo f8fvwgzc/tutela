@@ -450,10 +450,19 @@ pub fn tls_client_config() -> Result<rustls::ClientConfig, SafenetError> {
 }
 
 /// The SSRF-safe HTTP client.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
     policy: Arc<Policy>,
+    lookup: Arc<dyn Lookup>,
+}
+
+impl std::fmt::Debug for Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Client")
+            .field("policy", &self.policy)
+            .finish_non_exhaustive()
+    }
 }
 
 impl std::fmt::Debug for Guard {
@@ -488,12 +497,39 @@ impl Client {
             .connect_timeout(policy.connect_timeout)
             .user_agent(concat!("tutela-safenet/", env!("CARGO_PKG_VERSION")))
             .dns_resolver(Arc::new(Guard {
-                lookup,
+                lookup: Arc::clone(&lookup),
                 policy: Arc::clone(&policy),
             }))
             .build()
             .map_err(|e| Repr::Setup(Box::new(e.without_url())))?;
-        Ok(Self { http, policy })
+        Ok(Self {
+            http,
+            policy,
+            lookup,
+        })
+    }
+
+    /// Checks `url` as a request would, without sending one: the URL rules
+    /// of [`check_url`], and for a host name its DNS answer, every address.
+    /// For a URL a tenant saves (a webhook), when it is saved (TM-18); each
+    /// request checks again.
+    ///
+    /// # Errors
+    ///
+    /// [`SafenetErrorKind::Url`], [`SafenetErrorKind::NotPublic`] or
+    /// [`SafenetErrorKind::NoAddress`].
+    pub async fn check(&self, url: &str) -> Result<Url, SafenetError> {
+        let parsed = check_url(url, &self.policy)?;
+        if let Some(url::Host::Domain(name)) = parsed.host() {
+            Guard::checked(
+                Arc::clone(&self.lookup),
+                Arc::clone(&self.policy),
+                name.to_owned(),
+            )
+            .await
+            .map_err(|r| r.0.into_error())?;
+        }
+        Ok(parsed)
     }
 
     /// `GET url`.

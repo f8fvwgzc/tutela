@@ -143,6 +143,7 @@ pub struct Metrics {
     published_keys: Gauge,
     token_operations: Family<DecisionLabels, Counter>,
     audit_records: Family<DecisionLabels, Counter>,
+    webhook_deliveries: Family<SweepLabels, Counter>,
 }
 
 impl Default for Metrics {
@@ -243,6 +244,12 @@ impl Metrics {
             "Audit records, by what they are about and their outcome; `write`/`error` counts failed writes",
             audit_records.clone(),
         );
+        let webhook_deliveries = Family::<SweepLabels, Counter>::default();
+        registry.register(
+            "webhook_deliveries",
+            "Webhook attempts, by result: delivered, retry, dead, or blocked (not a public address)",
+            webhook_deliveries.clone(),
+        );
         Self {
             registry,
             requests,
@@ -260,7 +267,18 @@ impl Metrics {
             published_keys,
             token_operations,
             audit_records,
+            webhook_deliveries,
         }
+    }
+
+    /// Counts one webhook attempt: `delivered`, `retry`, `dead` or
+    /// `blocked`. The label holds no tenant and no URL.
+    pub fn count_webhook(&self, result: &'static str) {
+        self.webhook_deliveries
+            .get_or_create(&SweepLabels {
+                result: result.to_owned(),
+            })
+            .inc();
     }
 
     /// Counts one audit record by what it is about (`model`, `token`, ...)

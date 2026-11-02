@@ -45,6 +45,10 @@ EVENTS_SRC = "crates/tutela-store/src/events.rs"
 STORE_LIB = "crates/tutela-store/src/lib.rs"
 STORE_EVENTS = ["-p", "tutela-store", "--lib"]
 EVENTS = ["-p", "tutelad", "--test", "events"]
+HOOKS_SRC = "crates/tutelad/src/webhooks.rs"
+HOOKS_STORE = "crates/tutela-store/src/webhooks.rs"
+HOOKS = ["-p", "tutelad", "--test", "webhooks"]
+HOOKS_ALL = ["-p", "tutelad", "--test", "webhooks", "--lib"]
 
 # (id, file, what it breaks, old text, new text, cargo test arguments).
 # `old` must occur once.
@@ -285,6 +289,39 @@ MUTANTS = [
      "    events::insert(\n        tx,\n        &tenant.tid,\n        &events::OutboxEvent::PermissionsChanged { rev },\n    )\n    .await?;\n",
      "",
      STORE_EVENTS),
+    # Webhooks (ADR-0036).
+    ("W01", HOOKS_SRC, "a webhook may be sent to a private address",
+     "        let client = Client::new(\n            policy\n",
+     "        let client = Client::new(\n            policy.dev_loopback()\n",
+     HOOKS),
+    ("W02", HOOKS_SRC, "a webhook is sent unsigned",
+     "            (\"webhook-signature\", signature.as_str()),\n",
+     "",
+     HOOKS),
+    ("W03", HOOKS_SRC, "a webhook is signed without its timestamp",
+     "    msg.extend_from_slice(timestamp.to_string().as_bytes());\n    msg.push(b'.');\n",
+     "",
+     HOOKS_ALL),
+    ("W04", HOOKS_SRC, "a webhook URL is stored without its check",
+     "    client.check(url).await.map_err(|e| {\n",
+     "    Ok::<_, tutela_safenet::SafenetError>(()).map_err(|e| {\n",
+     HOOKS),
+    ("W05", HOOKS_STORE, "an event goes before an earlier one of its subject",
+     "                 AND e.subject = d.subject AND e.state = 'pending' AND e.seq < d.seq) \\\n",
+     "                 AND false) \\\n",
+     HOOKS),
+    ("W06", HOOKS_STORE, "a second replica takes a delivery the first one holds",
+     "               AND (d.claimed_until IS NULL OR d.claimed_until < clock_timestamp()) \\\n",
+     "",
+     HOOKS),
+    ("W07", HOOKS_SRC, "a failing delivery is retried for ever",
+     "            if age >= self.settings.give_up {\n",
+     "            if false && age >= self.settings.give_up {\n",
+     HOOKS),
+    ("W08", HOOKS_STORE, "the old secret stops signing at once on a rotation",
+     "        if let (Some(p), Some(v), Some(true)) = (previous, previous_version, overlapping) {\n",
+     "        if let (Some(p), Some(v), Some(false)) = (previous, previous_version, overlapping) {\n",
+     HOOKS),
 ]
 
 

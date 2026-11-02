@@ -157,3 +157,11 @@ These matter to whoever runs `tutelad`, and to a product that verifies its token
 - **`tutela-contracts`:** `EventType::PRINCIPAL_ENABLED` and `PrincipalEnabledData`. An SDK that feeds `EpochBook` from events should call `set_disabled(p, false)` on it.
 - **`tutela-store`:** `emit`, `OutboxEvent`, `StoredEvent`, `events_after`, `event_cursor`, `events_now`, `prune_events`.
 
+## Webhooks (part 3b)
+
+- **Migration 10** adds `tutela.webhook` and `tutela.webhook_delivery` ([ADR-0036](DECISIONS.md#adr-0036-webhooks-delivered-from-the-outbox-registered-by-part-3c)). Run `grant_service` again.
+- **New settings:** `TUTELA_WEBHOOK_POLL_MS` (default 1000; `0` turns delivery off on a replica) and `TUTELA_EVENT_RETENTION_SECS` (default 604800, at least 172800). `deploy/tutelad.env` has both.
+- **Registering a webhook** has no route yet: part 3c adds it to `tutela.admin.v1`. Until then an operator can call `tutelad::webhooks::register` (it checks the URL with `tutela-safenet` first).
+- **A receiver** (attache, texc-symphony, a product) checks `webhook-signature` in constant time over `<webhook-id>.<webhook-timestamp>.<body>` with the decoded `whsec_` secret, refuses a timestamp more than 5 minutes off, dedupes by `webhook-id`, and answers 2xx at once. During a rotation the header holds two signatures; accept either.
+- **`tutela-safenet`:** `Client::check(url)` checks a URL and its DNS answer without a request.
+

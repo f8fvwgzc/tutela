@@ -257,6 +257,54 @@ impl Conn {
     }
 }
 
+impl Conn {
+    /// One tenant's webhook work, in a transaction of its own that ends
+    /// before anything is sent: hand new events to its webhooks, prune what
+    /// is past `retention`, and claim due deliveries for `replica`.
+    pub(crate) async fn webhook_claims(
+        &mut self,
+        tenant: &TenantKey,
+        vault: &tutela_vault::Vault,
+        replica: &str,
+        settings: &crate::webhooks::Settings,
+        handed: &mut u64,
+    ) -> Result<Vec<tutela_store::webhooks::Claimed>, DbError> {
+        let tx = self.0.transaction().await?;
+        *handed += tutela_store::webhooks::fan_out(&tx, tenant).await?;
+        let before = std::time::SystemTime::now()
+            .checked_sub(settings.retention)
+            .unwrap_or(std::time::UNIX_EPOCH);
+        tutela_store::webhooks::prune(&tx, tenant, before).await?;
+        let claimed = tutela_store::webhooks::claim_deliveries(
+            &tx,
+            tenant,
+            vault,
+            replica,
+            settings.lease,
+            settings.batch,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(claimed)
+    }
+
+    /// Records how a replica's attempt ended, in a transaction of its own.
+    pub(crate) async fn webhook_finish(
+        &mut self,
+        tenant: &TenantKey,
+        replica: &str,
+        webhook: &str,
+        seq: u64,
+        how: &tutela_store::webhooks::Attempt,
+    ) -> Result<bool, DbError> {
+        let tx = self.0.transaction().await?;
+        let held = tutela_store::webhooks::finish_delivery(&tx, tenant, replica, webhook, seq, how)
+            .await?;
+        tx.commit().await?;
+        Ok(held)
+    }
+}
+
 /// A record about the deployment's signing keys, by `tutelad` itself.
 fn key_record(
     iss: &tutela_contracts::tenant::Issuer,

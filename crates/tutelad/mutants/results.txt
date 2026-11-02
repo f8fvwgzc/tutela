@@ -118,3 +118,20 @@ E06: caught by 1 test(s) - disabling a principal announces nothing
       tests_pg::every_change_emits_its_event_in_its_transaction
 E07: caught by 3 test(s) - a data change announces no new revision
       tests_pg::a_late_commit_is_never_skipped, tests_pg::events_are_the_tenants_alone, tests_pg::every_change_emits_its_event_in_its_transaction
+
+W01: caught by 1 test(s) - a webhook may be sent to a private address
+      tm18_a_webhook_never_reaches_a_private_address
+W02: caught by 3 test(s) - a webhook is sent unsigned
+      tm19_deliveries_are_signed_and_carry_the_tenants_events_only, a_running_service_delivers_a_published_model, tm19_a_rotated_secret_overlaps_then_ends
+W03: caught by 1 test(s) - a webhook is signed without its timestamp
+      webhooks::tests::signatures_match_the_standard_webhooks_vector
+W04: caught by 1 test(s) - a webhook URL is stored without its check
+      tm18_a_webhook_never_reaches_a_private_address
+W05: caught by 1 test(s) - an event goes before an earlier one of its subject
+      failures_are_retried_in_order_per_subject_then_dead_lettered
+W06: caught by 1 test(s) - a second replica takes a delivery the first one holds
+      two_replicas_never_send_one_event_twice_at_once
+W07: caught by 1 test(s) - a failing delivery is retried for ever
+      failures_are_retried_in_order_per_subject_then_dead_lettered
+W08: caught by 1 test(s) - the old secret stops signing at once on a rotation
+      tm19_a_rotated_secret_overlaps_then_ends

@@ -368,3 +368,31 @@ async fn a_failed_connection_keeps_its_reason_and_drops_the_url() {
         );
     }
 }
+
+/// A saved URL is checked like a request, DNS answer included, without a
+/// request being sent (TM-18: a webhook URL when it is registered).
+#[tokio::test]
+async fn tm18_a_saved_url_is_checked_with_its_dns_answer() {
+    let lookup = Fake::new(&[
+        ("hooks.example.test", &[&["93.184.216.34"]]),
+        ("inside.example.test", &[&["10.0.0.7"]]),
+        (
+            "mixed.example.test",
+            &[&["93.184.216.34", "169.254.169.254"]],
+        ),
+    ]);
+    let c = Client::with_lookup(Policy::new(), lookup).unwrap();
+    assert!(c.check("https://hooks.example.test/h").await.is_ok());
+    for (bad, kind) in [
+        ("https://inside.example.test/h", SafenetErrorKind::NotPublic),
+        ("https://mixed.example.test/h", SafenetErrorKind::NotPublic),
+        (
+            "https://nowhere.example.test/h",
+            SafenetErrorKind::NoAddress,
+        ),
+        ("https://10.0.0.7/h", SafenetErrorKind::NotPublic),
+        ("http://hooks.example.test/h", SafenetErrorKind::Url),
+    ] {
+        assert_eq!(c.check(bad).await.unwrap_err().kind(), kind, "{bad}");
+    }
+}

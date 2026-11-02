@@ -314,6 +314,9 @@ pub fn config(database_url: &str, trust: TrustFile) -> Config {
         token_ttl: Duration::from_secs(300),
         admin_acr: vec![STEP_UP.to_owned()],
         delegated_ttl: Duration::from_secs(90),
+        // Tests that deliver webhooks run the relay themselves.
+        webhook_poll: Duration::ZERO,
+        event_retention: Duration::from_secs(7 * 24 * 3600),
     }
 }
 

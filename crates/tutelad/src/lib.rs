@@ -21,6 +21,7 @@
 //! - [`revocation`]: raised epochs and disabled principals, per tenant.
 //! - [`audit`]: the records `tutelad` writes to the local audit log.
 //! - [`telemetry`]: JSON logs and Prometheus metrics.
+//! - [`webhooks`]: delivery of the outbox's events to webhooks.
 //! - [`server`]: the two listeners and the graceful shutdown.
 
 pub mod api;
@@ -38,6 +39,7 @@ pub mod revocation;
 pub mod server;
 pub mod telemetry;
 pub mod tenant;
+pub mod webhooks;
 
 pub use config::Config;
 pub use server::{Server, run};
