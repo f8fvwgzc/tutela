@@ -85,6 +85,7 @@ The files in `docs/` are the source of truth for every contract: APIs, proto pac
 | [docs/MANIFEST.md](docs/MANIFEST.md) | The `tutela.resources.toml` format, compiler checks, diff classes |
 | [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) | Threats and answers |
 | [docs/INTEGRATION.md](docs/INTEGRATION.md) | How cores and products adopt Tutela |
+| [docs/JS-SDK.md](docs/JS-SDK.md) | The JavaScript SDKs' API, token flow and errors |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Phases and exit checks |
 | [docs/DECISIONS.md](docs/DECISIONS.md) | Decisions, open questions |
 

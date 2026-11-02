@@ -47,7 +47,7 @@ A phase is not done, and nothing from it ships, until its gate passes. Gates add
 
 | Gate | How it is checked |
 |------|-------------------|
-| No merge on red CI | `cargo fmt`, `clippy -D warnings`, tests, docs, `cargo-deny`, `cargo-audit` all block (see [AGENTS.md](AGENTS.md)) |
+| No merge on red CI | `cargo fmt`, `clippy -D warnings`, tests, docs, `cargo-deny`, `cargo-audit`, and for the JavaScript SDKs `tsc`, Biome, vitest, the integration test, `pnpm audit` and the licence check, all block (see [AGENTS.md](AGENTS.md)) |
 | No `unsafe` | `unsafe_code = "forbid"` in the workspace |
 | No `unwrap`, `expect`, `panic!`, `todo!` outside tests | Workspace clippy lints |
 | Allowed licences only (permissive, plus MPL-2.0), one TLS stack, known sources only | `deny.toml` |

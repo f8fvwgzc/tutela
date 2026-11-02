@@ -508,7 +508,8 @@ Everything in section 5 is unbuilt, except the CI and lint parts of TM-21 and th
 | Area | State in the first commit | Needed by |
 |---|---|---|
 | `tutela-pdp`, `tutela-sdk`, `tutela-store`, `tutela-vault`, `tutela-safenet` | Not written | Phase A |
-| `@f8fvwgzc/tutela-react`, `@f8fvwgzc/tutela-node`, `@f8fvwgzc/tutela-js`, `tutela-py` | Not written | Phase A |
+| `@f8fvwgzc/tutela-react`, `@f8fvwgzc/tutela-js` | The `tutelad` client and the admin components built (part 4b1): tokens in memory only, checked by a lint rule and a jsdom test (TM-06); `<Can>`, `<Field>` not written | Phase A, B |
+| `@f8fvwgzc/tutela-node`, `tutela-py` | Not written | Phase A |
 | `tutela` CLI (`init`, `codegen`, `apply`, `apps create`, `keys rotate`) | Not written | Phases A–B |
 | `tutelad`, Tutela Console, token exchange, delegated tokens | Not written | Phase B |
 | `tutela-contracts` | Wire types with their format and claim checks only. No signature or token verification (that is `tutela-sdk`, Phase A) | Grows in Phase A |

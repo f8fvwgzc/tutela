@@ -625,11 +625,14 @@ UI hiding is never security. The server checks again (Step 4).
 ## Step 8. Embed the admin components (optional, service mode, Phase B)
 
 So your own customers can manage roles at runtime, embed `RoleEditor`,
-`MembersTable` and the permission matrix from `@f8fvwgzc/tutela-react`.
+`MembersTable` and the permission matrix from `@f8fvwgzc/tutela-react`
+(built in part 4b1). The step-by-step guide, with Keycloak, the token flow
+and the errors, is [JS-SDK.md](JS-SDK.md#embed-memberstable-behind-your-own-sign-in).
 
 - They use a separate token with `aud=tutela-admin`, a 5-minute TTL and
-  step-up MFA. Your backend gets it by token exchange, with the person's
-  token after step-up (its `acr` must be one of `TUTELA_ADMIN_ACR`), and
+  step-up MFA. The page gets it by token exchange (`@f8fvwgzc/tutela-js`'s
+  browser session, a public client with no secret), or your backend does
+  and hands it to the page, with the person's token after step-up (its `acr` must be one of `TUTELA_ADMIN_ACR`), and
   `audience=tutela-admin` ([CONTRACTS.md 4.4](CONTRACTS.md#44-special-audiences)).
   A service account (for `tutela apply` in a pipeline) uses its own
   `tutela-authz` token on the same routes instead.
