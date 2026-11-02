@@ -278,7 +278,6 @@ impl World {
     }
 }
 
-#[allow(clippy::too_many_lines)]
 fn build() -> Res<World> {
     let mut rng = Rng(0x7475_7465_6c61);
     let started = Instant::now();
@@ -543,7 +542,6 @@ fn time_checks(
     Ok(report(name, ns, Some(allowed)))
 }
 
-#[allow(clippy::too_many_lines)]
 fn main() -> Res<()> {
     let w = build()?;
     let mut rng = Rng(42);
