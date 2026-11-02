@@ -3,7 +3,10 @@
 //!
 //! - [`AuthLayer`] verifies the bearer token and puts the [`Identity`] in
 //!   the request extensions. A refusal is 401 (HTTP) or `grpc-status: 16`
-//!   (gRPC), and says nothing about the failed step.
+//!   (gRPC), and says nothing about the failed step. The failed
+//!   [`Step`](crate::Step) is in the response's extensions, where a layer
+//!   outside can log it; it never goes on the wire. A request with no
+//!   bearer token at all has no step.
 //! - [`Guards`] holds one guard per route the manifest declares (the
 //!   `ROUTES` table from `tutela codegen`). [`Guards::check_complete`]
 //!   fails when a declared route has no guard, so the service refuses to
@@ -143,7 +146,11 @@ where
                     req.extensions_mut().insert(id);
                     inner.call(req).await
                 }
-                Err(_) => Ok(refusal(protocol, StatusCode::UNAUTHORIZED)),
+                Err(e) => {
+                    let mut r = refusal(protocol, StatusCode::UNAUTHORIZED);
+                    r.extensions_mut().insert(e.step());
+                    Ok(r)
+                }
             }
         })
     }

@@ -897,7 +897,7 @@ pub enum PdpError {
 
 ## 7. Remote check API
 
-**Status: Phase B, planned.** Nothing in this section exists yet. `tutelad` serves it. The shapes follow the OpenID AuthZEN Authorization API 1.0. Where AuthZEN leaves room (`properties`, `context`), Tutela fixes the fields below.
+**Status: Phase B, planned**, except 7.7 and 7.8, which are built. `tutelad` serves it. The shapes follow the OpenID AuthZEN Authorization API 1.0. Where AuthZEN leaves room (`properties`, `context`), Tutela fixes the fields below.
 
 ### 7.1 Common rules
 
@@ -1105,6 +1105,46 @@ The map is a **UI hint only**. Every server route checks again.
 The same operations over gRPC (Phase B): `Evaluate`, `Evaluations`, `SearchResource`, `SearchSubject`, `Permissions`. Messages carry the same fields with the same names and meanings as the JSON above. The `.proto` files live in this repo and are published with each release (section 10).
 
 ---
+
+### 7.7 `GET /v1/whoami`
+
+**Status: Phase B, built.** Says who the service sees in the caller's token. It proves the path from a token to a tenant, and helps a caller debug its trust setup.
+
+Auth as in 7.1. The response is:
+
+```json
+{
+  "iss": "https://auth.example.test",
+  "tid": "ten_0193a1b2-c3d4-7e5f-8a6b-7c8d9e0f1a2b",
+  "sub": "user:usr_0193a1b2-c3d4-7a11-8b22-3c4d5e6f7081",
+  "kind": "access"
+}
+```
+
+| Field | Rule |
+|---|---|
+| `iss`, `tid` | The tenant key (1.6), from the verified token. |
+| `sub` | The subject. For an external issuer (4.6) this is the issuer's own subject. |
+| `kind` | `access`, `delegated` or `external`. |
+
+### 7.8 Ports and operations
+
+**Status: Phase B, built.** `tutelad` listens on two ports.
+
+| Port | Default | What | Auth |
+|---|---|---|---|
+| API | `TUTELA_LISTEN`, `0.0.0.0:8080` | HTTP and gRPC on one listener; a `content-type` of `application/grpc` picks gRPC | A bearer token on every request, also for an unknown path. Without one: 401 with `WWW-Authenticate` (HTTP), or `grpc-status: 16` (gRPC). |
+| Ops | `TUTELA_OPS_LISTEN`, `0.0.0.0:9090` | The routes below | None. Keep this port out of the public load balancer. |
+
+| Ops route | Answer |
+|---|---|
+| `GET /healthz` | 200 while the process answers. It never reads the database. |
+| `GET /readyz` | 200 when the database answers, the schema is at the migration this build knows, and no shutdown has started. Else 503. The body names the failed check. |
+| `GET /metrics` | The Prometheus text format, prefix `tutelad_`. Labels never hold a tenant, a token or a URL: a route label is the route pattern. |
+
+gRPC health (`grpc.health.v1.Health`) is on the API port, behind the same token check. It says `NOT_SERVING` as soon as a shutdown starts.
+
+Every answer on the API port has `x-request-id`. `traceparent` is read and its trace id logged; a malformed one is ignored.
 
 ## 8. Events
 

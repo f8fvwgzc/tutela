@@ -79,6 +79,24 @@ pub async fn migrate(client: &mut Client) -> Result<Vec<i32>, StoreError> {
     Ok(applied)
 }
 
+/// The newest migration in the database, or 0 if none has run. A role that
+/// is not the owner can read this once it has its grants.
+///
+/// # Errors
+///
+/// A database error, for example when the schema does not exist.
+pub async fn applied(client: &Client) -> Result<i32, StoreError> {
+    client
+        .query_one(
+            "SELECT coalesce(max(version), 0) FROM tutela.schema_migration",
+            &[],
+        )
+        .await
+        .db()?
+        .try_get(0)
+        .db()
+}
+
 /// The newest migration this build knows.
 #[must_use]
 pub fn latest() -> i32 {

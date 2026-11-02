@@ -232,6 +232,12 @@ an operator needs; TLS is rustls on aws-lc-rs.
 
 The Tutela service. Run **2 or more replicas**.
 
+Built so far ([ADR-0018](DECISIONS.md#adr-0018-tutelad-the-stack-the-two-ports-and-the-config)): the
+service itself. Config from `TUTELA_*` and a trust file, the API port (HTTP and
+gRPC, axum and tonic, every request behind `tutela-sdk`'s `AuthLayer`), the ops
+port (`/healthz`, `/readyz`, `/metrics`), JSON logs and the graceful shutdown.
+Production settings are in `deploy/`. The rest of this list is planned.
+
 - **Check API** (AuthZEN 1.0 shape): `POST /access/v1/evaluation`,
   `/access/v1/evaluations` (up to 200 items), `/access/v1/search/resource`,
   `/access/v1/search/subject`; gRPC `tutela.authz.v1`.
