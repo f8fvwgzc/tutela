@@ -118,8 +118,13 @@ pub async fn migrated() -> Option<TestDb> {
 
 /// A new tenant of [`ISS`].
 pub async fn tenant(owner: &mut Client) -> tutela_contracts::tenant::TenantKey {
+    tenant_of(owner, ISS).await
+}
+
+/// A new tenant of `iss`.
+pub async fn tenant_of(owner: &mut Client, iss: &str) -> tutela_contracts::tenant::TenantKey {
     let tx = owner.transaction().await.unwrap();
-    let t = tutela_store::create_tenant(&tx, &ISS.parse().unwrap())
+    let t = tutela_store::create_tenant(&tx, &iss.parse().unwrap())
         .await
         .unwrap();
     tx.commit().await.unwrap();

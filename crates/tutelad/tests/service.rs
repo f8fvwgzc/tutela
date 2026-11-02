@@ -147,18 +147,28 @@ async fn health_needs_no_database_and_readiness_does() {
 
 #[tokio::test]
 async fn readiness_needs_the_schema_this_build_knows() {
-    let Some(d) = migrated().await else { return };
+    let Some(mut d) = migrated().await else {
+        return;
+    };
+    let t = tenant(&mut d.owner).await;
+    let tid = t.tid.to_string();
     let issuer = Issuer::new();
-    let cfg = config(&d.service_url, trust(&[TID.to_owned()]));
+    let cfg = config(&d.service_url, trust(std::slice::from_ref(&tid)));
     let s = start(&cfg, state(&cfg, &issuer)).await;
     let c = http();
+    let token = issuer.sign(ISS, &tid, AUD, now());
+    let whoami = || {
+        let req = c.get(s.api_url("/v1/whoami")).bearer_auth(&token);
+        async move { req.send().await.unwrap().status() }
+    };
     let r = c.get(s.ops_url("/readyz")).send().await.unwrap();
     assert_eq!(r.status(), StatusCode::OK);
     let body: Value = r.json().await.unwrap();
     assert_eq!(body["status"], "ready");
+    assert_eq!(whoami().await, StatusCode::OK);
 
     // A migration this build does not know: an old binary never runs on a
-    // newer schema (ADR-0014).
+    // newer schema (ADR-0014). Readiness fails, and queries stop with it.
     d.owner
         .batch_execute(
             "INSERT INTO tutela.schema_migration (version, name) VALUES (9999, 'future')",
@@ -167,6 +177,16 @@ async fn readiness_needs_the_schema_this_build_knows() {
         .unwrap();
     let r = c.get(s.ops_url("/readyz")).send().await.unwrap();
     assert_eq!(r.status(), StatusCode::SERVICE_UNAVAILABLE);
+    for _ in 0..2 {
+        assert_eq!(whoami().await, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    // It recovers by itself when the check passes again.
+    d.owner
+        .batch_execute("DELETE FROM tutela.schema_migration WHERE version = 9999")
+        .await
+        .unwrap();
+    assert_eq!(whoami().await, StatusCode::OK);
     s.stop().await.unwrap();
     d.finish().await;
 }
@@ -236,61 +256,103 @@ async fn a_shutdown_fails_readiness_first_and_finishes_running_requests() {
     d.finish().await;
 }
 
+/// The real binary, on free ports, with a trust file on disk.
+struct Binary {
+    child: tokio::process::Child,
+    api: std::net::SocketAddr,
+    trust_path: std::path::PathBuf,
+}
+
+impl Binary {
+    /// Starts it, and waits for the ops port.
+    async fn start(name: &str, trust: &str, database_url: &str, dev_mode: bool) -> Self {
+        let trust_path =
+            std::env::temp_dir().join(format!("tutelad-bin-{}-{name}.toml", std::process::id()));
+        std::fs::write(&trust_path, trust).unwrap();
+        let free = || {
+            std::net::TcpListener::bind("127.0.0.1:0")
+                .unwrap()
+                .local_addr()
+                .unwrap()
+        };
+        let (api, ops) = (free(), free());
+        let child = tokio::process::Command::new(env!("CARGO_BIN_EXE_tutelad"))
+            .env_clear()
+            .env("RUST_BACKTRACE", "1")
+            .env("RUST_LIB_BACKTRACE", "0")
+            .env("TUTELA_DATABASE_URL", database_url)
+            .env("TUTELA_TRUST_FILE", &trust_path)
+            .env("TUTELA_LISTEN", api.to_string())
+            .env("TUTELA_OPS_LISTEN", ops.to_string())
+            .env("TUTELA_SHUTDOWN_DRAIN_SECS", "0")
+            .env("TUTELA_DEV_MODE", if dev_mode { "1" } else { "0" })
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+            .unwrap();
+        let c = http();
+        let url = format!("http://{ops}/healthz");
+        let mut up = false;
+        for _ in 0..100 {
+            if c.get(&url).send().await.is_ok() {
+                up = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(up, "the binary did not start");
+        Self {
+            child,
+            api,
+            trust_path,
+        }
+    }
+
+    fn whoami(&self) -> String {
+        format!("http://{}/v1/whoami", self.api)
+    }
+
+    /// Sends SIGTERM, expects exit 0, and returns the JSON log lines. No
+    /// line may hold `secret`.
+    async fn stop(mut self, secret: &str) -> Vec<Value> {
+        use tokio::io::{AsyncBufReadExt as _, BufReader};
+
+        let pid = self.child.id().unwrap().to_string();
+        let killed = tokio::process::Command::new("kill")
+            .args(["-TERM", &pid])
+            .status()
+            .await
+            .unwrap();
+        assert!(killed.success());
+        let status = tokio::time::timeout(Duration::from_secs(10), self.child.wait())
+            .await
+            .expect("the binary did not stop on SIGTERM")
+            .unwrap();
+        assert_eq!(status.code(), Some(0));
+        std::fs::remove_file(&self.trust_path).unwrap();
+        let mut lines = BufReader::new(self.child.stdout.take().unwrap()).lines();
+        let mut out = Vec::new();
+        while let Some(line) = lines.next_line().await.unwrap() {
+            assert!(!line.contains(secret), "a token reached the log: {line}");
+            out.push(serde_json::from_str(&line).unwrap_or_else(|_| panic!("not JSON: {line}")));
+        }
+        out
+    }
+}
+
 /// The real binary: it starts from the environment, logs JSON with no
 /// token in it, and exits 0 on SIGTERM.
 #[tokio::test]
 async fn the_binary_serves_and_stops_on_sigterm() {
-    use std::process::Stdio;
-
-    use tokio::io::{AsyncBufReadExt as _, BufReader};
-
-    let dir = std::env::temp_dir();
-    let trust_path = dir.join(format!("tutelad-bin-{}.toml", std::process::id()));
-    std::fs::write(
-        &trust_path,
-        format!(
-            "[[issuer]]\niss = \"{ISS}\"\njwks_uri = \"{ISS}/jwks\"\nalgs = [\"ES256\"]\n\
-             tenants = [\"{TID}\"]\n"
-        ),
-    )
-    .unwrap();
-    let free = || {
-        std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-    };
-    let (api, ops) = (free(), free());
-    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_tutelad"))
-        .env_clear()
-        .env("RUST_BACKTRACE", "1")
-        .env("RUST_LIB_BACKTRACE", "0")
-        .env("TUTELA_DATABASE_URL", NO_DB)
-        .env("TUTELA_TRUST_FILE", &trust_path)
-        .env("TUTELA_LISTEN", api.to_string())
-        .env("TUTELA_OPS_LISTEN", ops.to_string())
-        .env("TUTELA_SHUTDOWN_DRAIN_SECS", "0")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .unwrap();
-    let pid = child.id().unwrap().to_string();
-    let c = http();
-    let url = format!("http://{ops}/healthz");
-    let mut up = false;
-    for _ in 0..100 {
-        if c.get(&url).send().await.is_ok() {
-            up = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert!(up, "the binary did not start");
-
+    let trust = format!(
+        "[[issuer]]\niss = \"{ISS}\"\njwks_uri = \"{ISS}/jwks\"\nalgs = [\"ES256\"]\n\
+         tenants = [\"{TID}\"]\n"
+    );
+    let bin = Binary::start("sigterm", &trust, NO_DB, false).await;
     // A token the service cannot verify (the JWKS host is not reachable).
     let token = Issuer::new().sign(ISS, TID, AUD, now());
-    let r = c
-        .get(format!("http://{api}/v1/whoami"))
+    let r = http()
+        .get(bin.whoami())
         .bearer_auth(&token)
         .header(
             "traceparent",
@@ -301,28 +363,11 @@ async fn the_binary_serves_and_stops_on_sigterm() {
         .unwrap();
     assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
 
-    let killed = tokio::process::Command::new("kill")
-        .args(["-TERM", &pid])
-        .status()
-        .await
-        .unwrap();
-    assert!(killed.success());
-    let status = tokio::time::timeout(Duration::from_secs(10), child.wait())
-        .await
-        .expect("the binary did not stop on SIGTERM")
-        .unwrap();
-    assert_eq!(status.code(), Some(0));
-
-    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
-    let mut served = None;
-    while let Some(line) = lines.next_line().await.unwrap() {
-        assert!(!line.contains(&token), "a token reached the log: {line}");
-        let v: Value = serde_json::from_str(&line).unwrap_or_else(|_| panic!("not JSON: {line}"));
-        if v["message"] == "request served" {
-            served = Some(v);
-        }
-    }
-    let served = served.expect("the request was not logged");
+    let logs = bin.stop(&token).await;
+    let served = logs
+        .iter()
+        .find(|v| v["message"] == "request served")
+        .expect("the request was not logged");
     assert_eq!(served["status"], 401);
     assert_eq!(served["refused_at"], "key");
     assert_eq!(served["span"]["route"], "/v1/whoami");
@@ -330,7 +375,57 @@ async fn the_binary_serves_and_stops_on_sigterm() {
         served["span"]["trace_id"],
         "4bf92f3577b34da6a3ce929d0e0e4736"
     );
-    std::fs::remove_file(trust_path).unwrap();
+}
+
+/// The whole path, with nothing in memory: the binary reads a trust file,
+/// fetches the JWKS over a socket through `tutela-safenet`, verifies a real
+/// token, enters the tenant on a real Postgres, and logs the tenant id.
+#[tokio::test]
+async fn the_binary_verifies_a_token_against_a_served_jwks() {
+    let Some(mut d) = migrated().await else {
+        return;
+    };
+    let issuer = Issuer::new();
+    let jwks = issuer.jwks();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let iss = format!("http://{}", listener.local_addr().unwrap());
+    let app = axum::Router::new().route(
+        "/jwks",
+        axum::routing::get(move || {
+            let body = jwks.clone();
+            async move { body }
+        }),
+    );
+    tokio::spawn(async move { axum::serve(listener, app).await });
+
+    let t = common::tenant_of(&mut d.owner, &iss).await;
+    let tid = t.tid.to_string();
+    let trust = format!(
+        "[[issuer]]\niss = \"{iss}\"\njwks_uri = \"{iss}/jwks\"\nalgs = [\"ES256\"]\n\
+         tenants = [\"{tid}\"]\n"
+    );
+    let bin = Binary::start("jwks", &trust, &d.service_url, true).await;
+    let token = issuer.sign(&iss, &tid, AUD, now());
+    let r = http()
+        .get(bin.whoami())
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let body: Value = r.json().await.unwrap();
+    assert_eq!(body["tid"], tid);
+    assert_eq!(body["iss"], iss);
+    assert_eq!(body["rev"], 0);
+
+    let logs = bin.stop(&token).await;
+    let served = logs
+        .iter()
+        .find(|v| v["message"] == "request served")
+        .expect("the request was not logged");
+    assert_eq!(served["status"], 200);
+    assert_eq!(served["span"]["tid"], tid);
+    d.finish().await;
 }
 
 #[tokio::test]
