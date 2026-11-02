@@ -548,7 +548,9 @@ async fn the_service_role_has_what_it_needs_and_nothing_else() {
 
     let service = connect(&w.db.service_url).await;
     for sql in [
-        "SELECT * FROM tutela.approver_key",
+        // It reads the approver keys to check a token (ADR-0026), and holds
+        // only public keys there. It never writes them.
+        "DELETE FROM tutela.approver_key",
         "INSERT INTO tutela.tenant (tenant_id, iss) VALUES \
          ('ten_0193a1b2-c3d4-7e5f-8a6b-000000000009', 'https://x.example.test')",
         "DELETE FROM tutela.tenant",

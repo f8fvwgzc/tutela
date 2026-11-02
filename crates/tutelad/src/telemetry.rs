@@ -136,6 +136,7 @@ pub struct Metrics {
     expired: Counter,
     sweeps: Family<SweepLabels, Counter>,
     decisions: Family<DecisionLabels, Counter>,
+    model_operations: Family<DecisionLabels, Counter>,
     revision_checks: Family<SweepLabels, Counter>,
     tenant_loads: Family<SweepLabels, Counter>,
 }
@@ -190,6 +191,12 @@ impl Metrics {
         );
         let sweeps = Family::<SweepLabels, Counter>::default();
         registry.register("expiry_sweeps", "Expiry sweeps, by result", sweeps.clone());
+        let model_operations = Family::<DecisionLabels, Counter>::default();
+        registry.register(
+            "model_operations",
+            "Calls of the model API, by operation and how they ended",
+            model_operations.clone(),
+        );
         let decisions = Family::<DecisionLabels, Counter>::default();
         registry.register(
             "decisions",
@@ -218,6 +225,7 @@ impl Metrics {
             expired,
             sweeps,
             decisions,
+            model_operations,
             revision_checks,
             tenant_loads,
         }
@@ -236,6 +244,17 @@ impl Metrics {
     /// Counts one revision check.
     pub fn count_revision_check(&self, ok: bool) {
         count_result(&self.revision_checks, ok);
+    }
+
+    /// Counts one call of the model API: `ok`, `forbidden`, `refused`,
+    /// `conflict`, `stale`, `invalid` or `error`.
+    pub fn count_model(&self, operation: &'static str, outcome: &'static str) {
+        self.model_operations
+            .get_or_create(&DecisionLabels {
+                operation: operation.to_owned(),
+                outcome: outcome.to_owned(),
+            })
+            .inc();
     }
 
     /// Counts one tenant load.

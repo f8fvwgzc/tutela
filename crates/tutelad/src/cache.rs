@@ -36,11 +36,15 @@ use tutela_contracts::keys::{ActionKey, BuiltinAction};
 use tutela_contracts::tenant::TenantKey;
 use tutela_pdp::model::{Model, is_admin_key};
 use tutela_pdp::{LoadError, Pdp};
-use tutela_store::{ScopePathSnapshot, StoreErrorKind, StoredManifest, TenantBundle};
+use tutela_store::{ActiveModel, ScopePathSnapshot, StoreErrorKind, TenantBundle};
 
 use crate::db::{Db, DbError};
 use crate::telemetry::Metrics;
 use crate::tenant::Tenant;
+
+/// How many compiled models a replica keeps. Tenants that share a model share
+/// its entry.
+const MODELS_KEPT: usize = 32;
 
 /// How long a request waits for the revision read. A database that takes
 /// longer counts as down for this check.
@@ -283,9 +287,10 @@ pub struct TenantCache {
     limits: Limits,
     metrics: Arc<Metrics>,
     slots: RwLock<HashMap<TenantKey, Arc<Slot>>>,
-    /// The last compiled model, by digest. One schema holds one manifest
-    /// (ADR-0014 item 7), and a manifest can take seconds to compile.
-    model: Mutex<Option<(String, Arc<Model>)>>,
+    /// The compiled models, by digest, the latest used first. A tenant may
+    /// have a model of its own (ADR-0026), and a manifest can take seconds to
+    /// compile.
+    models: Mutex<Vec<(String, Arc<Model>)>>,
 }
 
 impl std::fmt::Debug for TenantCache {
@@ -305,7 +310,7 @@ impl TenantCache {
             limits,
             metrics,
             slots: RwLock::default(),
-            model: Mutex::new(None),
+            models: Mutex::new(Vec::new()),
         }
     }
 
@@ -486,8 +491,8 @@ impl TenantCache {
             .map_err(|_| CheckError::Timeout);
         let loaded = read.and_then(|r| r);
         self.metrics.count_tenant_load(loaded.is_ok());
-        let (bundle, manifest) = loaded?;
-        let model = self.compiled(manifest.source, &manifest.digest).await?;
+        let (bundle, active) = loaded?;
+        let model = self.compile(active.source, &active.digest).await?;
         let TenantBundle {
             rev,
             data,
@@ -510,47 +515,97 @@ impl TenantCache {
             pdp,
             paths,
             model,
-            model_digest: manifest.digest,
+            model_digest: active.digest,
             valid_until: deadline(started, next_expiry, read_at),
         })
     }
 
-    /// The tenant and the manifest, in one view. The manifest is read after
-    /// the revision lock: `publish_manifest` writes it and bumps the
-    /// revision in one transaction, so a view never pairs a new revision
-    /// with an old model.
+    /// The tenant and its active model, in one view. The model is read after
+    /// the revision lock: a publish writes it and bumps the revision in one
+    /// transaction, so a view never pairs a new revision with an old model.
     async fn read_tenant(
         &self,
         tenant: &Tenant,
-    ) -> Result<(TenantBundle, StoredManifest), CheckError> {
+    ) -> Result<(TenantBundle, ActiveModel), CheckError> {
         let mut conn = self.db.conn().await?;
         let tx = conn.begin(tenant).await?;
         let bundle = tutela_store::load(&tx, tenant.key())
             .await
             .map_err(DbError::from)?;
-        let manifest = tutela_store::applied_manifest(&tx)
+        let active = tutela_store::active_model(&tx, tenant.key())
             .await
             .map_err(DbError::from)?
             .ok_or(CheckError::NoManifest)?;
         tx.commit().await?;
-        Ok((bundle, manifest))
+        Ok((bundle, active))
     }
 
-    async fn compiled(&self, source: String, digest: &str) -> Result<Arc<Model>, CheckError> {
-        let mut last = self.model.lock().await;
-        if let Some((d, m)) = last.as_ref()
-            && d == digest
-        {
-            return Ok(Arc::clone(m));
+    /// One fresh view of a tenant, for work that must not touch a snapshot:
+    /// a dry run of a model change reads this and builds its own `Pdp`.
+    ///
+    /// # Errors
+    ///
+    /// [`Refused`]: the caller fails closed.
+    pub async fn read(&self, tenant: &Tenant) -> Result<(TenantBundle, ActiveModel), Refused> {
+        timeout(LOAD_TIMEOUT, self.read_tenant(tenant))
+            .await
+            .map_err(|_| CheckError::Timeout)
+            .and_then(|r| r)
+            .map_err(|e| Self::refused(tenant, e))
+    }
+
+    /// The compiled model of `source`.
+    ///
+    /// # Errors
+    ///
+    /// [`Refused`]: a stored model that does not compile fails closed.
+    pub async fn compiled(&self, source: String, digest: &str) -> Result<Arc<Model>, Refused> {
+        self.compile(source, digest)
+            .await
+            .map_err(|e| Refused::NoData.logged(&e))
+    }
+
+    fn refused(tenant: &Tenant, e: CheckError) -> Refused {
+        match e {
+            CheckError::Db(e) if e.store_kind() == Some(StoreErrorKind::UnknownTenant) => {
+                Refused::UnknownTenant(e)
+            }
+            e => {
+                tracing::warn!(tid = %tenant.key().tid, error = %e, "a tenant read failed");
+                Refused::NoData
+            }
         }
-        // The compiler blocks while it runs on its own thread.
+    }
+
+    async fn compile(&self, source: String, digest: &str) -> Result<Arc<Model>, CheckError> {
+        {
+            let mut kept = self.models.lock().await;
+            if let Some(i) = kept.iter().position(|(d, _)| d == digest) {
+                let entry = kept.remove(i);
+                let model = Arc::clone(&entry.1);
+                kept.insert(0, entry);
+                return Ok(model);
+            }
+        }
+        // Outside the lock: one tenant's large model must not stop another
+        // tenant's load. Two requests may compile the same text once each.
         let model = tokio::task::spawn_blocking(move || Model::from_toml(&source))
             .await
             .map_err(|_| CheckError::Task)?
             .map_err(|_| CheckError::BadManifest)?;
         let model = Arc::new(model);
-        *last = Some((digest.to_owned(), Arc::clone(&model)));
+        let mut kept = self.models.lock().await;
+        kept.retain(|(d, _)| d != digest);
+        kept.insert(0, (digest.to_owned(), Arc::clone(&model)));
+        kept.truncate(MODELS_KEPT);
         Ok(model)
+    }
+}
+
+impl Refused {
+    fn logged(self, cause: &CheckError) -> Self {
+        tracing::warn!(error = %cause, "a stored model cannot be used");
+        self
     }
 }
 

@@ -76,7 +76,7 @@ fn may_list_subjects(id: &Identity) -> Result<(), Problem> {
 
 /// The lowest revision that may answer: what the caller asked for, and the
 /// token's `rev` (CONTRACTS.md 4.2).
-fn floor(id: &Identity, asked: Option<u64>) -> Option<u64> {
+pub(crate) fn floor(id: &Identity, asked: Option<u64>) -> Option<u64> {
     let token = match id {
         Identity::Access(c) => Some(c.rev),
         Identity::Delegated(c) => Some(c.rev),

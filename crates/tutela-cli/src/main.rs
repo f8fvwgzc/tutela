@@ -82,6 +82,10 @@ enum Command {
         /// The approver's private key file.
         #[arg(long)]
         key: PathBuf,
+        /// The one tenant this approves the change for (`tutelad`). Leave it
+        /// out for the app's manifest (library mode).
+        #[arg(long)]
+        tenant: Option<String>,
         /// How long the token is valid, in minutes (at most 1440).
         #[arg(long, default_value_t = 60)]
         valid_for: u64,
@@ -227,6 +231,7 @@ async fn run(command: Command, out: &mut dyn Write) -> Result<ExitCode, CliError
             from,
             to,
             key,
+            tenant,
             valid_for,
         } => {
             let signing = approval::parse_key_file(&read(&key)?)?;
@@ -245,6 +250,7 @@ async fn run(command: Command, out: &mut dyn Write) -> Result<ExitCode, CliError
                     kid,
                     iat,
                     exp,
+                    tid: tenant,
                 },
             )?;
             writeln!(out, "{token}")?;

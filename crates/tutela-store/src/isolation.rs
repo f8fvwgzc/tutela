@@ -13,8 +13,11 @@ use crate::{DbResult as _, StoreError};
 
 /// Tables with no tenant data that a runtime role may read. The tenant
 /// directory is needed to enter a tenant, the applied manifest for the
-/// model, and the migration table for the readiness check.
-const READ_ONLY: [&str; 3] = ["tenant", "app_manifest", "schema_migration"];
+/// model, the migration table for the readiness check, and the approver keys
+/// to check an approval token. It writes none of them: a tenant's own model
+/// is tenant data (ADR-0026), so no call of the service reaches the app's
+/// manifest.
+const READ_ONLY: [&str; 4] = ["tenant", "app_manifest", "schema_migration", "approver_key"];
 
 /// A plain role name: it goes into `GRANT`, which takes no parameters.
 fn plain_role(role: &str) -> bool {
@@ -31,7 +34,7 @@ fn plain_role(role: &str) -> bool {
 
 /// Gives a runtime role what it needs and no more: read and write on every
 /// table with row-level security, read on the tenant directory, the applied
-/// manifest and the migration table, and nothing else. It owns nothing and
+/// manifest, the migration table and the approver keys, and nothing else. It owns nothing and
 /// cannot create anything.
 ///
 /// Run it as the owner, after [`migrate`](crate::migrate), in the same

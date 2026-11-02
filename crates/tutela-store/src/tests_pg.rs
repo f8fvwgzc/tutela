@@ -95,6 +95,14 @@ fn with(url: &str, db: &str, user: &str, password: &str) -> String {
 }
 
 async fn db() -> Option<Db> {
+    let mut db = empty_db().await?;
+    let applied = crate::migrate(&mut db.client).await.unwrap();
+    assert_eq!(applied, [1, 2, 3, 4]);
+    Some(db)
+}
+
+/// A new database with no schema yet.
+async fn empty_db() -> Option<Db> {
     let base = base_url()?;
     let admin = connect(&base).await;
     let exists = admin
@@ -116,9 +124,7 @@ async fn db() -> Option<Db> {
         .await
         .unwrap();
     let url = with(&base, &name, OWNER, OWNER_PASSWORD);
-    let mut client = connect(&url).await;
-    let applied = crate::migrate(&mut client).await.unwrap();
-    assert_eq!(applied, [1, 2, 3]);
+    let client = connect(&url).await;
     Some(Db {
         admin,
         name,
@@ -1606,5 +1612,166 @@ async fn boundary_rules_are_stored_with_a_revision_and_keep_the_private_flag() {
     let b = load(&mut db.client, &t).await;
     assert!(b.data.boundaries.is_empty());
     assert!(b.data.private_scopes.contains(&scope));
+    db.finish().await;
+}
+
+async fn publish_app(c: &mut Client, app: &AppName, source: &str, expected: Option<i64>) {
+    let tx = c.transaction().await.unwrap();
+    crate::publish_manifest(
+        &tx,
+        &crate::Publish {
+            app,
+            source,
+            expected,
+            class: Class::Neutral,
+            diff: "",
+            author: None,
+            approvers: &[],
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+}
+
+async fn active(c: &mut Client, t: &TenantKey) -> crate::ActiveModel {
+    let tx = c.transaction().await.unwrap();
+    let m = crate::active_model(&tx, t).await.unwrap().unwrap();
+    tx.commit().await.unwrap();
+    m
+}
+
+#[tokio::test]
+async fn tm08_a_tenant_keeps_its_own_model_and_its_history_is_never_rewritten() {
+    let Some(mut db) = db().await else { return };
+    let (a, _) = tenant(&mut db.client).await;
+    let (b, _) = tenant(&mut db.client).await;
+    let app = AppName::parse("crm").unwrap();
+    let text = |n: u32| format!("version = 1\n# {n}\n[app]\nname = \"crm\"\n");
+    publish_app(&mut db.client, &app, &text(1), None).await;
+    let m = active(&mut db.client, &a).await;
+    assert_eq!((m.version, m.own), (1, false));
+    assert_eq!(m.source, text(1));
+
+    // Tenant A publishes its own. B does not see it, and only A's revision
+    // moves.
+    let own = text(2);
+    let before = load(&mut db.client, &b).await.rev;
+    let tx = db.client.transaction().await.unwrap();
+    let publish = |source, expected| crate::TenantPublish {
+        app: &app,
+        source,
+        expected,
+        class: Class::Narrowing,
+        diff: "x",
+        impact: None,
+        author: Some("user:a"),
+        approvers: &[],
+        restores: None,
+    };
+    assert_eq!(
+        kind(crate::publish_tenant_model(&tx, &a, &publish(&own, 9)).await),
+        Some(StoreErrorKind::Exists)
+    );
+    tx.rollback().await.unwrap();
+    let tx = db.client.transaction().await.unwrap();
+    let (version, _) = crate::publish_tenant_model(&tx, &a, &publish(&own, 1))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(version, 2);
+    let m = active(&mut db.client, &a).await;
+    assert_eq!((m.version, m.own), (2, true));
+    assert_eq!(m.source, own);
+    assert_eq!(load(&mut db.client, &b).await.rev, before);
+    assert_eq!(active(&mut db.client, &b).await.source, text(1));
+
+    // A new app manifest reaches B and leaves A on its own model.
+    publish_app(&mut db.client, &app, &text(3), Some(1)).await;
+    assert_eq!(active(&mut db.client, &a).await.source, own);
+    let m = active(&mut db.client, &b).await;
+    assert_eq!((m.version, m.own), (2, false));
+    assert_eq!(m.source, text(3));
+
+    // Versions are kept, with their text, per tenant.
+    let tx = db.client.transaction().await.unwrap();
+    let list = crate::model_versions(&tx, &a, None, 100).await.unwrap();
+    assert_eq!(
+        list.iter().map(|v| v.version).collect::<Vec<_>>(),
+        vec![2, 1]
+    );
+    assert!(list.iter().all(|v| v.source.is_none()));
+    let one = crate::model_version(&tx, &a, 1).await.unwrap().unwrap();
+    assert_eq!(one.source, Some(text(1)));
+    assert_eq!(one.origin, "app");
+    tx.commit().await.unwrap();
+
+    // History is never rewritten, by anyone.
+    for sql in [
+        "UPDATE tutela.model_revision SET diff = 'y'",
+        "DELETE FROM tutela.model_revision",
+    ] {
+        let tx = db.client.transaction().await.unwrap();
+        crate::enter(&tx, &a).await.unwrap();
+        let e = tx.batch_execute(sql).await.unwrap_err();
+        assert_eq!(e.code().map(|c| c.code()), Some("23000"), "{sql}");
+        tx.rollback().await.unwrap();
+    }
+    db.finish().await;
+}
+
+#[tokio::test]
+async fn migration_4_numbers_what_is_there() {
+    let Some(db) = empty_db().await else { return };
+    let c = &db.client;
+    let tid = "ten_0193a1b2-c3d4-7e5f-8a6b-7c8d9e0f1a2b";
+    c.batch_execute("CREATE SCHEMA IF NOT EXISTS tutela")
+        .await
+        .unwrap();
+    c.batch_execute(include_str!("../migrations/0001_init.sql"))
+        .await
+        .unwrap();
+    c.batch_execute(include_str!("../migrations/0002_approver_key.sql"))
+        .await
+        .unwrap();
+    c.batch_execute(include_str!("../migrations/0003_assignment_expiry.sql"))
+        .await
+        .unwrap();
+    let old = "a".repeat(64);
+    let new = crate::digest("the text");
+    c.batch_execute(&format!(
+        "BEGIN;
+         SELECT set_config('tutela.tenant_id', '{tid}', true);
+         INSERT INTO tutela.tenant (tenant_id, iss) VALUES ('{tid}', 'https://a.test');
+         INSERT INTO tutela.app_manifest (app, source, digest, version)
+             VALUES ('crm', 'the text', '{new}', 2);
+         INSERT INTO tutela.model_revision (tenant_id, rev, parent_rev, app, diff, class, bundle_digest)
+             VALUES ('{tid}', 3, 2, 'crm', '', 'neutral', '{old}'),
+                    ('{tid}', 8, 7, 'crm', '', 'neutral', '{new}');
+         COMMIT;"
+    ))
+    .await
+    .unwrap();
+    c.batch_execute(include_str!("../migrations/0004_model_versions.sql"))
+        .await
+        .unwrap();
+    assert_eq!(
+        c.query_one("SELECT current_setting('tutela.tenant_id', true)", &[])
+            .await
+            .unwrap()
+            .get::<_, Option<String>>(0)
+            .filter(|t| !t.is_empty()),
+        None
+    );
+    let rows = c
+        .query(
+            "SELECT version, source FROM (SELECT set_config('tutela.tenant_id', $1, false)) s, \
+             tutela.model_revision ORDER BY version",
+            &[&tid],
+        )
+        .await
+        .unwrap();
+    let got: Vec<(i64, Option<String>)> = rows.iter().map(|r| (r.get(0), r.get(1))).collect();
+    assert_eq!(got, vec![(1, None), (2, Some("the text".to_owned()))]);
     db.finish().await;
 }

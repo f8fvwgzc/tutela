@@ -305,15 +305,16 @@ A valid manifest can still give a `list_filter` above the filter limits of [CONT
 - Publishing stores the manifest and, in the same transaction, bumps every tenant's revision and records the change (`tutela-store`, [ADR-0014](DECISIONS.md#adr-0014-tutela-store-in-phase-a-the-schema-row-level-security-and-checked-writes)).
 
 An **approval token** is `tutela-approval-v1.<payload>.<signature>`. Both parts are base64url without padding.
-- **Payload:** the JSON object `{"app", "from", "to", "kid", "iat", "exp"}`. `from` and `to` are the manifest digests; `kid` is the approver key id; `iat` and `exp` are Unix seconds. Unknown keys are refused.
+- **Payload:** the JSON object `{"app", "from", "to", "kid", "iat", "exp"}`, and `"tid"` when it approves the change for one tenant. `from` and `to` are the manifest digests; `kid` is the approver key id; `iat` and `exp` are Unix seconds. Unknown keys are refused.
 - **Signature:** Ed25519 over the ASCII bytes `tutela-approval-v1.<payload>`.
 - **Key id:** `apk_` and the first 32 hex digits of SHA-256 of the 32-byte public key.
 - **Valid only when all of these hold:**
   - the key is registered (`tutela approvers add`) and not revoked;
   - the signature verifies with the key, and `kid` is that key's id;
   - `app`, `from` and `to` match this exact change;
+  - `tid` is the tenant of this change: `tutelad` changes one tenant's model and needs it; `tutela apply` in library mode changes the app's manifest and refuses a token that has one ([ADR-0026](DECISIONS.md#adr-0026-a-tenant-owns-its-model-versions));
   - `now < exp`, `iat` is not more than 5 minutes in the future, and `exp - iat` is at most 24 hours.
 - Since the diff is a function of the two manifests, the token approves exactly one diff. A revoked key approves nothing, also tokens it signed before.
 
-An approver reviews the printed diff and signs with `tutela approve --app <app> --from <digest> --to <digest> --key <private key file>`. `tutela approvers keygen` writes the private key file, readable by its owner only; it never leaves the approver's machine. The database holds only public keys.
+An approver reviews the printed diff and signs with `tutela approve --app <app> --from <digest> --to <digest> --key <private key file>`, with `--tenant <tid>` for a change through `tutelad`. `tutela approvers keygen` writes the private key file, readable by its owner only; it never leaves the approver's machine. The database holds only public keys.
 
