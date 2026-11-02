@@ -80,8 +80,9 @@ pub use models::{
     model_versions, publish_tenant_model,
 };
 pub use principals::{
-    PrincipalState, Revocations, agent_for_workload, is_attache_path, note_exchange,
-    principal_state, provision_user, register_agent, revocations, revoke_sessions, set_disabled,
+    MAX_AGENT_PAGE, PrincipalState, Revocations, agent_for_workload, agents, is_attache_path,
+    note_exchange, principal_state, provision_user, register_agent, revocations, revoke_sessions,
+    set_disabled,
 };
 pub use proposals::{
     MAX_PROPOSAL_PAGE, NewProposal, Proposal, TwoPerson, close_proposal, proposal, proposals,

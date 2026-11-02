@@ -176,3 +176,20 @@ L02: caught by 4 test(s) - a record is signed over other bytes than its body
       tm20_records_are_forwarded_signed_and_marked_shipped, tm20_a_ledger_outage_loses_nothing_and_blocks_nothing, tm20_a_refused_batch_waits_and_the_deployment_chain_is_forwarded, two_replicas_never_send_one_chain_at_once
 L03: caught by 1 test(s) - a second replica sends a chain another one holds
       two_replicas_never_send_one_chain_at_once
+
+D01: caught by 2 test(s) - an admin call takes a person's plain tutela-authz token
+      tm01_the_admin_api_takes_a_persons_admin_token_and_a_services_own_token, the_model_routes_answer_over_grpc_as_over_http
+D02: caught by 1 test(s) - an agent of another tenant is changed through this one
+      tm05_an_agent_lives_in_its_own_tenant_only
+D03: caught by 1 test(s) - a disabled agent's token still works
+      tm02_attache_registers_quarantines_and_enables_an_agent
+D04: caught by 1 test(s) - disabling or enabling a principal leaves no audit record
+      tm02_attache_registers_quarantines_and_enables_an_agent
+D05: caught by 1 test(s) - a scope's rules are set without manage_boundaries on it
+      tm08_a_scopes_rules_need_manage_boundaries_on_that_scope
+D06: caught by 2 test(s) - a refused admin call leaves no record
+      tm08_a_scopes_rules_need_manage_boundaries_on_that_scope, tm01_the_admin_api_takes_a_persons_admin_token_and_a_services_own_token
+D07: caught by 1 test(s) - a pushed type changes what the model has
+      admin::types::tests::a_push_that_changes_an_entry_is_refused
+D08: caught by 1 test(s) - registering an agent needs no admin key
+      tm01_the_admin_api_takes_a_persons_admin_token_and_a_services_own_token

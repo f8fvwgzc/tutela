@@ -386,7 +386,7 @@ Payload:
 
 | Audience | Used by | Extra rules |
 |---|---|---|
-| `tutela-admin` | Tutela Console and the embeddable admin components (Phase B) | `exp − iat ≤ 300` (5 minutes). Step-up MFA: `acr` must be one of the values the deployment configures as MFA, `TUTELA_ADMIN_ACR` (before Phase C this comes from the upstream IdP). Never sent to product APIs. **Built** ([ADR-0032](DECISIONS.md#adr-0032-admin-tokens-a-person-steps-up-a-pipeline-keeps-its-service-token)): token exchange (4.8) issues it only to a person whose subject token's `acr` is a step-up value; `tutelad`'s admin routes (7.9, 7.10) take it from a person, and every other route refuses it. A service (`sa`, `key`) uses its `tutela-authz` token on the admin routes instead, for a pipeline such as `tutela apply`; a service's admin token is refused there. |
+| `tutela-admin` | Tutela Console and the embeddable admin components (Phase B) | `exp − iat ≤ 300` (5 minutes). Step-up MFA: `acr` must be one of the values the deployment configures as MFA, `TUTELA_ADMIN_ACR` (before Phase C this comes from the upstream IdP). Never sent to product APIs. **Built** ([ADR-0032](DECISIONS.md#adr-0032-admin-tokens-a-person-steps-up-a-pipeline-keeps-its-service-token)): token exchange (4.8) issues it only to a person whose subject token's `acr` is a step-up value; `tutelad`'s admin routes (7.9, 7.10, 7.13) and the methods of `tutela.admin.v1` take it from a person, and every other route refuses it. A service (`sa`, `key`) uses its `tutela-authz` token on the admin routes instead, for a pipeline such as `tutela apply`; a service's admin token is refused there. |
 | `tutela-authz` (name planned) | The remote check API and the permission map (section 7, Phase B) | Usually a service-account token of a product backend. |
 
 ### 4.5 Delegated (agent) tokens
@@ -1314,9 +1314,9 @@ A verified token for a tenant that is not in the directory gets 403 `unknown_ten
 
 ### 7.9 Model versions
 
-**Status: Phase B, built.** Every published model is a kept, numbered version of its tenant ([ADR-0026](DECISIONS.md#adr-0026-a-tenant-owns-its-model-versions)). A publish here changes one tenant. HTTP only: the gRPC form comes with `tutela.admin.v1` (part 3). `tutela apply` against `tutelad` (part 4) calls these routes.
+**Status: Phase B, built.** Every published model is a kept, numbered version of its tenant ([ADR-0026](DECISIONS.md#adr-0026-a-tenant-owns-its-model-versions)). A publish here changes one tenant. Each route has its gRPC method in `tutela.admin.v1` (7.13), with the same token rule and the route's JSON answer as `result_json`. `tutela apply` against `tutelad` (part 4) calls these routes.
 
-**Which token** ([ADR-0032](DECISIONS.md#adr-0032-admin-tokens-a-person-steps-up-a-pipeline-keeps-its-service-token)). A person sends an admin token (`aud=tutela-admin`, 4.4) whose `acr` is a step-up value of the deployment (`TUTELA_ADMIN_ACR`); a person's `tutela-authz` token gets 403 `forbidden`. A service (`sa`, `key`), for example `tutela apply` in a pipeline, sends its `tutela-authz` token; a service's admin token gets 403. An admin token on any route outside 7.9 and 7.10 gets 401.
+**Which token** ([ADR-0032](DECISIONS.md#adr-0032-admin-tokens-a-person-steps-up-a-pipeline-keeps-its-service-token)). A person sends an admin token (`aud=tutela-admin`, 4.4) whose `acr` is a step-up value of the deployment (`TUTELA_ADMIN_ACR`); a person's `tutela-authz` token gets 403 `forbidden`. A service (`sa`, `key`), for example `tutela apply` in a pipeline, sends its `tutela-authz` token; a service's admin token gets 403. An admin token on any route outside 7.9, 7.10 and 7.13 gets 401.
 
 **Who may ask.** The rules of 7.1 on tokens apply, and these need admin keys **at every org of the tenant**, read from data that has just been checked. A delegated token, an agent and an external token never pass: 403 `forbidden`. A service needs the keys like anyone else.
 
@@ -1505,6 +1505,58 @@ Every answer on the API port has `x-request-id`: the one the caller sent (AuthZE
 | `paths` | `[{"scope", "ancestors"}]`: every registered scope and its ancestors, nearest first. |
 
 - **A reader** (`tutela_sdk::Verifier::verify_bundle`, `tutela_sdk::bundle::OfflinePdp`) checks the bundle as a token of a Tutela-format issuer (header, issuer, `kid` not denied, signature against the same JWKS), then `format`, `(iss, tid)` on its trust list and `exp` with **no** clock skew; refuses a lower `rev` than the one it holds; and answers nothing (`ExpiredBundle`) from `exp` on.
+
+### 7.13 Admin API (`tutela.admin.v1`)
+
+**Built in Phase B, part 3c** ([ADR-0040](DECISIONS.md#adr-0040-tutelaadminv1-one-code-path-the-admin-token-rule-on-grpc-and-keys-at-every-org)). The proto is `crates/tutela-contracts/proto/tutela/admin/v1/admin.proto`, service `tutela.admin.v1.Admin`. Each method runs the code of its HTTP route and answers the same thing. The model routes of 7.9 are part of it.
+
+- **Which token**, over HTTP and gRPC alike (ADR-0032): a person sends an admin token (`aud=tutela-admin`, 4.4, `acr` a step-up value); a service (`sa`, `key`) sends its `tutela-authz` token. A person's `tutela-authz` token, a service's admin token, an agent, a delegated token and an external token get 403 `forbidden` (gRPC `PERMISSION_DENIED`). No token, or one that does not verify: 401 (gRPC `UNAUTHENTICATED`).
+- **Who may ask:** the admin keys below, on data that has just been checked. A refusal for want of a key is recorded in the audit log, with who asked, before the answer.
+- **The tenant** comes from the token, as everywhere. A principal of another tenant is not there: 404.
+- Principals go in the JSON body, never in the URL (9.5: they are personal data).
+- **Errors:** the problem documents of 7.1, plus `not_found` (404), and `exists`, `not_additive`, `no_change`, `version_conflict` (409). gRPC codes: 400 `INVALID_ARGUMENT`, 401 `UNAUTHENTICATED`, 403 `PERMISSION_DENIED`, 404 `NOT_FOUND`, 409 `ABORTED`, else `UNAVAILABLE`; the message is `<code>: <text>`.
+- `tutelad_admin_operations_total{operation, outcome}` counts each call: `ok`, `forbidden`, `refused`, `not_found`, `conflict`, `invalid`, `error`.
+
+#### 7.13.1 Agent principals and people
+
+| Route | gRPC | Needs at every org | Does |
+|---|---|---|---|
+| `POST /v1/admin/agents` `{"workload"?}` | `RegisterAgent` | `org:manage_agents` | Registers a new agent; `tutelad` makes `agent:agt_<uuidv7>`. `workload` is a SPIFFE id on attache's path `spiffe://<trust domain>/ns/<namespace>/svc/<service>` (1.4); another path is 400; a workload another agent of the tenant has is 409 `exists`. No revision moves and no event is sent. |
+| `GET /v1/admin/agents?after=&limit=&workload=` | `ListAgents` | `org:manage_agents` | The tenant's agents by principal, at most 1000 a page (default 100), with `next_after` while more may remain; with `workload`, the one agent of that workload. |
+| `POST /v1/admin/principals/state` `{"principal"}` | `GetPrincipal` | `org:manage_agents` for an agent, `org:manage_access` for a person | The principal's state. An agent must be registered in the tenant (else 404); a person with no row is enabled at epoch 0. |
+| `POST /v1/admin/principals/disabled` `{"principal", "disabled"}` | `SetDisabled` | as above | `true` disables (attache's quarantine) and raises the epoch; `false` enables again and keeps the epoch, so an old token stays refused. Bumps the revision; emits `tutela.principal.disabled.v1` (and `tutela.user.disabled.v1` for a person) or `tutela.principal.enabled.v1`. The tokens of a disabled principal are refused on `tutelad`'s API within `TUTELA_REVISION_CHECK_MS`, and no token is issued for it. |
+| `POST /v1/admin/principals/revoke-sessions` `{"principal"}` | `RevokeSessions` | as above | Raises the epoch: every token the principal holds is refused. Bumps the revision; emits `tutela.session.revoked.v1` for a person. |
+
+The answer is the principal's state:
+
+```json
+{ "principal": "agent:agt_…", "epoch": 1, "disabled": true,
+  "workload": "spiffe://prod.attache.example.test/ns/shop/svc/orders", "rev": 45 }
+```
+
+`rev` is the tenant revision after a change that bumped it; send it as `at_least_revision`. A list is `{"agents": [<state>…], "next_after"?}`.
+
+#### 7.13.2 Scopes
+
+| Route | gRPC | Needs | Does |
+|---|---|---|---|
+| `PUT /v1/admin/boundaries` `{"scope": {"type", "id"}, "moves_out"?, "moves_in"?, "on_looser"?, "links_from"?}` | `SetBoundary` | `<type>:manage_boundaries` on the scope, at the path the store holds for it | Replaces the scope's move and link rules (PERMISSION-MODEL.md 9, 10): `moves_out` and `moves_in` are `members`, `owners` or `none`; `on_looser` is `approve` or `block`; `links_from` is `any`, `team` or `none`; a rule left out is not set. An org is 400; an unregistered scope 404. Bumps the revision and emits `tutela.permissions.changed.v1`. Answers `{"rev"}`. |
+
+There is no route for `move_scope`: a move is the product's write after `write_check` (6.7). Registering, moving and deleting scopes, role assignments and groups in service mode are not built ([#107](https://github.com/f8fvwgzc/tutela/issues/107)).
+
+#### 7.13.3 Resource types (`PutResourceTypes`)
+
+| Route | gRPC | Needs at every org | Does |
+|---|---|---|---|
+| `POST /v1/admin/resource-types` `{"types": {<name>: <definition>}, "expected_version"?}` | `PutResourceTypes` (`types_json`) | `org:manage_access` and `org:manage_fields` | Merges the types into the active model and stores the result as a **proposal** (7.9), never a publish. A definition uses the keys of MANIFEST.md 4, as JSON. |
+
+- Only additions are taken: a new type; new fields, actions, features and parents of a type. A push that changes or removes what the model has is 409 `not_additive` (the detail names the type and the key); a push that adds nothing is 409 `no_change`; an `expected_version` that is not the active one is 409 `version_conflict`; a merged model that does not compile is 400 `invalid_manifest`.
+- The answer is the proposal (7.9). Another principal approves it with `POST /v1/models/proposals/{id}/approve`, with an approval token when it widens. A new confidential or secret field holds nothing for any role (MANIFEST.md 4).
+- The proposal's text is the active model, parsed and written again with the new entries: every value is kept, the comments are not.
+
+#### 7.13.4 Model versions over gRPC
+
+`ListModelVersions`, `GetModelVersion`, `ModelImpact`, `PublishModel`, `GetModelSettings`, `PutModelSettings`, `ProposeModel`, `ListProposals`, `GetProposal`, `ApproveProposal` and `RejectProposal` are the routes of 7.9, with their fields as message fields and the route's JSON answer as `result_json`.
 
 ## 8. Events
 

@@ -56,6 +56,12 @@ BUNDLE_SDK = "crates/tutela-sdk/src/bundle.rs"
 BUNDLE = ["-p", "tutelad", "--test", "bundle"]
 LEDGER_SRC = "crates/tutelad/src/ledger.rs"
 LEDGER = ["-p", "tutelad", "--test", "ledger"]
+ADMIN_MOD = "crates/tutelad/src/admin/mod.rs"
+ADMIN_PRINCIPALS = "crates/tutelad/src/admin/principals.rs"
+ADMIN_BOUNDARIES = "crates/tutelad/src/admin/boundaries.rs"
+ADMIN_TYPES = "crates/tutelad/src/admin/types.rs"
+ADMIN = ["-p", "tutelad", "--test", "admin"]
+ADMIN_LIB = ["-p", "tutelad", "--lib", "admin::"]
 
 # (id, file, what it breaks, old text, new text, cargo test arguments).
 # `old` must occur once.
@@ -408,6 +414,39 @@ MUTANTS = [
      "             WHERE tenant_id = $1 AND (claimed_until IS NULL \\\n               OR claimed_until < clock_timestamp() OR claimed_by = $2) \\\n",
      "             WHERE tenant_id = $1 \\\n",
      LEDGER),
+    # The admin API, tutela.admin.v1 (ADR-0040).
+    ("D01", MODELS, "an admin call takes a person's plain tutela-authz token",
+     "        PrincipalKind::User => admin && step_up(c.acr.as_deref()),\n",
+     "        PrincipalKind::User => !admin || step_up(c.acr.as_deref()),\n",
+     ADMIN),
+    ("D02", ADMIN_PRINCIPALS, "an agent of another tenant is changed through this one",
+     "        None => Err(not_found()),\n",
+     "        None => Ok(PrincipalState {\n            principal: p.clone(),\n            epoch: 0,\n            disabled: false,\n            workload: None,\n        }),\n",
+     ADMIN),
+    ("D03", ADMIN_PRINCIPALS, "a disabled agent's token still works",
+     "    let epoch = tutela_store::set_disabled(&tx, tenant.key(), &p, disabled)\n",
+     "    let epoch = tutela_store::set_disabled(&tx, tenant.key(), &p, false)\n",
+     ADMIN),
+    ("D04", ADMIN_PRINCIPALS, "disabling or enabling a principal leaves no audit record",
+     "    audit::write(\n        state,\n        &tx,\n        vec![\n            Record::new(\n                tenant.key(),\n                Actor::new(by),\n                action,\n                (\"tutela_principal\", &name),\n            )\n            .allowed(rev)\n            .detail(\"principal\", name.clone())\n            .detail(\"epoch\", epoch)\n            .detail(\"rev\", rev),\n        ],\n    )\n    .await?;\n    tx.commit().await?;\n    tracing::info!(disabled",
+     "    tx.commit().await?;\n    let _ = (by, action);\n    tracing::info!(disabled",
+     ADMIN),
+    ("D05", ADMIN_BOUNDARIES, "a scope's rules are set without manage_boundaries on it",
+     "    if !decision.is_allowed() {\n",
+     "    if false && !decision.is_allowed() {\n",
+     ADMIN),
+    ("D06", ADMIN_MOD, "a refused admin call leaves no record",
+     "    let Some(actor) = audit::actor_of(id) else {\n",
+     "    let Some(actor) = audit::actor_of(id).filter(|_| false) else {\n",
+     ADMIN),
+    ("D07", ADMIN_TYPES, "a pushed type changes what the model has",
+     "            (_, Some(old)) if *old == value => {}\n            _ => return Err(not_additive(ty, &key)),\n",
+     "            (_, Some(old)) => *old = value,\n",
+     ADMIN_LIB),
+    ("D08", ADMIN_PRINCIPALS, "registering an agent needs no admin key",
+     "        &AGENT_KEYS,\n        action,\n        (\"tutela_principal\", \"agent\"),\n",
+     "        &[],\n        action,\n        (\"tutela_principal\", \"agent\"),\n",
+     ADMIN),
 ]
 
 

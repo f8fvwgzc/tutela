@@ -710,6 +710,18 @@ pub async fn propose(
     id: &Identity,
     body: PublishBody,
 ) -> Result<ProposalOut, Problem> {
+    propose_from(state, id, body, None).await
+}
+
+/// [`propose`], with where the change came from in its audit record:
+/// `None` for the caller's own text, `resource_types` for
+/// `PutResourceTypes` (`crate::admin::types`).
+pub(crate) async fn propose_from(
+    state: &AppState,
+    id: &Identity,
+    body: PublishBody,
+    origin: Option<&'static str>,
+) -> Result<ProposalOut, Problem> {
     let tenant = Tenant::of(id);
     let actor = admin(state, id, &tenant, &WRITE_KEYS).await?;
     let expected = body.expected_version.ok_or_else(|| {
@@ -771,7 +783,8 @@ pub async fn propose(
             .detail("class", d.class().as_str().to_ascii_lowercase())
             .detail("restores", restores)
             .detail("impact_digest", impact.digest.clone())
-            .detail("to", tutela_store::digest(&source)),
+            .detail("to", tutela_store::digest(&source))
+            .detail("origin", origin),
         ],
     )
     .await?;

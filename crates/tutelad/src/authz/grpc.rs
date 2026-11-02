@@ -51,6 +51,9 @@ impl From<Problem> for Status {
             401 => Code::Unauthenticated,
             403 => Code::PermissionDenied,
             404 => Code::NotFound,
+            // A conflict of the admin API (CONTRACTS.md 7.13): look again
+            // and retry.
+            409 => Code::Aborted,
             _ => Code::Unavailable,
         };
         let text = p.detail.unwrap_or_else(|| p.title.to_owned());
@@ -60,7 +63,7 @@ impl From<Problem> for Status {
 
 /// The verified identity. `AuthLayer` ran first, so a request with none
 /// never gets here; if one does, it is refused.
-fn identity<T>(req: &Request<T>) -> Result<Identity, Status> {
+pub(crate) fn identity<T>(req: &Request<T>) -> Result<Identity, Status> {
     req.extensions()
         .get::<Identity>()
         .cloned()

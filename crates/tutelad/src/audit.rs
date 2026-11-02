@@ -272,6 +272,10 @@ fn audit_label(resource_type: &str) -> &'static str {
         "tutela_assignment" => "assignment",
         "tutela_signing_key" => "signing_key",
         "tutela_access" => "access",
+        "tutela_boundary" => "boundary",
+        "tutela_org" => "org",
+        "tutela_tenant" => "tenant",
+        "tutela_webhook" => "webhook",
         _ => "write_check",
     }
 }
@@ -311,6 +315,26 @@ pub async fn write_alone(
     let mut conn = state.db.conn().await?;
     let tx = conn.begin(tenant).await?;
     write(state, &tx, records).await?;
+    tx.commit().await.map_err(|e: DbError| {
+        state.metrics.count_audit("write", "error");
+        Problem::from(e)
+    })
+}
+
+/// [`write_alone`], for records that name the tenant's revision now.
+///
+/// # Errors
+///
+/// The 503 of a database failure.
+pub async fn write_alone_now(
+    state: &AppState,
+    tenant: &Tenant,
+    records: impl FnOnce(u64) -> Vec<Record>,
+) -> Result<(), Problem> {
+    let mut conn = state.db.conn().await?;
+    let tx = conn.begin(tenant).await?;
+    let rev = tutela_store::rev(&tx, tenant.key()).await?;
+    write(state, &tx, records(rev)).await?;
     tx.commit().await.map_err(|e: DbError| {
         state.metrics.count_audit("write", "error");
         Problem::from(e)

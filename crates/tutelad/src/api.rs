@@ -9,7 +9,7 @@ use axum::extract::{DefaultBodyLimit, Extension, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router, middleware};
 use serde::Serialize;
 use tower::ServiceExt as _;
@@ -20,6 +20,7 @@ use tutela_sdk::http::{AuthLayer, Protocol};
 use tutela_sdk::{Identity, Step};
 use tutela_store::{StoreError, StoreErrorKind};
 
+use crate::admin;
 use crate::authz;
 use crate::cache::TenantCache;
 use crate::db::{Db, DbError};
@@ -291,6 +292,25 @@ pub fn api_router(state: &AppState, grpc: Router, request_timeout: Duration) -> 
             post(models::http::publish)
                 .layer(DefaultBodyLimit::max(models::http::MODEL_BODY_LIMIT)),
         )
+        .route(
+            "/v1/admin/agents",
+            get(admin::http::agents).post(admin::http::register_agent),
+        )
+        .route("/v1/admin/principals/state", post(admin::http::principal))
+        .route(
+            "/v1/admin/principals/disabled",
+            post(admin::http::set_disabled),
+        )
+        .route(
+            "/v1/admin/principals/revoke-sessions",
+            post(admin::http::revoke_sessions),
+        )
+        .route("/v1/admin/boundaries", put(admin::http::set_boundary))
+        .route(
+            "/v1/admin/resource-types",
+            post(admin::http::put_resource_types)
+                .layer(DefaultBodyLimit::max(models::http::MODEL_BODY_LIMIT)),
+        )
         .route_layer(middleware::from_fn_with_state(state.clone(), current_http))
         .route_layer(middleware::from_fn_with_state(state.clone(), admin_auth));
     let http = Router::new()
@@ -331,10 +351,26 @@ pub fn api_router(state: &AppState, grpc: Router, request_timeout: Duration) -> 
             Arc::clone(&state.metrics),
             observe,
         ));
+    // `tutela.admin.v1` takes the tokens the admin routes take (ADR-0032,
+    // ADR-0040), so its methods have the admin token check of HTTP.
+    let admin_grpc = tonic::service::Routes::new(admin::grpc::AdminService::server(state.clone()))
+        .prepare()
+        .into_axum_router()
+        .layer(middleware::from_fn_with_state(state.clone(), current_grpc))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            admin_auth_grpc,
+        ))
+        .layer(middleware::from_fn_with_state(
+            Arc::clone(&state.metrics),
+            observe,
+        ));
     let public = public_router(state, request_timeout);
     Router::new().fallback(move |req: Request| {
         let target = if is_public(&req) {
             &public
+        } else if is_grpc(&req) && req.uri().path().starts_with(admin::grpc::PATH_PREFIX) {
+            &admin_grpc
         } else if is_grpc(&req) {
             &grpc
         } else {
@@ -372,33 +408,61 @@ async fn current_http(State(state): State<AppState>, req: Request, next: Next) -
 /// everything else as on every route. A refusal is the same 401 as
 /// `AuthLayer`'s, with the step for the log.
 async fn admin_auth(State(state): State<AppState>, mut req: Request, next: Next) -> Response {
-    let refuse = |step: Option<Step>| {
-        let mut res = invalid_token().into_response();
-        res.headers_mut().insert(
-            header::WWW_AUTHENTICATE,
-            HeaderValue::from_static("Bearer error=\"invalid_token\""),
-        );
-        if let Some(step) = step {
-            res.extensions_mut().insert(step);
+    match admin_identity(&state, bearer(req.headers())).await {
+        Ok(id) => {
+            req.extensions_mut().insert(id);
+            next.run(req).await
         }
-        res
-    };
-    let Some(token) = bearer(req.headers()) else {
-        return refuse(None);
-    };
+        Err(step) => {
+            let mut res = invalid_token().into_response();
+            res.headers_mut().insert(
+                header::WWW_AUTHENTICATE,
+                HeaderValue::from_static("Bearer error=\"invalid_token\""),
+            );
+            if let Some(step) = step {
+                res.extensions_mut().insert(step);
+            }
+            res
+        }
+    }
+}
+
+/// [`admin_auth`] for `tutela.admin.v1`: a refusal is `unauthenticated`
+/// (`grpc-status: 16`), with the step for the log, as `AuthLayer` answers.
+async fn admin_auth_grpc(State(state): State<AppState>, mut req: Request, next: Next) -> Response {
+    match admin_identity(&state, bearer(req.headers())).await {
+        Ok(id) => {
+            req.extensions_mut().insert(id);
+            next.run(req).await
+        }
+        Err(step) => {
+            let mut res = Response::new(axum::body::Body::empty());
+            res.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/grpc"),
+            );
+            res.headers_mut()
+                .insert("grpc-status", HeaderValue::from_static("16"));
+            if let Some(step) = step {
+                res.extensions_mut().insert(step);
+            }
+            res
+        }
+    }
+}
+
+/// The verified identity of an admin request: an admin token goes to the
+/// admin verifier, any other to the main one. `Err` names the failed step,
+/// when there is one.
+async fn admin_identity(state: &AppState, token: Option<String>) -> Result<Identity, Option<Step>> {
+    let token = token.ok_or(None)?;
     let admin = exchange::peek_audience(&token).as_deref() == Some(Audience::TUTELA_ADMIN.as_str());
     let verifier = if admin {
         state.audiences.admin_verifier()
     } else {
         &state.verifier
     };
-    match verifier.verify(&token).await {
-        Ok(id) => {
-            req.extensions_mut().insert(id);
-            next.run(req).await
-        }
-        Err(e) => refuse(Some(e.step())),
-    }
+    verifier.verify(&token).await.map_err(|e| Some(e.step()))
 }
 
 /// The token of exactly one `Authorization: Bearer` header, as `AuthLayer`

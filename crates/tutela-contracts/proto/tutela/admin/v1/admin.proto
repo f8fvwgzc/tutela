@@ -1,0 +1,171 @@
+// The admin API over gRPC (CONTRACTS.md 7.13). Each method runs the same
+// code as its HTTP route, and answers the same thing: typed messages where
+// the answer is small, and the JSON answer of the route as text where it is
+// a report (`result_json`). This file grows only by adding fields and
+// services (CONTRACTS.md 10).
+//
+// Which token (ADR-0032, ADR-0040): a person sends an admin token
+// (`aud=tutela-admin`, after step-up); a service (`sa`, `key`) sends its
+// `tutela-authz` token. Anything else is PERMISSION_DENIED.
+syntax = "proto3";
+
+package tutela.admin.v1;
+
+service Admin {
+  // ---------- Agent principals and people (CONTRACTS.md 7.13.1) ----------
+
+  // POST /v1/admin/agents: registers a new agent of the caller's tenant.
+  rpc RegisterAgent(RegisterAgentRequest) returns (PrincipalState);
+  // GET /v1/admin/agents: the tenant's agents, a page at a time.
+  rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse);
+  // POST /v1/admin/principals/state: one principal of the tenant.
+  rpc GetPrincipal(PrincipalRequest) returns (PrincipalState);
+  // POST /v1/admin/principals/disabled: disables or enables a principal.
+  rpc SetDisabled(SetDisabledRequest) returns (PrincipalState);
+  // POST /v1/admin/principals/revoke-sessions: raises the epoch.
+  rpc RevokeSessions(PrincipalRequest) returns (PrincipalState);
+
+  // ---------- Model versions (CONTRACTS.md 7.9) ----------
+
+  // GET /v1/models.
+  rpc ListModelVersions(ListModelVersionsRequest) returns (JsonResult);
+  // GET /v1/models/{version}.
+  rpc GetModelVersion(GetModelVersionRequest) returns (JsonResult);
+  // POST /v1/models/impact.
+  rpc ModelImpact(ModelChangeRequest) returns (JsonResult);
+  // POST /v1/models/publish.
+  rpc PublishModel(ModelChangeRequest) returns (JsonResult);
+  // GET /v1/models/settings.
+  rpc GetModelSettings(GetModelSettingsRequest) returns (JsonResult);
+  // PUT /v1/models/settings.
+  rpc PutModelSettings(PutModelSettingsRequest) returns (JsonResult);
+  // POST /v1/models/proposals.
+  rpc ProposeModel(ModelChangeRequest) returns (JsonResult);
+  // GET /v1/models/proposals.
+  rpc ListProposals(ListProposalsRequest) returns (JsonResult);
+  // GET /v1/models/proposals/{id}.
+  rpc GetProposal(ProposalRequest) returns (JsonResult);
+  // POST /v1/models/proposals/{id}/approve.
+  rpc ApproveProposal(ApproveProposalRequest) returns (JsonResult);
+  // POST /v1/models/proposals/{id}/reject.
+  rpc RejectProposal(ProposalRequest) returns (JsonResult);
+  // POST /v1/admin/resource-types: onto-intelli's import. It merges the
+  // types into the active model and stores a proposal; it never publishes.
+  rpc PutResourceTypes(PutResourceTypesRequest) returns (JsonResult);
+
+  // ---------- Scopes (CONTRACTS.md 7.13.2) ----------
+
+  // PUT /v1/admin/boundaries: the move and link rules of a registered scope.
+  rpc SetBoundary(SetBoundaryRequest) returns (RevResponse);
+}
+
+// The JSON answer of the HTTP route, as text.
+message JsonResult {
+  string result_json = 1;
+}
+
+// A new tenant revision.
+message RevResponse {
+  uint64 rev = 1;
+}
+
+message RegisterAgentRequest {
+  // The SPIFFE id of the workload the agent runs as, on attache's path
+  // `spiffe://<trust domain>/ns/<namespace>/svc/<service>`. Empty: none.
+  string workload = 1;
+}
+
+message PrincipalRequest {
+  // `user:usr_<uuidv7>` or `agent:agt_<uuidv7>`.
+  string principal = 1;
+}
+
+message SetDisabledRequest {
+  string principal = 1;
+  bool disabled = 2;
+}
+
+message PrincipalState {
+  string principal = 1;
+  uint64 epoch = 2;
+  bool disabled = 3;
+  // Empty: no workload.
+  string workload = 4;
+  // The tenant revision after a change; 0 for a read and for a change that
+  // bumps none (registering an agent).
+  uint64 rev = 5;
+}
+
+message ListAgentsRequest {
+  // The `next_after` of the page before. Empty: from the start.
+  string after = 1;
+  // At most 1000. 0: 100.
+  uint32 limit = 2;
+  // Only the agent registered for this workload's SPIFFE id. Empty: all.
+  string workload = 3;
+}
+
+message ListAgentsResponse {
+  repeated PrincipalState agents = 1;
+  // Empty: no more.
+  string next_after = 2;
+}
+
+message ListModelVersionsRequest {
+  optional int64 before = 1;
+  optional uint32 limit = 2;
+}
+
+message GetModelVersionRequest {
+  int64 version = 1;
+}
+
+// The body of a publish, an impact report or a proposal (CONTRACTS.md 7.9).
+message ModelChangeRequest {
+  optional string source = 1;
+  optional int64 restore = 2;
+  optional int64 expected_version = 3;
+  optional string approval = 4;
+}
+
+message GetModelSettingsRequest {}
+
+message PutModelSettingsRequest {
+  bool two_person = 1;
+}
+
+message ListProposalsRequest {}
+
+message ProposalRequest {
+  string id = 1;
+}
+
+message ApproveProposalRequest {
+  string id = 1;
+  optional string approval = 2;
+}
+
+message PutResourceTypesRequest {
+  // `types` of the JSON body: an object of type name to its definition, in
+  // the keys of MANIFEST.md 4, as JSON text.
+  string types_json = 1;
+  // The active version the caller compared against. Missing: the active
+  // one now.
+  optional int64 expected_version = 2;
+}
+
+message PathEntry {
+  string type = 1;
+  string id = 2;
+}
+
+message SetBoundaryRequest {
+  PathEntry scope = 1;
+  // `members`, `owners` or `none`. Empty: not set.
+  string moves_out = 2;
+  string moves_in = 3;
+  // `approve` or `block`. Empty: not set.
+  string on_looser = 4;
+  // `any`, `team` or `none`. Empty: not set.
+  string links_from = 5;
+}
