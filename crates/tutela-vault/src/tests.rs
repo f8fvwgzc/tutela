@@ -9,6 +9,11 @@ fn vault(k: u8, prev: Option<u8>) -> Vault {
 const P: &str = "webhook_secret";
 const CTX: &[u8] = b"ten_0193a1b2-c3d4-7e5f-8a6b-7c8d9e0f1a2b/wh_1";
 
+/// The kind of a failed call.
+fn kind<T>(r: Result<T, VaultError>) -> Option<VaultErrorKind> {
+    r.err().map(|e| e.kind())
+}
+
 #[test]
 fn a_secret_round_trips_and_opens_only_for_its_purpose_and_context() {
     let v = vault(1, None);
@@ -19,16 +24,16 @@ fn a_secret_round_trips_and_opens_only_for_its_purpose_and_context() {
     // Two seals of one secret differ (fresh data key and nonces).
     assert_ne!(v.seal(P, CTX, b"whsec_123").unwrap(), blob);
     assert_eq!(
-        v.open("other_purpose", CTX, &blob),
-        Err(VaultError::Decrypt)
+        kind(v.open("other_purpose", CTX, &blob)),
+        Some(VaultErrorKind::Decrypt)
     );
     assert_eq!(
-        v.open(P, b"ten_other/wh_1", &blob),
-        Err(VaultError::Decrypt)
+        kind(v.open(P, b"ten_other/wh_1", &blob)),
+        Some(VaultErrorKind::Decrypt)
     );
     // Length prefixes: moving a byte between purpose and context fails.
     let a = v.seal("ab", b"c", b"x").unwrap();
-    assert_eq!(v.open("a", b"bc", &a), Err(VaultError::Decrypt));
+    assert_eq!(kind(v.open("a", b"bc", &a)), Some(VaultErrorKind::Decrypt));
     // An empty secret is fine.
     let empty = v.seal(P, CTX, b"").unwrap();
     assert!(v.open(P, CTX, &empty).unwrap().is_empty());
@@ -73,10 +78,9 @@ fn tm15_rotation_keeps_old_blobs_open_and_rewraps_them() {
         only_new.open(P, CTX, &rewrapped).unwrap().as_slice(),
         b"whsec_rotate"
     );
-    assert_eq!(
-        only_new.open(P, CTX, &blob),
-        Err(VaultError::UnknownKey(old.current_key()))
-    );
+    let e = only_new.open(P, CTX, &blob).unwrap_err();
+    assert_eq!(e.kind(), VaultErrorKind::UnknownKey);
+    assert_eq!(e.key(), Some(old.current_key()));
     // A rewrap checks the binding too.
     assert!(new.rewrap("other_purpose", CTX, &blob).is_err());
     // The same key as current and previous counts once.
@@ -86,14 +90,14 @@ fn tm15_rotation_keeps_old_blobs_open_and_rewraps_them() {
 
 #[test]
 fn master_keys_come_from_the_environment_and_are_never_made_up() {
-    assert!(matches!(
-        LocalKms::from_values(None, Some("x")),
-        Err(VaultError::NoMasterKey)
-    ));
-    assert!(matches!(
-        LocalKms::from_values(Some("  "), None),
-        Err(VaultError::NoMasterKey)
-    ));
+    assert_eq!(
+        kind(LocalKms::from_values(None, Some("x"))),
+        Some(VaultErrorKind::NoMasterKey)
+    );
+    assert_eq!(
+        kind(LocalKms::from_values(Some("  "), None)),
+        Some(VaultErrorKind::NoMasterKey)
+    );
     let hex = "ab".repeat(32);
     let a = LocalKms::from_values(Some(&hex), None).unwrap();
     use base64::Engine as _;
@@ -104,14 +108,13 @@ fn master_keys_come_from_the_environment_and_are_never_made_up() {
         let b = LocalKms::from_values(Some(&engine.encode([0xab; 32])), None).unwrap();
         assert_eq!(a.current(), b.current());
     }
-    assert_eq!(
-        LocalKms::from_values(Some("short"), None).err(),
-        Some(VaultError::BadMasterKey(MASTER_KEY_ENV))
-    );
-    assert_eq!(
-        LocalKms::from_values(Some(&hex), Some("bad")).err(),
-        Some(VaultError::BadMasterKey(MASTER_KEY_PREVIOUS_ENV))
-    );
+    let bad = |current: &str, previous| {
+        let e = LocalKms::from_values(Some(current), previous).unwrap_err();
+        assert_eq!(e.kind(), VaultErrorKind::BadMasterKey);
+        e.variable()
+    };
+    assert_eq!(bad("short", None), Some(MASTER_KEY_ENV));
+    assert_eq!(bad(&hex, Some("bad")), Some(MASTER_KEY_PREVIOUS_ENV));
     // Debug shows key ids, never keys.
     let shown = format!("{a:?}");
     assert!(
@@ -125,14 +128,14 @@ fn purposes_and_contexts_are_checked() {
     let v = vault(1, None);
     for bad in ["", "Upper", "a b", "x/y", &"a".repeat(65)] {
         assert_eq!(
-            v.seal(bad, CTX, b"s").err(),
-            Some(VaultError::BadPurpose),
+            kind(v.seal(bad, CTX, b"s")),
+            Some(VaultErrorKind::BadPurpose),
             "{bad:?}"
         );
     }
     assert_eq!(
-        v.seal(P, &vec![0; MAX_CONTEXT + 1], b"s").err(),
-        Some(VaultError::ContextTooLong)
+        kind(v.seal(P, &vec![0; MAX_CONTEXT + 1], b"s")),
+        Some(VaultErrorKind::ContextTooLong)
     );
     assert!(v.seal("a.b-c_9", &vec![0; MAX_CONTEXT], b"s").is_ok());
 }
@@ -160,10 +163,10 @@ impl Kms for FakeKms {
         aad: &[u8],
     ) -> Result<Zeroizing<[u8; 32]>, VaultError> {
         if key != self.current() {
-            return Err(VaultError::UnknownKey(key));
+            return Err(VaultError::unknown_key(key));
         }
         if wrapped.len() != 32 + aad.len() || &wrapped[32..] != aad {
-            return Err(VaultError::Decrypt);
+            return Err(VaultError::decrypt());
         }
         let mut dek = Zeroizing::new([0u8; 32]);
         for (d, w) in dek.iter_mut().zip(wrapped) {
@@ -180,6 +183,63 @@ fn another_kms_backend_works_through_the_trait() {
     });
     let blob = v.seal(P, CTX, b"via kms").unwrap();
     assert_eq!(v.open(P, CTX, &blob).unwrap().as_slice(), b"via kms");
-    assert_eq!(v.open(P, b"other", &blob), Err(VaultError::Decrypt));
+    assert_eq!(
+        kind(v.open(P, b"other", &blob)),
+        Some(VaultErrorKind::Decrypt)
+    );
     assert_eq!(v.key_of(&blob).unwrap().to_string(), "66616b652d6b6d73");
+}
+
+/// A KMS whose backend fails, the way a cloud KMS does.
+struct DownKms;
+
+#[derive(Debug, thiserror::Error)]
+#[error("the KMS endpoint refused the call")]
+struct Down;
+
+impl Kms for DownKms {
+    fn current(&self) -> KeyId {
+        KeyId(*b"down-kms")
+    }
+    fn wrap(&self, _: &[u8; 32], _: &[u8]) -> Result<Vec<u8>, VaultError> {
+        Err(VaultError::kms(Down))
+    }
+    fn unwrap(&self, _: KeyId, _: &[u8], _: &[u8]) -> Result<Zeroizing<[u8; 32]>, VaultError> {
+        Err(VaultError::kms(Down))
+    }
+}
+
+/// A backend's reason stays in `source()`; it is not flattened into text
+/// (#43).
+#[test]
+fn a_kms_failure_keeps_its_cause_in_the_chain() {
+    let e = Vault::new(DownKms).seal(P, CTX, b"s").unwrap_err();
+    assert_eq!(e.kind(), VaultErrorKind::Kms);
+    assert_eq!(e.to_string(), "the KMS failed");
+    let cause = std::error::Error::source(&e).unwrap();
+    assert!(cause.is::<Down>());
+    assert_eq!(cause.to_string(), "the KMS endpoint refused the call");
+}
+
+/// The envelope's two-byte length cannot hold a longer wrapped key.
+#[test]
+fn a_wrapped_key_over_the_envelope_limit_is_a_kms_failure() {
+    struct Huge;
+    impl Kms for Huge {
+        fn current(&self) -> KeyId {
+            KeyId(*b"hugekms!")
+        }
+        fn wrap(&self, _: &[u8; 32], _: &[u8]) -> Result<Vec<u8>, VaultError> {
+            Ok(vec![0; 70_000])
+        }
+        fn unwrap(&self, _: KeyId, _: &[u8], _: &[u8]) -> Result<Zeroizing<[u8; 32]>, VaultError> {
+            Err(VaultError::decrypt())
+        }
+    }
+    let e = Vault::new(Huge).seal(P, CTX, b"s").unwrap_err();
+    assert_eq!(e.kind(), VaultErrorKind::Kms);
+    assert_eq!(
+        std::error::Error::source(&e).unwrap().to_string(),
+        "the wrapped key is over 64 KiB"
+    );
 }

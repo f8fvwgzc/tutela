@@ -11,7 +11,7 @@ use tokio_postgres::Transaction;
 use tutela_contracts::tenant::{TenantId, TenantKey};
 use tutela_pdp::model::{AppName, Class};
 
-use crate::{StoreError, set_tenant, to_rev};
+use crate::{DbResult as _, StoreError, set_tenant, to_rev};
 
 /// The applied manifest of an app.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -67,12 +67,13 @@ pub async fn manifest(
             "SELECT source, digest, version FROM tutela.app_manifest WHERE app = $1",
             &[&app.as_str()],
         )
-        .await?;
+        .await
+        .db()?;
     row.map(|r| {
         Ok(StoredManifest {
-            source: r.try_get(0)?,
-            digest: r.try_get(1)?,
-            version: r.try_get(2)?,
+            source: r.try_get(0).db()?,
+            digest: r.try_get(1).db()?,
+            version: r.try_get(2).db()?,
         })
     })
     .transpose()
@@ -88,8 +89,9 @@ pub async fn manifest(
 ///
 /// # Errors
 ///
-/// [`StoreError::Exists`] if the stored version is not `expected` (another
-/// apply came first), [`StoreError::Corrupt`] for a bad tenant row, or a
+/// [`Exists`](crate::StoreErrorKind::Exists) if the stored version is not
+/// `expected` (another apply came first),
+/// [`Corrupt`](crate::StoreErrorKind::Corrupt) for a bad tenant row, or a
 /// database error.
 pub async fn publish_manifest(
     tx: &Transaction<'_>,
@@ -101,17 +103,20 @@ pub async fn publish_manifest(
         "SELECT pg_advisory_xact_lock(hashtextextended('tutela.apply:' || $1, 0))",
         &[&app],
     )
-    .await?;
+    .await
+    .db()?;
     let current: Option<i64> = tx
         .query_opt(
             "SELECT version FROM tutela.app_manifest WHERE app = $1",
             &[&app],
         )
-        .await?
+        .await
+        .db()?
         .map(|r| r.try_get(0))
-        .transpose()?;
+        .transpose()
+        .db()?;
     if current != p.expected {
-        return Err(StoreError::Exists("a newer manifest; compare again"));
+        return Err(StoreError::exists("a newer manifest; compare again"));
     }
     let digest = digest(p.source);
     let version = current.unwrap_or(0).saturating_add(1);
@@ -122,32 +127,38 @@ pub async fn publish_manifest(
          applied_by = excluded.applied_by",
         &[&app, &p.source, &digest, &version, &p.author],
     )
-    .await?;
+    .await
+    .db()?;
     let tenants = tx
         .query(
             "SELECT tenant_id, iss FROM tutela.tenant ORDER BY tenant_id",
             &[],
         )
-        .await?;
+        .await
+        .db()?;
     let mut out = Vec::with_capacity(tenants.len());
     for t in tenants {
         let tid: TenantId = t
-            .try_get::<_, &str>(0)?
+            .try_get::<_, &str>(0)
+            .db()?
             .parse()
-            .map_err(|_| StoreError::Corrupt("tenant id"))?;
+            .map_err(|_| StoreError::corrupt("tenant id"))?;
         let iss = t
-            .try_get::<_, &str>(1)?
+            .try_get::<_, &str>(1)
+            .db()?
             .parse()
-            .map_err(|_| StoreError::Corrupt("issuer"))?;
+            .map_err(|_| StoreError::corrupt("issuer"))?;
         set_tenant(tx, &tid).await?;
         let rev: i64 = tx
             .query_opt(
                 "UPDATE tutela.tenant_rev SET rev = rev + 1 WHERE tenant_id = $1 RETURNING rev",
                 &[&tid.to_string()],
             )
-            .await?
-            .ok_or(StoreError::Corrupt("tenant revision row"))?
-            .try_get(0)?;
+            .await
+            .db()?
+            .ok_or(StoreError::corrupt("tenant revision row"))?
+            .try_get(0)
+            .db()?;
         tx.execute(
             "INSERT INTO tutela.model_revision (tenant_id, rev, parent_rev, app, author, \
              approvers, diff, class, state, published_at, bundle_digest) \
@@ -164,7 +175,8 @@ pub async fn publish_manifest(
                 &digest,
             ],
         )
-        .await?;
+        .await
+        .db()?;
         out.push((TenantKey::new(iss, tid), to_rev(rev)?));
     }
     Ok(out)

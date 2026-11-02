@@ -44,41 +44,124 @@ const TAG_LEN: usize = 16;
 const KEY_ID_LEN: usize = 8;
 const DOMAIN: &[u8] = b"tutela-vault/v1";
 
-/// Why sealing or opening failed. The texts name key ids only, never keys
-/// or secrets.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+/// What kind of failure a [`VaultError`] is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
-pub enum VaultError {
+pub enum VaultErrorKind {
     /// `TUTELA_MASTER_KEY` is not set. Tutela never makes one up.
-    #[error("TUTELA_MASTER_KEY is not set; refusing to seal or open secrets")]
     NoMasterKey,
-    /// A master key that is not 32 bytes.
-    #[error("{0} must be 32 bytes, as base64 or 64 hex digits")]
-    BadMasterKey(&'static str),
+    /// A master key that is not 32 bytes. [`VaultError::variable`] names the
+    /// variable.
+    BadMasterKey,
     /// A purpose that breaks the rule.
-    #[error("a purpose is 1 to 64 characters of a-z, 0-9, `_`, `.` or `-`")]
     BadPurpose,
     /// A context over [`MAX_CONTEXT`] bytes.
-    #[error("a context is at most 4096 bytes")]
     ContextTooLong,
     /// Not a version 1 envelope.
-    #[error("the blob is not a version 1 envelope")]
     Malformed,
     /// The DEK was wrapped by a key this vault does not have.
-    #[error("the blob's data key was wrapped by key {0}, which this vault does not have")]
-    UnknownKey(KeyId),
+    /// [`VaultError::key`] names the key.
+    UnknownKey,
     /// It does not authenticate: altered, or another purpose or context.
-    #[error("the blob does not decrypt (altered, or sealed for another purpose or context)")]
     Decrypt,
     /// The system random source failed.
-    #[error("the system random source failed")]
     Random,
     /// An AES-256-GCM operation failed (a size over its limits).
+    Crypto,
+    /// A KMS backend failed. The backend's error is the `source()`.
+    Kms,
+}
+
+/// Why sealing or opening failed. The texts name key ids only, never keys
+/// or secrets. Branch on [`VaultError::kind`].
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub struct VaultError(#[from] Repr);
+
+#[derive(Debug, thiserror::Error)]
+enum Repr {
+    #[error("TUTELA_MASTER_KEY is not set; refusing to seal or open secrets")]
+    NoMasterKey,
+    #[error("{0} must be 32 bytes, as base64 or 64 hex digits")]
+    BadMasterKey(&'static str),
+    #[error("a purpose is 1 to 64 characters of a-z, 0-9, `_`, `.` or `-`")]
+    BadPurpose,
+    #[error("a context is at most 4096 bytes")]
+    ContextTooLong,
+    #[error("the blob is not a version 1 envelope")]
+    Malformed,
+    #[error("the blob's data key was wrapped by key {0}, which this vault does not have")]
+    UnknownKey(KeyId),
+    #[error("the blob does not decrypt (altered, or sealed for another purpose or context)")]
+    Decrypt,
+    #[error("the system random source failed")]
+    Random,
     #[error("the AES-256-GCM operation failed")]
     Crypto,
-    /// A KMS backend failed.
-    #[error("the KMS failed: {0}")]
-    Kms(String),
+    #[error("the KMS failed")]
+    Kms(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+}
+
+/// A wrapped key too long for the envelope's two-byte length.
+#[derive(Debug, thiserror::Error)]
+#[error("the wrapped key is over 64 KiB")]
+struct WrappedKeyTooLong;
+
+impl VaultError {
+    /// What kind of failure this is.
+    #[must_use]
+    pub const fn kind(&self) -> VaultErrorKind {
+        match self.0 {
+            Repr::NoMasterKey => VaultErrorKind::NoMasterKey,
+            Repr::BadMasterKey(_) => VaultErrorKind::BadMasterKey,
+            Repr::BadPurpose => VaultErrorKind::BadPurpose,
+            Repr::ContextTooLong => VaultErrorKind::ContextTooLong,
+            Repr::Malformed => VaultErrorKind::Malformed,
+            Repr::UnknownKey(_) => VaultErrorKind::UnknownKey,
+            Repr::Decrypt => VaultErrorKind::Decrypt,
+            Repr::Random => VaultErrorKind::Random,
+            Repr::Crypto => VaultErrorKind::Crypto,
+            Repr::Kms(_) => VaultErrorKind::Kms,
+        }
+    }
+
+    /// The key an [`UnknownKey`](VaultErrorKind::UnknownKey) error names.
+    #[must_use]
+    pub const fn key(&self) -> Option<KeyId> {
+        match self.0 {
+            Repr::UnknownKey(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// The variable a [`BadMasterKey`](VaultErrorKind::BadMasterKey) error
+    /// names.
+    #[must_use]
+    pub const fn variable(&self) -> Option<&'static str> {
+        match self.0 {
+            Repr::BadMasterKey(name) => Some(name),
+            _ => None,
+        }
+    }
+
+    /// For a [`Kms`] backend: the backend failed. `cause` must not hold key
+    /// material.
+    #[must_use]
+    pub fn kms(cause: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self(Repr::Kms(Box::new(cause)))
+    }
+
+    /// For a [`Kms`] backend: it does not have the key.
+    #[must_use]
+    pub const fn unknown_key(key: KeyId) -> Self {
+        Self(Repr::UnknownKey(key))
+    }
+
+    /// For a [`Kms`] backend: the wrapped key does not authenticate.
+    #[must_use]
+    pub const fn decrypt() -> Self {
+        Self(Repr::Decrypt)
+    }
 }
 
 /// The id of a key-encryption key: the first 8 bytes of SHA-256 of the key
@@ -117,8 +200,8 @@ pub trait Kms: Send + Sync {
     ///
     /// # Errors
     ///
-    /// [`VaultError::UnknownKey`] for a key the backend does not have,
-    /// [`VaultError::Decrypt`] if it does not authenticate.
+    /// [`VaultErrorKind::UnknownKey`] for a key the backend does not have,
+    /// [`VaultErrorKind::Decrypt`] if it does not authenticate.
     fn unwrap(
         &self,
         key: KeyId,
@@ -131,14 +214,14 @@ fn random<const N: usize>() -> Result<Zeroizing<[u8; N]>, VaultError> {
     let mut buf = Zeroizing::new([0u8; N]);
     SystemRandom::new()
         .fill(buf.as_mut())
-        .map_err(|_| VaultError::Random)?;
+        .map_err(|_| Repr::Random)?;
     Ok(buf)
 }
 
 fn aes(key: &[u8; KEY_LEN]) -> Result<LessSafeKey, VaultError> {
     UnboundKey::new(&AES_256_GCM, key)
         .map(LessSafeKey::new)
-        .map_err(|_| VaultError::Crypto)
+        .map_err(|_| Repr::Crypto.into())
 }
 
 /// `nonce ‖ ciphertext ‖ tag`.
@@ -151,7 +234,7 @@ fn seal(key: &[u8; KEY_LEN], aad: &[u8], plain: &[u8]) -> Result<Vec<u8>, VaultE
             Aad::from(aad),
             &mut buf,
         )
-        .map_err(|_| VaultError::Crypto)?;
+        .map_err(|_| Repr::Crypto)?;
     let mut out = Vec::with_capacity(NONCE_LEN + buf.len());
     out.extend_from_slice(nonce.as_ref());
     out.extend_from_slice(&buf);
@@ -160,14 +243,14 @@ fn seal(key: &[u8; KEY_LEN], aad: &[u8], plain: &[u8]) -> Result<Vec<u8>, VaultE
 
 fn open(key: &[u8; KEY_LEN], aad: &[u8], sealed: &[u8]) -> Result<Zeroizing<Vec<u8>>, VaultError> {
     if sealed.len() < NONCE_LEN + TAG_LEN {
-        return Err(VaultError::Malformed);
+        return Err(Repr::Malformed.into());
     }
     let (nonce, ct) = sealed.split_at(NONCE_LEN);
-    let nonce = Nonce::try_assume_unique_for_key(nonce).map_err(|_| VaultError::Malformed)?;
+    let nonce = Nonce::try_assume_unique_for_key(nonce).map_err(|_| Repr::Malformed)?;
     let mut buf = Zeroizing::new(ct.to_vec());
     let n = aes(key)?
         .open_in_place(nonce, Aad::from(aad), buf.as_mut())
-        .map_err(|_| VaultError::Decrypt)?
+        .map_err(|_| Repr::Decrypt)?
         .len();
     buf.truncate(n);
     Ok(buf)
@@ -222,8 +305,8 @@ impl LocalKms {
     ///
     /// # Errors
     ///
-    /// [`VaultError::NoMasterKey`] when `TUTELA_MASTER_KEY` is unset or
-    /// empty, [`VaultError::BadMasterKey`] for a key that is not 32 bytes.
+    /// [`VaultErrorKind::NoMasterKey`] when `TUTELA_MASTER_KEY` is unset or
+    /// empty, [`VaultErrorKind::BadMasterKey`] for a key that is not 32 bytes.
     pub fn from_env() -> Result<Self, VaultError> {
         let current = std::env::var(MASTER_KEY_ENV).ok().map(Zeroizing::new);
         let previous = std::env::var(MASTER_KEY_PREVIOUS_ENV)
@@ -244,10 +327,10 @@ impl LocalKms {
         fn present(v: Option<&str>) -> Option<&str> {
             v.map(str::trim).filter(|v| !v.is_empty())
         }
-        let current = present(current).ok_or(VaultError::NoMasterKey)?;
-        let current = parse_key(current).ok_or(VaultError::BadMasterKey(MASTER_KEY_ENV))?;
+        let current = present(current).ok_or(Repr::NoMasterKey)?;
+        let current = parse_key(current).ok_or(Repr::BadMasterKey(MASTER_KEY_ENV))?;
         let previous = present(previous)
-            .map(|p| parse_key(p).ok_or(VaultError::BadMasterKey(MASTER_KEY_PREVIOUS_ENV)))
+            .map(|p| parse_key(p).ok_or(Repr::BadMasterKey(MASTER_KEY_PREVIOUS_ENV)))
             .transpose()?;
         Ok(Self::new(*current, previous.map(|p| *p)))
     }
@@ -257,7 +340,7 @@ impl LocalKms {
             .into_iter()
             .flatten()
             .find(|k| k.id == id)
-            .ok_or(VaultError::UnknownKey(id))
+            .ok_or_else(|| Repr::UnknownKey(id).into())
     }
 }
 
@@ -279,7 +362,7 @@ impl Kms for LocalKms {
         let plain = open(&self.kek(key)?.key, aad, wrapped)?;
         let mut dek = Zeroizing::new([0u8; KEY_LEN]);
         if plain.len() != KEY_LEN {
-            return Err(VaultError::Decrypt);
+            return Err(Repr::Decrypt.into());
         }
         dek.copy_from_slice(&plain);
         Ok(dek)
@@ -318,13 +401,13 @@ fn binding(role: u8, purpose: &str, context: &[u8]) -> Result<Vec<u8>, VaultErro
             b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'.' | b'-')
         });
     if !ok {
-        return Err(VaultError::BadPurpose);
+        return Err(Repr::BadPurpose.into());
     }
     if context.len() > MAX_CONTEXT {
-        return Err(VaultError::ContextTooLong);
+        return Err(Repr::ContextTooLong.into());
     }
-    let plen = u16::try_from(purpose.len()).map_err(|_| VaultError::BadPurpose)?;
-    let clen = u32::try_from(context.len()).map_err(|_| VaultError::ContextTooLong)?;
+    let plen = u16::try_from(purpose.len()).map_err(|_| Repr::BadPurpose)?;
+    let clen = u32::try_from(context.len()).map_err(|_| Repr::ContextTooLong)?;
     let mut aad = Vec::with_capacity(DOMAIN.len() + 7 + purpose.len() + context.len());
     aad.extend_from_slice(DOMAIN);
     aad.push(role);
@@ -343,21 +426,19 @@ struct Parts<'a> {
 }
 
 fn parts(blob: &[u8]) -> Result<Parts<'_>, VaultError> {
-    let (&version, rest) = blob.split_first().ok_or(VaultError::Malformed)?;
+    let (&version, rest) = blob.split_first().ok_or(Repr::Malformed)?;
     if version != VERSION {
-        return Err(VaultError::Malformed);
+        return Err(Repr::Malformed.into());
     }
-    let (id, rest) = rest
-        .split_at_checked(KEY_ID_LEN)
-        .ok_or(VaultError::Malformed)?;
-    let (len, rest) = rest.split_at_checked(2).ok_or(VaultError::Malformed)?;
+    let (id, rest) = rest.split_at_checked(KEY_ID_LEN).ok_or(Repr::Malformed)?;
+    let (len, rest) = rest.split_at_checked(2).ok_or(Repr::Malformed)?;
     let len = usize::from(u16::from_be_bytes([
-        *len.first().ok_or(VaultError::Malformed)?,
-        *len.get(1).ok_or(VaultError::Malformed)?,
+        *len.first().ok_or(Repr::Malformed)?,
+        *len.get(1).ok_or(Repr::Malformed)?,
     ]));
-    let (wrapped, data) = rest.split_at_checked(len).ok_or(VaultError::Malformed)?;
+    let (wrapped, data) = rest.split_at_checked(len).ok_or(Repr::Malformed)?;
     if data.len() < NONCE_LEN + TAG_LEN {
-        return Err(VaultError::Malformed);
+        return Err(Repr::Malformed.into());
     }
     let mut key = [0u8; KEY_ID_LEN];
     key.copy_from_slice(id);
@@ -369,8 +450,7 @@ fn parts(blob: &[u8]) -> Result<Parts<'_>, VaultError> {
 }
 
 fn header(key: KeyId, wrapped: &[u8]) -> Result<Vec<u8>, VaultError> {
-    let len = u16::try_from(wrapped.len())
-        .map_err(|_| VaultError::Kms("wrapped key over 64 KiB".into()))?;
+    let len = u16::try_from(wrapped.len()).map_err(|_| VaultError::kms(WrappedKeyTooLong))?;
     let mut out = Vec::with_capacity(1 + KEY_ID_LEN + 2 + wrapped.len());
     out.push(VERSION);
     out.extend_from_slice(&key.0);
@@ -411,7 +491,7 @@ impl<K: Kms> Vault<K> {
     ///
     /// # Errors
     ///
-    /// [`VaultError::Malformed`].
+    /// [`VaultErrorKind::Malformed`].
     pub fn key_of(&self, blob: &[u8]) -> Result<KeyId, VaultError> {
         parts(blob).map(|p| p.key)
     }
@@ -420,7 +500,7 @@ impl<K: Kms> Vault<K> {
     ///
     /// # Errors
     ///
-    /// [`VaultError::BadPurpose`], [`VaultError::ContextTooLong`], or a KMS
+    /// [`VaultErrorKind::BadPurpose`], [`VaultErrorKind::ContextTooLong`], or a KMS
     /// or random-source error.
     pub fn seal(
         &self,
@@ -439,8 +519,8 @@ impl<K: Kms> Vault<K> {
     ///
     /// # Errors
     ///
-    /// [`VaultError::Malformed`], [`VaultError::UnknownKey`], or
-    /// [`VaultError::Decrypt`] for an altered blob or another purpose or
+    /// [`VaultErrorKind::Malformed`], [`VaultErrorKind::UnknownKey`], or
+    /// [`VaultErrorKind::Decrypt`] for an altered blob or another purpose or
     /// context.
     pub fn open(
         &self,

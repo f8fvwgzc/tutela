@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use tutela_contracts::claims::Audience;
 use tutela_contracts::encoding::MAX_JSON_INT;
+use tutela_contracts::error_chain;
 use tutela_contracts::keys::{
     ActionKey, ActionName, ActionRequirement, FieldKey, FieldName, ResourceType, UiKey,
 };
@@ -38,15 +39,6 @@ const MAX_ASSIGNABLE: usize = 16;
 const MAX_ISSUES: usize = 100;
 const MAX_GRANTS: usize = 10_000;
 const MAX_UI_ENTRIES: usize = 256;
-
-/// `error` and its sources on one line, joined by `: `. A key error's own
-/// text leaves its source out, so a plain `{e}` would drop the reason.
-fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
-    let texts: Vec<String> = std::iter::successors(Some(error), |e| e.source())
-        .map(ToString::to_string)
-        .collect();
-    texts.join(": ")
-}
 
 struct Ctx {
     issues: Vec<Issue>,

@@ -7,7 +7,7 @@
 
 use tokio_postgres::Client;
 
-use crate::StoreError;
+use crate::{DbResult as _, StoreError};
 
 /// The migrations, in order. Released migrations never change.
 const MIGRATIONS: &[(i32, &str, &str)] = &[
@@ -30,13 +30,14 @@ const LOCK_ID: i64 = 0x7475_7465_6c61_0001;
 ///
 /// # Errors
 ///
-/// [`StoreError::Db`] if a migration fails (nothing of it stays), and
-/// [`StoreError::SchemaTooNew`] if the database has a migration this build
-/// does not know.
+/// [`Database`](crate::StoreErrorKind::Database) if a migration fails (nothing
+/// of it stays), and [`SchemaTooNew`](crate::StoreErrorKind::SchemaTooNew) if
+/// the database has a migration this build does not know.
 pub async fn migrate(client: &mut Client) -> Result<Vec<i32>, StoreError> {
-    let tx = client.transaction().await?;
+    let tx = client.transaction().await.db()?;
     tx.execute("SELECT pg_advisory_xact_lock($1)", &[&LOCK_ID])
-        .await?;
+        .await
+        .db()?;
     tx.batch_execute(
         "CREATE SCHEMA IF NOT EXISTS tutela;
          CREATE TABLE IF NOT EXISTS tutela.schema_migration (
@@ -45,10 +46,12 @@ pub async fn migrate(client: &mut Client) -> Result<Vec<i32>, StoreError> {
              applied_at timestamptz NOT NULL DEFAULT now()
          );",
     )
-    .await?;
+    .await
+    .db()?;
     let have: Vec<i32> = tx
         .query("SELECT version FROM tutela.schema_migration", &[])
-        .await?
+        .await
+        .db()?
         .iter()
         .map(|r| r.get(0))
         .collect();
@@ -56,22 +59,23 @@ pub async fn migrate(client: &mut Client) -> Result<Vec<i32>, StoreError> {
         .iter()
         .find(|v| !MIGRATIONS.iter().any(|(m, _, _)| m == *v))
     {
-        return Err(StoreError::SchemaTooNew(v));
+        return Err(StoreError::schema_too_new(v));
     }
     let mut applied = Vec::new();
     for &(version, name, sql) in MIGRATIONS {
         if have.contains(&version) {
             continue;
         }
-        tx.batch_execute(sql).await?;
+        tx.batch_execute(sql).await.db()?;
         tx.execute(
             "INSERT INTO tutela.schema_migration (version, name) VALUES ($1, $2)",
             &[&version, &name],
         )
-        .await?;
+        .await
+        .db()?;
         applied.push(version);
     }
-    tx.commit().await?;
+    tx.commit().await.db()?;
     Ok(applied)
 }
 

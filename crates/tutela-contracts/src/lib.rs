@@ -57,9 +57,22 @@ pub struct FixedValueError {
     pub expected: &'static str,
 }
 
-/// `error` and its sources on one line, joined by `: `. An error's own text
-/// leaves its source out, so a plain `{e}` would drop the reason.
-fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
+/// `error` and its sources on one line, joined by `: `.
+///
+/// An error's own text leaves its source out, so a plain `{e}` drops the
+/// reason. `{e:#}` does not help either: it walks the chain of an
+/// `anyhow::Error`, and a `thiserror` type ignores it. Use this wherever an
+/// error from a Tutela crate is printed for a person.
+///
+/// ```
+/// use tutela_contracts::{error_chain, keys::FieldKey};
+///
+/// let e = FieldKey::parse("project.Name").unwrap_err();
+/// assert_eq!(e.to_string(), "invalid name");
+/// assert!(error_chain(&e).starts_with("invalid name: "));
+/// ```
+#[must_use]
+pub fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
     let texts: Vec<String> = std::iter::successors(Some(error), |e| e.source())
         .map(ToString::to_string)
         .collect();

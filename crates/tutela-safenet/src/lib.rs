@@ -47,47 +47,97 @@ pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// The default largest response body: 1 MiB.
 pub const DEFAULT_MAX_BODY: usize = 1024 * 1024;
 
-/// Why a request was refused or failed. The texts never hold a URL's
-/// credentials or a response body.
-#[derive(Debug, thiserror::Error)]
+/// What kind of failure a [`SafenetError`] is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
-pub enum SafenetError {
+pub enum SafenetErrorKind {
     /// The URL breaks a rule; the text says which.
+    Url,
+    /// The host is, or resolves to, an address that is not allowed.
+    /// [`SafenetError::host`] names it.
+    NotPublic,
+    /// The host has no addresses. [`SafenetError::host`] names it.
+    NoAddress,
+    /// A header that the caller may not set.
+    Header,
+    /// The response body is larger than the limit. [`SafenetError::limit`]
+    /// gives the limit.
+    TooLarge,
+    /// The request took longer than the timeout.
+    Timeout,
+    /// Connecting, TLS or HTTP failed. The reason is in `source()`.
+    Http,
+    /// The client or its TLS config could not be set up.
+    Setup,
+}
+
+/// Why a request was refused or failed. Branch on [`SafenetError::kind`].
+/// Neither the texts nor the `source()` chain hold a URL's credentials or a
+/// response body: the cause of [`SafenetErrorKind::Http`] has its URL
+/// removed.
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub struct SafenetError(#[from] Repr);
+
+#[derive(Debug, thiserror::Error)]
+enum Repr {
     #[error("refused URL: {0}")]
     Url(&'static str),
-    /// The host is, or resolves to, an address that is not allowed.
     #[error("refused: {host} is not a public address")]
-    NotPublic {
-        /// The host as written in the URL.
-        host: String,
-    },
-    /// The host has no addresses.
+    NotPublic { host: String },
     #[error("{host} does not resolve")]
-    NoAddress {
-        /// The host as written in the URL.
-        host: String,
-    },
-    /// A header that the caller may not set.
+    NoAddress { host: String },
     #[error("refused header: {0}")]
     Header(&'static str),
-    /// The response body is larger than the limit.
     #[error("the response body is larger than {limit} bytes")]
-    TooLarge {
-        /// The limit.
-        limit: usize,
-    },
-    /// The request took longer than the timeout.
+    TooLarge { limit: usize },
     #[error("the request timed out")]
     Timeout,
-    /// Connecting, TLS or HTTP failed.
-    #[error("the request failed: {0}")]
-    Http(String),
+    #[error("the request failed")]
+    Http(#[source] reqwest::Error),
+    #[error("the HTTP client setup failed")]
+    Setup(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
 }
 
 impl SafenetError {
+    /// What kind of failure this is.
+    #[must_use]
+    pub const fn kind(&self) -> SafenetErrorKind {
+        match self.0 {
+            Repr::Url(_) => SafenetErrorKind::Url,
+            Repr::NotPublic { .. } => SafenetErrorKind::NotPublic,
+            Repr::NoAddress { .. } => SafenetErrorKind::NoAddress,
+            Repr::Header(_) => SafenetErrorKind::Header,
+            Repr::TooLarge { .. } => SafenetErrorKind::TooLarge,
+            Repr::Timeout => SafenetErrorKind::Timeout,
+            Repr::Http(_) => SafenetErrorKind::Http,
+            Repr::Setup(_) => SafenetErrorKind::Setup,
+        }
+    }
+
+    /// The host as written in the URL, for
+    /// [`NotPublic`](SafenetErrorKind::NotPublic) and
+    /// [`NoAddress`](SafenetErrorKind::NoAddress).
+    #[must_use]
+    pub fn host(&self) -> Option<&str> {
+        match &self.0 {
+            Repr::NotPublic { host } | Repr::NoAddress { host } => Some(host),
+            _ => None,
+        }
+    }
+
+    /// The body limit of a [`TooLarge`](SafenetErrorKind::TooLarge) error.
+    #[must_use]
+    pub const fn limit(&self) -> Option<usize> {
+        match self.0 {
+            Repr::TooLarge { limit } => Some(limit),
+            _ => None,
+        }
+    }
+
     fn from_reqwest(e: reqwest::Error) -> Self {
         if e.is_timeout() {
-            return Self::Timeout;
+            return Repr::Timeout.into();
         }
         // The resolver's own refusal travels as the error source.
         let mut source = std::error::Error::source(&e);
@@ -97,7 +147,10 @@ impl SafenetError {
             }
             source = s.source();
         }
-        Self::Http(e.without_url().to_string())
+        // `reqwest::Error`'s own text leaves its cause out, so the reason
+        // (for example, connection refused) lives in `source()`. The URL
+        // goes: it may hold a path or a query that must not reach a log.
+        Repr::Http(e.without_url()).into()
     }
 }
 
@@ -144,7 +197,7 @@ impl Policy {
     ///
     /// # Errors
     ///
-    /// [`SafenetError::Url`] for an empty name or one with characters a host
+    /// [`SafenetErrorKind::Url`] for an empty name or one with characters a host
     /// name cannot have.
     pub fn allow_private_host(mut self, host: &str) -> Result<Self, SafenetError> {
         let h = host.trim().trim_end_matches('.').to_ascii_lowercase();
@@ -153,9 +206,7 @@ impl Policy {
             && h.bytes()
                 .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b':'));
         if !ok {
-            return Err(SafenetError::Url(
-                "an allowed private host is a plain host name or IP",
-            ));
+            return Err(Repr::Url("an allowed private host is a plain host name or IP").into());
         }
         self.private_hosts.insert(h);
         Ok(self)
@@ -205,14 +256,14 @@ fn is_localhost(host: &str) -> bool {
 ///
 /// # Errors
 ///
-/// [`SafenetError::Url`] for a URL that breaks a rule, or
-/// [`SafenetError::NotPublic`] for an IP literal that is not allowed.
+/// [`SafenetErrorKind::Url`] for a URL that breaks a rule, or
+/// [`SafenetErrorKind::NotPublic`] for an IP literal that is not allowed.
 pub fn check_url(raw: &str, policy: &Policy) -> Result<Url, SafenetError> {
-    let url = Url::parse(raw.trim()).map_err(|_| SafenetError::Url("the URL does not parse"))?;
+    let url = Url::parse(raw.trim()).map_err(|_| Repr::Url("the URL does not parse"))?;
     if !url.username().is_empty() || url.password().is_some() {
-        return Err(SafenetError::Url("a URL may not carry credentials"));
+        return Err(Repr::Url("a URL may not carry credentials").into());
     }
-    let host = url.host().ok_or(SafenetError::Url("the URL has no host"))?;
+    let host = url.host().ok_or(Repr::Url("the URL has no host"))?;
     let (ip, name) = match host {
         url::Host::Ipv4(v4) => (Some(IpAddr::V4(v4)), v4.to_string()),
         url::Host::Ipv6(v6) => (Some(IpAddr::V6(v6)), v6.to_string()),
@@ -223,19 +274,17 @@ pub fn check_url(raw: &str, policy: &Policy) -> Result<Url, SafenetError> {
         "https" => {}
         "http" if policy.dev_loopback && loopback => {}
         "http" => {
-            return Err(SafenetError::Url(
-                "http is allowed only to loopback in dev mode",
-            ));
+            return Err(Repr::Url("http is allowed only to loopback in dev mode").into());
         }
-        _ => return Err(SafenetError::Url("the scheme must be https")),
+        _ => return Err(Repr::Url("the scheme must be https").into()),
     }
     if let Some(ip) = ip
         && !policy.allows(&name, ip)
     {
-        return Err(SafenetError::NotPublic { host: name });
+        return Err(Repr::NotPublic { host: name }.into());
     }
     if ip.is_none() && is_localhost(&name) && !policy.dev_loopback {
-        return Err(SafenetError::NotPublic { host: name });
+        return Err(Repr::NotPublic { host: name }.into());
     }
     Ok(url)
 }
@@ -253,8 +302,8 @@ enum RefusedKind {
 impl RefusedKind {
     fn into_error(self) -> SafenetError {
         match self {
-            Self::NotPublic(host) => SafenetError::NotPublic { host },
-            Self::NoAddress(host) => SafenetError::NoAddress { host },
+            Self::NotPublic(host) => Repr::NotPublic { host }.into(),
+            Self::NoAddress(host) => Repr::NoAddress { host }.into(),
         }
     }
 }
@@ -388,7 +437,7 @@ const RESERVED_HEADERS: [&str; 8] = [
 ///
 /// # Errors
 ///
-/// [`SafenetError::Http`] if the platform verifier cannot be set up.
+/// [`SafenetErrorKind::Setup`] if the platform verifier cannot be set up.
 pub fn tls_client_config() -> Result<rustls::ClientConfig, SafenetError> {
     use rustls_platform_verifier::BuilderVerifierExt as _;
     rustls::ClientConfig::builder_with_provider(Arc::new(
@@ -397,7 +446,7 @@ pub fn tls_client_config() -> Result<rustls::ClientConfig, SafenetError> {
     .with_safe_default_protocol_versions()
     .and_then(|b| b.with_platform_verifier())
     .map(|b| b.with_no_client_auth())
-    .map_err(|e| SafenetError::Http(format!("TLS setup: {e}")))
+    .map_err(|e| Repr::Setup(Box::new(e)).into())
 }
 
 /// The SSRF-safe HTTP client.
@@ -418,7 +467,7 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// [`SafenetError::Http`] if the TLS setup fails.
+    /// [`SafenetErrorKind::Setup`] if the TLS setup fails.
     pub fn new(policy: Policy) -> Result<Self, SafenetError> {
         Self::with_lookup(policy, Arc::new(SystemLookup))
     }
@@ -428,7 +477,7 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// [`SafenetError::Http`] if the TLS setup fails.
+    /// [`SafenetErrorKind::Setup`] if the TLS setup fails.
     pub fn with_lookup(policy: Policy, lookup: Arc<dyn Lookup>) -> Result<Self, SafenetError> {
         let policy = Arc::new(policy);
         let http = reqwest::Client::builder()
@@ -443,7 +492,7 @@ impl Client {
                 policy: Arc::clone(&policy),
             }))
             .build()
-            .map_err(|e| SafenetError::Http(e.to_string()))?;
+            .map_err(|e| Repr::Setup(Box::new(e.without_url())))?;
         Ok(Self { http, policy })
     }
 
@@ -461,7 +510,7 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// [`SafenetError::Header`] for a header the caller may not set, or the
+    /// [`SafenetErrorKind::Header`] for a header the caller may not set, or the
     /// [`SafenetError`] that says why it was refused or failed.
     pub async fn post(
         &self,
@@ -474,18 +523,16 @@ impl Client {
         let mut map = HeaderMap::new();
         for (k, v) in headers {
             let name = HeaderName::from_bytes(k.trim().as_bytes())
-                .map_err(|_| SafenetError::Header("not a valid header name"))?;
+                .map_err(|_| Repr::Header("not a valid header name"))?;
             if RESERVED_HEADERS.contains(&name.as_str()) {
-                return Err(SafenetError::Header(
-                    "this header is set by the client or never sent",
-                ));
+                return Err(Repr::Header("this header is set by the client or never sent").into());
             }
-            let value = HeaderValue::from_str(v)
-                .map_err(|_| SafenetError::Header("not a valid header value"))?;
+            let value =
+                HeaderValue::from_str(v).map_err(|_| Repr::Header("not a valid header value"))?;
             map.append(name, value);
         }
         let content_type = HeaderValue::from_str(content_type)
-            .map_err(|_| SafenetError::Header("not a valid content type"))?;
+            .map_err(|_| Repr::Header("not a valid content type"))?;
         map.insert(reqwest::header::CONTENT_TYPE, content_type);
         self.send(self.http.post(url).headers(map).body(body)).await
     }
@@ -497,14 +544,14 @@ impl Client {
             .content_length()
             .is_some_and(|n| usize::try_from(n).map_or(true, |n| n > limit))
         {
-            return Err(SafenetError::TooLarge { limit });
+            return Err(Repr::TooLarge { limit }.into());
         }
         let status = resp.status().as_u16();
         let headers = resp.headers().clone();
         let mut body = Vec::new();
         while let Some(chunk) = resp.chunk().await.map_err(SafenetError::from_reqwest)? {
             if body.len() + chunk.len() > limit {
-                return Err(SafenetError::TooLarge { limit });
+                return Err(Repr::TooLarge { limit }.into());
             }
             body.extend_from_slice(&chunk);
         }

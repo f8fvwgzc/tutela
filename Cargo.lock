@@ -1897,6 +1897,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-postgres-rustls",
+ "tutela-contracts",
  "tutela-pdp",
  "tutela-safenet",
  "tutela-store",

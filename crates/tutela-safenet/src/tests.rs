@@ -251,7 +251,8 @@ async fn bodies_have_a_size_limit() {
         .get(&url)
         .await
         .unwrap_err();
-    assert!(matches!(e, SafenetError::TooLarge { limit: 1024 }), "{e}");
+    assert_eq!(e.kind(), SafenetErrorKind::TooLarge, "{e}");
+    assert_eq!(e.limit(), Some(1024));
     let r = dev_client(Policy::new().max_body(8192))
         .get(&url)
         .await
@@ -265,7 +266,7 @@ async fn bodies_have_a_size_limit() {
         .get(&format!("http://127.0.0.1:{port}/"))
         .await
         .unwrap_err();
-    assert!(matches!(e, SafenetError::TooLarge { .. }), "{e}");
+    assert_eq!(e.kind(), SafenetErrorKind::TooLarge, "{e}");
 }
 
 #[tokio::test]
@@ -275,7 +276,7 @@ async fn slow_servers_time_out() {
         .get(&format!("http://127.0.0.1:{port}/"))
         .await
         .unwrap_err();
-    assert!(matches!(e, SafenetError::Timeout), "{e}");
+    assert_eq!(e.kind(), SafenetErrorKind::Timeout, "{e}");
 }
 
 #[tokio::test]
@@ -297,7 +298,8 @@ async fn production_refuses_the_local_server_and_names_through_the_resolver() {
         .get(&format!("https://api.test:{port}/"))
         .await
         .unwrap_err();
-    assert!(matches!(e, SafenetError::NotPublic { .. }), "{e}");
+    assert_eq!(e.kind(), SafenetErrorKind::NotPublic, "{e}");
+    assert_eq!(e.host(), Some("api.test"));
     assert_eq!(fake.total.load(Ordering::SeqCst), 1);
 }
 
@@ -329,6 +331,40 @@ async fn callers_cannot_set_reserved_headers() {
             )
             .await
             .unwrap_err();
-        assert!(matches!(e, SafenetError::Header(_)), "{h}: {e}");
+        assert_eq!(e.kind(), SafenetErrorKind::Header, "{h}: {e}");
+    }
+}
+
+/// `reqwest::Error`'s own text leaves its cause out, so a text copied from
+/// it lost the reason (#43). The chain keeps the reason and still holds no
+/// part of the URL.
+#[tokio::test]
+async fn a_failed_connection_keeps_its_reason_and_drops_the_url() {
+    // A port nothing listens on.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let e = dev_client(Policy::new())
+        .get(&format!(
+            "http://127.0.0.1:{port}/private-path?token=sekrit"
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(e.kind(), SafenetErrorKind::Http, "{e}");
+    assert_eq!(e.to_string(), "the request failed");
+    let mut chain = vec![e.to_string()];
+    let mut source = std::error::Error::source(&e);
+    while let Some(s) = source {
+        chain.push(s.to_string());
+        source = s.source();
+    }
+    let text = chain.join(": ").to_ascii_lowercase();
+    assert!(text.contains("connection refused"), "{text}");
+    let debug = format!("{e:?}");
+    for shown in [&text, &debug] {
+        assert!(
+            !shown.contains("private-path") && !shown.contains("sekrit"),
+            "{shown}"
+        );
     }
 }
