@@ -24,6 +24,7 @@
 pub mod boundaries;
 pub mod grpc;
 pub mod http;
+pub mod lifecycle;
 pub mod principals;
 pub mod types;
 pub mod wire;

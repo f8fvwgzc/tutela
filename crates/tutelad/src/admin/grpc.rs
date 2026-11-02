@@ -8,8 +8,8 @@ use tonic::{Request, Response, Status};
 
 use super::observed;
 use super::wire::{
-    AgentsQuery, BoundaryBody, PrincipalBody, PrincipalOut, RegisterAgentBody, ResourceTypesBody,
-    ScopeRef, SetDisabledBody,
+    AgentsQuery, BoundaryBody, NameBody, OrgOut, PrincipalBody, PrincipalOut, RegisterAgentBody,
+    ResourceTypesBody, ScopeRef, SetDisabledBody, TenantOut,
 };
 use crate::api::AppState;
 use crate::authz::grpc::identity;
@@ -65,6 +65,28 @@ fn state_of(p: PrincipalOut) -> pb::PrincipalState {
         disabled: p.disabled,
         workload: p.workload.unwrap_or_default(),
         rev: p.rev.unwrap_or(0),
+    }
+}
+
+fn tenant_state(t: TenantOut) -> pb::TenantState {
+    pb::TenantState {
+        tid: t.tid,
+        iss: t.iss,
+        name: t.name.unwrap_or_default(),
+        created_at: t.created_at.unwrap_or_default(),
+        purge_after: t.purge_after.unwrap_or_default(),
+    }
+}
+
+fn org_state(o: OrgOut) -> pb::OrgState {
+    pb::OrgState {
+        org: o.org,
+        name: o.name.unwrap_or_default(),
+        created_at: o.created_at.unwrap_or_default(),
+        deleted_at: o.deleted_at.unwrap_or_default(),
+        purge_after: o.purge_after.unwrap_or_default(),
+        purged_at: o.purged_at.unwrap_or_default(),
+        rev: o.rev.unwrap_or(0),
     }
 }
 
@@ -318,5 +340,137 @@ impl Admin for AdminService {
         let out = super::boundaries::set_boundary(&self.state, &id, body).await;
         let rev = observed(&self.state, "set_boundary", out)?.rev;
         Ok(Response::new(pb::RevResponse { rev }))
+    }
+
+    async fn get_tenant(
+        &self,
+        req: Request<pb::GetTenantRequest>,
+    ) -> Result<Response<pb::TenantState>, Status> {
+        let id = identity(&req)?;
+        let out = super::lifecycle::tenant(&self.state, &id).await;
+        Ok(Response::new(tenant_state(observed(
+            &self.state,
+            "get_tenant",
+            out,
+        )?)))
+    }
+
+    async fn update_tenant(
+        &self,
+        req: Request<pb::UpdateTenantRequest>,
+    ) -> Result<Response<pb::TenantState>, Status> {
+        let id = identity(&req)?;
+        let body = NameBody {
+            name: some(req.into_inner().name),
+        };
+        let out = super::lifecycle::update_tenant(&self.state, &id, body).await;
+        Ok(Response::new(tenant_state(observed(
+            &self.state,
+            "update_tenant",
+            out,
+        )?)))
+    }
+
+    async fn delete_tenant(
+        &self,
+        req: Request<pb::DeleteTenantRequest>,
+    ) -> Result<Response<pb::TenantState>, Status> {
+        let id = identity(&req)?;
+        let out = super::lifecycle::delete_tenant(&self.state, &id).await;
+        Ok(Response::new(tenant_state(observed(
+            &self.state,
+            "delete_tenant",
+            out,
+        )?)))
+    }
+
+    async fn list_orgs(
+        &self,
+        req: Request<pb::ListOrgsRequest>,
+    ) -> Result<Response<pb::ListOrgsResponse>, Status> {
+        let id = identity(&req)?;
+        let out = observed(
+            &self.state,
+            "list_orgs",
+            super::lifecycle::orgs(&self.state, &id).await,
+        )?;
+        Ok(Response::new(pb::ListOrgsResponse {
+            orgs: out.orgs.into_iter().map(org_state).collect(),
+        }))
+    }
+
+    async fn create_org(
+        &self,
+        req: Request<pb::CreateOrgRequest>,
+    ) -> Result<Response<pb::OrgState>, Status> {
+        let id = identity(&req)?;
+        let body = NameBody {
+            name: some(req.into_inner().name),
+        };
+        let out = super::lifecycle::create_org(&self.state, &id, body).await;
+        Ok(Response::new(org_state(observed(
+            &self.state,
+            "create_org",
+            out,
+        )?)))
+    }
+
+    async fn update_org(
+        &self,
+        req: Request<pb::UpdateOrgRequest>,
+    ) -> Result<Response<pb::OrgState>, Status> {
+        let id = identity(&req)?;
+        let r = req.into_inner();
+        let body = NameBody { name: some(r.name) };
+        let out = super::lifecycle::update_org(&self.state, &id, &r.org, body).await;
+        Ok(Response::new(org_state(observed(
+            &self.state,
+            "update_org",
+            out,
+        )?)))
+    }
+
+    async fn delete_org(
+        &self,
+        req: Request<pb::OrgRequest>,
+    ) -> Result<Response<pb::OrgState>, Status> {
+        let id = identity(&req)?;
+        let org = req.into_inner().org;
+        let out = super::lifecycle::delete_org(&self.state, &id, &org).await;
+        Ok(Response::new(org_state(observed(
+            &self.state,
+            "delete_org",
+            out,
+        )?)))
+    }
+
+    async fn restore_org(
+        &self,
+        req: Request<pb::OrgRequest>,
+    ) -> Result<Response<pb::OrgState>, Status> {
+        let id = identity(&req)?;
+        let org = req.into_inner().org;
+        let out = super::lifecycle::restore_org(&self.state, &id, &org).await;
+        Ok(Response::new(org_state(observed(
+            &self.state,
+            "restore_org",
+            out,
+        )?)))
+    }
+
+    async fn delete_user(
+        &self,
+        req: Request<pb::PrincipalRequest>,
+    ) -> Result<Response<pb::PrincipalState>, Status> {
+        let id = identity(&req)?;
+        let body = PrincipalBody {
+            principal: some(req.into_inner().principal),
+        };
+        let out = super::lifecycle::delete_user(&self.state, &id, body).await;
+        Ok(Response::new(state_of(observed(
+            &self.state,
+            "delete_user",
+            out,
+        )?)))
     }
 }

@@ -184,7 +184,7 @@ pub struct VersionOut {
     pub source: Option<String>,
 }
 
-fn time(t: SystemTime) -> Option<String> {
+pub(crate) fn time(t: SystemTime) -> Option<String> {
     let ms = t.duration_since(SystemTime::UNIX_EPOCH).ok()?.as_millis();
     Timestamp::from_unix_millis(i64::try_from(ms).ok()?)
         .ok()

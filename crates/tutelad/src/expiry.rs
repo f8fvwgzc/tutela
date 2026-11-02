@@ -13,7 +13,7 @@ use std::time::Duration;
 use tokio::sync::watch;
 
 use tutela_contracts::audit::{Actor, AuditDraft};
-use tutela_contracts::tenant::TenantKey;
+use tutela_contracts::tenant::{Issuer, TenantKey};
 use tutela_pdp::Subject;
 
 use crate::audit::{BuildError, Record, system};
@@ -109,8 +109,79 @@ pub async fn sweep(db: &Db, metrics: &Metrics) -> Result<Sweep, DbError> {
     Ok(out)
 }
 
-/// Sweeps every `every` until `stop` turns true.
-pub async fn run(db: Db, metrics: Arc<Metrics>, every: Duration, mut stop: watch::Receiver<bool>) {
+/// What one purge did (ADR-0041).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Purge {
+    /// Soft-deleted tenants whose data was removed.
+    pub tenants: usize,
+    /// Soft-deleted orgs whose data was removed.
+    pub orgs: usize,
+    /// Tenants whose purge failed. The others still ran.
+    pub failed: usize,
+}
+
+/// One purge: every soft-deleted tenant and org whose grace has passed
+/// loses its data; audit chains stay. A tenant's purge is also recorded in
+/// the deployment's own chain, whose tenant key names `own`. Several
+/// replicas may purge at once; a tenant is purged once.
+///
+/// # Errors
+///
+/// When no connection can be had, or the tenants cannot be listed.
+pub async fn purge(db: &Db, metrics: &Metrics, own: &Issuer) -> Result<Purge, DbError> {
+    let mut conn = db.conn().await?;
+    let mut out = Purge::default();
+    for key in conn.due_tenant_purges().await? {
+        match conn.purge_tenant(&key).await {
+            Ok(false) => {}
+            Ok(true) => {
+                out.tenants += 1;
+                metrics.count_purge("tenant", true);
+                tracing::info!(tid = %key.tid, "a soft-deleted tenant was purged");
+                let record = crate::lifecycle::deployment_record(
+                    own,
+                    "tutela_tenant:purge",
+                    &key,
+                    Actor::new(system()?),
+                )?;
+                if let Err(e) = conn.deployment_records(vec![record]).await {
+                    metrics.count_audit("write", "error");
+                    tracing::error!(error = %e, "a purge could not be recorded in the deployment's chain");
+                }
+            }
+            Err(e) => {
+                out.failed += 1;
+                metrics.count_purge("tenant", false);
+                tracing::error!(tid = %key.tid, error = %e, kind = ?e.store_kind(), "a tenant's purge failed");
+            }
+        }
+    }
+    for key in conn.tenants().await? {
+        match conn.purge_orgs(&key).await {
+            Ok(n) => {
+                out.orgs += n;
+                for _ in 0..n {
+                    metrics.count_purge("org", true);
+                }
+            }
+            Err(e) => {
+                out.failed += 1;
+                metrics.count_purge("org", false);
+                tracing::error!(tid = %key.tid, error = %e, kind = ?e.store_kind(), "an org's purge failed");
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Sweeps, then purges, every `every` until `stop` turns true.
+pub async fn run(
+    db: Db,
+    metrics: Arc<Metrics>,
+    every: Duration,
+    own: Issuer,
+    mut stop: watch::Receiver<bool>,
+) {
     loop {
         tokio::select! {
             () = tokio::time::sleep(every) => {}
@@ -122,6 +193,9 @@ pub async fn run(db: Db, metrics: Arc<Metrics>, every: Duration, mut stop: watch
                 metrics.count_sweep(false);
                 tracing::warn!(error = %e, "an expiry sweep did not run");
             }
+        }
+        if let Err(e) = purge(&db, &metrics, &own).await {
+            tracing::warn!(error = %e, "a purge did not run");
         }
     }
 }

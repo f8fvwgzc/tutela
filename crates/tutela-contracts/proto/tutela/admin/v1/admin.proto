@@ -57,6 +57,27 @@ service Admin {
 
   // PUT /v1/admin/boundaries: the move and link rules of a registered scope.
   rpc SetBoundary(SetBoundaryRequest) returns (RevResponse);
+
+  // ---------- The tenant, its orgs, its people (CONTRACTS.md 7.13.5) ----------
+
+  // GET /v1/admin/tenant.
+  rpc GetTenant(GetTenantRequest) returns (TenantState);
+  // PATCH /v1/admin/tenant: its display name.
+  rpc UpdateTenant(UpdateTenantRequest) returns (TenantState);
+  // DELETE /v1/admin/tenant: a soft delete; the data is purged after the grace.
+  rpc DeleteTenant(DeleteTenantRequest) returns (TenantState);
+  // GET /v1/admin/orgs.
+  rpc ListOrgs(ListOrgsRequest) returns (ListOrgsResponse);
+  // POST /v1/admin/orgs: a new org; the caller becomes its owner.
+  rpc CreateOrg(CreateOrgRequest) returns (OrgState);
+  // PATCH /v1/admin/orgs/{org}: its display name.
+  rpc UpdateOrg(UpdateOrgRequest) returns (OrgState);
+  // DELETE /v1/admin/orgs/{org}: a soft delete.
+  rpc DeleteOrg(OrgRequest) returns (OrgState);
+  // POST /v1/admin/orgs/{org}/restore: undoes a soft delete before the purge.
+  rpc RestoreOrg(OrgRequest) returns (OrgState);
+  // POST /v1/admin/users/delete: deletes a person of the tenant.
+  rpc DeleteUser(PrincipalRequest) returns (PrincipalState);
 }
 
 // The JSON answer of the HTTP route, as text.
@@ -168,4 +189,54 @@ message SetBoundaryRequest {
   string on_looser = 4;
   // `any`, `team` or `none`. Empty: not set.
   string links_from = 5;
+}
+
+message GetTenantRequest {}
+
+message UpdateTenantRequest {
+  // Empty: no name.
+  string name = 1;
+}
+
+message DeleteTenantRequest {}
+
+// Times are RFC 3339 text with 3 fractional digits; empty when not set.
+message TenantState {
+  string tid = 1;
+  string iss = 2;
+  string name = 3;
+  string created_at = 4;
+  string purge_after = 5;
+}
+
+message ListOrgsRequest {}
+
+message OrgState {
+  string org = 1;
+  string name = 2;
+  string created_at = 3;
+  string deleted_at = 4;
+  string purge_after = 5;
+  string purged_at = 6;
+  // The tenant revision after a change that bumped it; else 0.
+  uint64 rev = 7;
+}
+
+message ListOrgsResponse {
+  repeated OrgState orgs = 1;
+}
+
+message CreateOrgRequest {
+  // Empty: no name.
+  string name = 1;
+}
+
+message UpdateOrgRequest {
+  string org = 1;
+  // Empty: no name.
+  string name = 2;
+}
+
+message OrgRequest {
+  string org = 1;
 }

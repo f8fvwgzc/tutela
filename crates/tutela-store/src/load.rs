@@ -133,8 +133,9 @@ pub async fn rev(tx: &Transaction<'_>, tenant: &TenantKey) -> Result<u64, StoreE
 pub async fn load(tx: &Transaction<'_>, tenant: &TenantKey) -> Result<TenantBundle, StoreError> {
     enter(tx, tenant).await?;
     let rev = read_rev(tx, tenant, true).await?;
-    let (data, next_expiry) = tenant_view(tx, tenant).await?;
-    let paths = scope_paths(tx, tenant).await?;
+    let gone = deleted_scopes(tx, tenant).await?;
+    let (data, next_expiry) = tenant_view(tx, tenant, &gone).await?;
+    let paths = scope_paths(tx, tenant, &gone).await?;
     let read_at = tx
         .query_one("SELECT clock_timestamp()", &[])
         .await
@@ -170,20 +171,68 @@ pub(crate) async fn tenant_data(
     tx: &Transaction<'_>,
     tenant: &TenantKey,
 ) -> Result<TenantData, StoreError> {
-    Ok(tenant_view(tx, tenant).await?.0)
+    let gone = deleted_scopes(tx, tenant).await?;
+    Ok(tenant_view(tx, tenant, &gone).await?.0)
 }
 
-/// The tenant data, and the earliest expiry in it.
+/// The scopes of the tenant's soft-deleted orgs (ADR-0041): each such org,
+/// and every registered scope whose path ends at it. They are out of every
+/// decision from the revision that deleted the org: the load leaves out
+/// their assignments, field rules, boundary rules and paths.
+async fn deleted_scopes(
+    tx: &Transaction<'_>,
+    tenant: &TenantKey,
+) -> Result<HashSet<(String, String)>, StoreError> {
+    let tid = tenant.tid.to_string();
+    let orgs: Vec<String> = tx
+        .query(
+            "SELECT org_id FROM tutela.org WHERE tenant_id = $1 AND deleted_at IS NOT NULL",
+            &[&tid],
+        )
+        .await
+        .db()?
+        .iter()
+        .map(|r| r.try_get(0))
+        .collect::<Result<_, _>>()
+        .db()?;
+    let mut gone = HashSet::new();
+    if orgs.is_empty() {
+        return Ok(gone);
+    }
+    let tags: Vec<String> = orgs.iter().map(|o| format!("org:{o}")).collect();
+    for r in tx
+        .query(
+            "SELECT scope_kind, scope_id FROM tutela.scope_path \
+             WHERE tenant_id = $1 AND ancestors[cardinality(ancestors)] = ANY($2)",
+            &[&tid, &tags],
+        )
+        .await
+        .db()?
+    {
+        gone.insert((r.try_get(0).db()?, r.try_get(1).db()?));
+    }
+    gone.extend(orgs.into_iter().map(|o| ("org".to_owned(), o)));
+    Ok(gone)
+}
+
+/// `true` for a scope of a soft-deleted org.
+fn is_gone(gone: &HashSet<(String, String)>, kind: &str, id: &str) -> bool {
+    !gone.is_empty() && gone.contains(&(kind.to_owned(), id.to_owned()))
+}
+
+/// The tenant data, and the earliest expiry in it, without what `gone`
+/// names.
 async fn tenant_view(
     tx: &Transaction<'_>,
     tenant: &TenantKey,
+    gone: &HashSet<(String, String)>,
 ) -> Result<(TenantData, Option<SystemTime>), StoreError> {
     let tid = tenant.tid.to_string();
     let mut data = TenantData::default();
 
     for r in tx
         .query(
-            "SELECT org_id FROM tutela.org WHERE tenant_id = $1",
+            "SELECT org_id FROM tutela.org WHERE tenant_id = $1 AND deleted_at IS NULL",
             &[&tid],
         )
         .await
@@ -252,6 +301,9 @@ async fn tenant_view(
         .await
         .db()?
     {
+        if is_gone(gone, r.try_get(3).db()?, r.try_get(4).db()?) {
+            continue;
+        }
         let expires: Option<SystemTime> = r.try_get(6).db()?;
         next_expiry = match (next_expiry, expires) {
             (Some(a), Some(b)) => Some(a.min(b)),
@@ -291,6 +343,9 @@ async fn tenant_view(
         .await
         .db()?
     {
+        if is_gone(gone, r.try_get(0).db()?, r.try_get(1).db()?) {
+            continue;
+        }
         let scope = entry(r.try_get(0).db()?, r.try_get(1).db()?)?;
         if r.try_get::<_, bool>(2).db()? {
             private.insert(scope.clone());
@@ -317,6 +372,9 @@ async fn tenant_view(
         .await
         .db()?
     {
+        if is_gone(gone, r.try_get(1).db()?, r.try_get(2).db()?) {
+            continue;
+        }
         let role: Option<&str> = r.try_get(4).db()?;
         data.field_rules.push(ScopeFieldRule {
             id: r
@@ -376,6 +434,7 @@ fn links_from(text: Option<&str>) -> Result<Option<LinksFrom>, StoreError> {
 async fn scope_paths(
     tx: &Transaction<'_>,
     tenant: &TenantKey,
+    gone: &HashSet<(String, String)>,
 ) -> Result<ScopePathSnapshot, StoreError> {
     let mut paths = HashMap::new();
     for r in tx
@@ -386,6 +445,9 @@ async fn scope_paths(
         .await
         .db()?
     {
+        if is_gone(gone, r.try_get(0).db()?, r.try_get(1).db()?) {
+            continue;
+        }
         let ancestors: Vec<&str> = r.try_get(2).db()?;
         let path = ancestors
             .into_iter()

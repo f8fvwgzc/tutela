@@ -954,17 +954,24 @@ async fn require_scope(
             .ok_or(StoreError::invalid("an org scope needs an org id"))?;
         let found = tx
             .query_opt(
-                "SELECT 1 FROM tutela.org WHERE tenant_id = $1 AND org_id = $2",
+                "SELECT 1 FROM tutela.org WHERE tenant_id = $1 AND org_id = $2 \
+                 AND deleted_at IS NULL",
                 &[&tid, &org.to_string()],
             )
             .await
             .db()?;
         return found.map(|_| ()).ok_or(StoreError::not_found("org"));
     }
-    path_of(tx, tid, scope)
+    let path = path_of(tx, tid, scope)
         .await?
-        .map(|_| ())
-        .ok_or(StoreError::not_found("registered scope"))
+        .ok_or(StoreError::not_found("registered scope"))?;
+    // A scope of a soft-deleted org takes no new data (ADR-0041).
+    match path.last() {
+        Some(org) => Box::pin(require_scope(tx, tid, org))
+            .await
+            .map_err(|_| StoreError::not_found("registered scope")),
+        None => Err(StoreError::corrupt("scope path")),
+    }
 }
 
 /// The rules of a scope path (CONTRACTS.md 6.5): 1 to 32 entries, nearest

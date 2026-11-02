@@ -193,3 +193,22 @@ D07: caught by 1 test(s) - a pushed type changes what the model has
       admin::types::tests::a_push_that_changes_an_entry_is_refused
 D08: caught by 1 test(s) - registering an agent needs no admin key
       tm01_the_admin_api_takes_a_persons_admin_token_and_a_services_own_token
+
+G01: caught by 1 test(s) - a soft-deleted tenant still answers
+      a_soft_deleted_tenant_answers_nothing_and_keeps_its_audit_chain
+G02: caught by 1 test(s) - a purge deletes the audit chain
+      a_soft_deleted_tenant_answers_nothing_and_keeps_its_audit_chain
+G03: caught by 1 test(s) - the jobs still visit a soft-deleted tenant
+      a_soft_deleted_tenant_answers_nothing_and_keeps_its_audit_chain
+G04: caught by 1 test(s) - a tenant's deletion leaves no audit record
+      a_soft_deleted_tenant_answers_nothing_and_keeps_its_audit_chain
+G05: caught by 1 test(s) - new data is written under a soft-deleted org
+      orgs_are_made_renamed_deleted_restored_and_purged
+G06: caught by 1 test(s) - a new org gets no owner, so its tenant has no admin
+      orgs_are_made_renamed_deleted_restored_and_purged
+G07: caught by 1 test(s) - a deleted person keeps its upstream account
+      deleting_a_person_removes_its_access_and_its_tokens
+G08: caught by 1 test(s) - an org is renamed without manage_access on it
+      orgs_are_made_renamed_deleted_restored_and_purged
+G09: caught by 1 test(s) - the service role updates any tenant of the directory
+      tm14_the_service_role_changes_only_the_directory_row_of_its_tenant

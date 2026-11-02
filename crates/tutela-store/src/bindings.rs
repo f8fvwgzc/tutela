@@ -424,7 +424,7 @@ pub async fn scopes_below(
 /// [`Corrupt`](crate::StoreErrorKind::Corrupt) or a database error.
 pub async fn tenants(tx: &Transaction<'_>) -> Result<Vec<TenantKey>, StoreError> {
     tx.query(
-        "SELECT tenant_id, iss FROM tutela.tenant ORDER BY tenant_id",
+        "SELECT tenant_id, iss FROM tutela.tenant WHERE deleted_at IS NULL ORDER BY tenant_id",
         &[],
     )
     .await

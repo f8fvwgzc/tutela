@@ -241,14 +241,17 @@ pub async fn set_disabled(
              disabled_at = coalesce(tutela.principal.disabled_at, now()) \
          RETURNING epoch"
     } else {
+        // A deleted person stays disabled (ADR-0041).
         "INSERT INTO tutela.principal (tenant_id, principal) VALUES ($1, $2) \
          ON CONFLICT (tenant_id, principal) DO UPDATE SET disabled_at = NULL \
+         WHERE tutela.principal.deleted_at IS NULL \
          RETURNING epoch"
     };
     let r = tx
-        .query_one(sql, &[&tenant.tid.to_string(), &principal.to_string()])
+        .query_opt(sql, &[&tenant.tid.to_string(), &principal.to_string()])
         .await
-        .db()?;
+        .db()?
+        .ok_or(StoreError::invalid("a deleted principal is never enabled"))?;
     let epoch: i64 = r.try_get(0).db()?;
     let epoch = u64::try_from(epoch).map_err(|_| StoreError::corrupt("epoch"))?;
     let mut out = Vec::new();

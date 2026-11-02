@@ -322,6 +322,7 @@ pub fn config(database_url: &str, trust: TrustFile) -> Config {
             ..tutelad::stream::StreamSettings::default()
         },
         bundle_ttl: Duration::from_secs(300),
+        purge_grace: Duration::from_secs(30 * 24 * 3600),
         ledger: None,
     }
 }
@@ -398,6 +399,8 @@ pub fn state_with(config: &Config, issuer: &Issuer, delegation: bool) -> AppStat
         db,
         metrics,
         bundle_ttl: config.bundle_ttl,
+        purge_grace: config.purge_grace,
+        own: config.issuer.clone(),
         stopping: Arc::new(AtomicBool::new(false)),
         dev_mode: config.dev_mode,
         impact_work: config.impact_work,

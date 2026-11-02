@@ -40,6 +40,7 @@ pub struct Server {
     key_refresh: Duration,
     relay: Option<(crate::webhooks::Relay, Duration)>,
     forwarder: Option<crate::ledger::Forwarder>,
+    own: tutela_contracts::tenant::Issuer,
 }
 
 impl Server {
@@ -126,6 +127,7 @@ impl Server {
             stop_timeout: config.shutdown_timeout,
             sweep_every: config.expiry_sweep,
             key_refresh: config.key_refresh,
+            own: config.issuer.clone(),
         })
     }
 
@@ -174,6 +176,7 @@ impl Server {
             key_refresh,
             relay,
             forwarder,
+            own,
         } = self;
         let (stop_api, api_stopped) = watch::channel(false);
         let (stop_ops, ops_stopped) = watch::channel(false);
@@ -184,6 +187,7 @@ impl Server {
             state.db.clone(),
             Arc::clone(&state.metrics),
             sweep_every,
+            own,
             jobs_stopped.clone(),
         ));
         let forward_job = forwarder.map(|fwd| {
@@ -310,6 +314,8 @@ pub fn state(config: &Config) -> anyhow::Result<AppState> {
         dev_mode: config.dev_mode,
         impact_work: config.impact_work,
         bundle_ttl: config.bundle_ttl,
+        purge_grace: config.purge_grace,
+        own: config.issuer.clone(),
     })
 }
 

@@ -128,3 +128,78 @@ pub struct ResourceTypesBody {
     /// The active version the caller compared against.
     pub expected_version: Option<i64>,
 }
+
+/// `PATCH /v1/admin/tenant` and the body of a new or renamed org.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NameBody {
+    /// The display name, 1 to 200 characters. Missing or `null` clears it.
+    pub name: Option<String>,
+}
+
+/// A tenant, as its admin sees it.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TenantOut {
+    /// `ten_<uuidv7>`.
+    pub tid: String,
+    /// The issuer of its tenant key.
+    pub iss: String,
+    /// Its display name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// When it was made.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    /// After a soft delete: when its data is purged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub purge_after: Option<String>,
+}
+
+/// One org of the tenant.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OrgOut {
+    /// `org_<uuidv7>`.
+    pub org: String,
+    /// Its display name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// When it was made.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    /// When it was soft-deleted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<String>,
+    /// When its data is purged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub purge_after: Option<String>,
+    /// When its data was purged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub purged_at: Option<String>,
+    /// The tenant revision after a change that bumped it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rev: Option<u64>,
+}
+
+impl OrgOut {
+    /// The answer for `o`, after a change to revision `rev`.
+    #[must_use]
+    pub fn of(o: &tutela_store::OrgInfo, rev: Option<u64>) -> Self {
+        use crate::models::wire::time;
+        Self {
+            org: o.org.to_string(),
+            name: o.name.clone(),
+            created_at: time(o.created_at),
+            deleted_at: o.deleted_at.and_then(time),
+            purge_after: o.purge_after.and_then(time),
+            purged_at: o.purged_at.and_then(time),
+            rev,
+        }
+    }
+}
+
+/// The tenant's orgs.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OrgsOut {
+    /// Oldest first, the deleted ones too.
+    pub orgs: Vec<OrgOut>,
+}
