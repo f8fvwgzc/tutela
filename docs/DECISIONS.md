@@ -39,6 +39,7 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0020](#adr-0020-the-bindings-store-closures-at-read-time-and-assignment-expiry) | The bindings store: closures at read time, and assignment expiry | Accepted |
 | [0021](#adr-0021-the-check-api-one-code-path-a-snapshot-per-tenant-and-a-revision-lease) | The check API: one code path, a snapshot per tenant, and a revision lease | Accepted |
 | [0022](#adr-0022-the-searches-live-next-to-the-evaluator) | The searches live next to the evaluator | Accepted |
+| [0023](#adr-0023-the-permission-map-and-a-tag-that-covers-the-answer) | The permission map, and a tag that covers the answer | Accepted |
 
 ---
 
@@ -911,3 +912,28 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 - **Call `check` for each known resource with null fields.** Under `not`, a null makes a comparison true, so it would name a resource that its real values deny.
 - **Put search in `tutelad`.** It would need the private index, and the property test could not see it.
 - **A `total` in the page.** It needs the whole list on every page, which is the cost the scan bound exists to avoid.
+
+---
+
+## ADR-0023: The permission map, and a tag that covers the answer
+
+**Status:** Accepted, 2026-11-02. Built in Phase B, part 2a.
+
+**Context.** CONTRACTS.md 7.5 said the ETag covers the revision, the subject and the request body. ADR-0020 came later: an assignment can expire before the sweep moves the revision, so two answers at one revision can differ. A tag of (revision, subject, request) would then give a 304 to a UI that still shows a button the person has lost.
+
+**Decision.**
+
+1. **The answer is worked out on every call, and it is part of the tag.** A hash of the tenant, the revision, the model digest, the subject, the actors, the request and the map itself. The work is a few `check` calls in memory, with no database read, so a 304 saves bandwidth, not safety. The revision and the model stay in the tag even though the answer covers most of what they change: the contract wants a new tag at a new revision, and a client can see that one moved.
+2. **The caller is judged first**, so a 304 cannot confirm a map to someone who may not ask for it.
+3. **`*` never gives a 304.** RFC 9110 lets it match any current answer, and the caller would keep a map it may not hold.
+4. **Each mode comes from `check`**, one call per action, so the map cannot say more than `check` does. A UI key about another type cannot be decided on this resource, so it counts as denied. `readonly` with a field at `none` becomes `hide`, because `readonly` shows the value.
+5. **`resource.attrs` is added to 7.5.** `check` needs every `grants_access` field, and a request without one is invalid; a null would be a guess (ADR-0013 item 16). A field-free type needs none.
+6. **A UI key that is not in the model is 400**, like an unknown action, and the UI falls back to denying.
+
+**Consequences.**
+- The map is a UI hint. A route still checks again, so `ActionClass::Read` is enough here, whatever the actions in it are.
+- A client that polls pays for the evaluation each time. That is in-memory work, and the response body is what the tag saves.
+
+**Alternatives considered.**
+- **A tag of (revision, subject, request), and force a sweep at each expiry.** A 304 would hang on a timer, and on the sweep having run.
+- **Add the next expiry to the tag.** It covers this case but not the next one; hashing the answer covers them all.

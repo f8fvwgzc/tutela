@@ -147,7 +147,7 @@ Dependencies point down only: products → onto-intelli / texc-symphony → atta
 
 Phase A, Rust side: built, and tagged as the pre-release `v0.1.0` (items 1–9). Phase A is **not done**: fuzzing, the JS and Python SDKs and the template product are open. The list-query latency gate passes ([ADR-0016](docs/DECISIONS.md#adr-0016-the-list-query-grouped-terms-hashed-scope-tests-and-lower-filter-limits)). Details: [ROADMAP.md, Phase A](docs/ROADMAP.md#phase-a-packages-library-mode).
 
-Phase B: part 1 of 4 and the evaluation and search APIs of part 2 are merged. Phase B is **not done**: there is no permission map, token exchange, audit log, Console or Helm chart yet, and the service gate does not pass yet. GitHub Actions has not run (account billing), so every merge was gated by local `make`. Details: [ROADMAP.md, Phase B status](docs/ROADMAP.md#phase-b-status).
+Phase B: part 1 of 4 and the evaluation API, search API and permission map of part 2 are merged. Phase B is **not done**: there is no token exchange, audit log, Console or Helm chart yet, and the service gate does not pass yet. GitHub Actions has not run (account billing), so every merge was gated by local `make`. Details: [ROADMAP.md, Phase B status](docs/ROADMAP.md#phase-b-status).
 
 | Item | State |
 |------|-------|

@@ -246,6 +246,7 @@ pub fn api_router(state: &AppState, grpc: Router, request_timeout: Duration) -> 
             "/access/v1/search/subject",
             post(authz::http::search_subject),
         )
+        .route("/v1/authz/permissions", post(authz::http::permissions))
         .route(
             "/.well-known/authzen-configuration",
             get(authz::http::metadata),

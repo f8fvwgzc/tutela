@@ -254,7 +254,7 @@ The rest of this list is planned.
 - **Check API** (AuthZEN 1.0 shape): `POST /access/v1/evaluation`,
   `/access/v1/evaluations` (up to 200 items), `/access/v1/search/resource`,
   `/access/v1/search/subject`; gRPC `tutela.authz.v1`. Built.
-- **UI permission map**: `POST /v1/authz/permissions` (ETag / 304).
+- **UI permission map**: `POST /v1/authz/permissions` (ETag / 304). Built.
 - **Admin API** `tutela.admin.v1`: tenants, orgs, members, groups, roles,
   bindings, resource types, apps, keys, agent principals.
 - Model versioning, impact report, explain and simulate, optional two-person
