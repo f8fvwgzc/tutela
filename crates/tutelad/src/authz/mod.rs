@@ -63,7 +63,7 @@ fn may_ask(id: &Identity, subject: &Principal, actors: &[Principal]) -> Result<(
 }
 
 /// `true` for a token of a service (`sa`, `key`).
-fn is_service(id: &Identity) -> bool {
+pub(crate) fn is_service(id: &Identity) -> bool {
     matches!(
         id,
         Identity::Access(c) if matches!(
@@ -113,7 +113,7 @@ impl From<Refused> for Problem {
 /// CONTRACTS.md 6.8: the bundle errors and a scope that cannot be placed are
 /// 503, the rest 400. The detail is the evaluator's own short text, which
 /// holds no field values.
-fn pdp_problem(e: &PdpError) -> Problem {
+pub(crate) fn pdp_problem(e: &PdpError) -> Problem {
     match e {
         PdpError::StaleBundle { .. } => Problem::stale("stale"),
         PdpError::ExpiredBundle => Problem::stale("expired"),

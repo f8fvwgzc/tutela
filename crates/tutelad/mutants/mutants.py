@@ -75,8 +75,15 @@ TELEMETRY_SRC = "crates/tutelad/src/telemetry.rs"
 SERVER_SRC = "crates/tutelad/src/server.rs"
 AUDIT_CHECKS = ["-p", "tutelad", "--test", "audit_checks"]
 HA_BUNDLE = ["-p", "tutelad", "--test", "ha", "tm13_an_offline"]
+ADMIN_BINDINGS_SRC = "crates/tutelad/src/admin/bindings.rs"
+ADMIN_SCOPES_SRC = "crates/tutelad/src/admin/scopes.rs"
+ADMIN_LOCKED_SRC = "crates/tutelad/src/admin/locked.rs"
+PDP_GRANT = "crates/tutela-pdp/src/grant.rs"
+BINDINGS = ["-p", "tutelad", "--test", "admin_bindings"]
+PDP_GRANTS = ["-p", "tutela-pdp", "--lib", "tests_grant"]
 
 # (id, file, what it breaks, old text, new text, cargo test arguments).
+# M01-M14 are part 4a's (#107): scopes, role assignments and groups.
 # `old` must occur once.
 #
 # Not every guard can be a mutant. `models::principal` refuses agents, and
@@ -87,6 +94,62 @@ HA_BUNDLE = ["-p", "tutelad", "--test", "ha", "tm13_an_offline"]
 # it, so no agent can be found for one (an equivalent mutant, run and kept
 # out of this list).
 MUTANTS = [
+    ("M01", ADMIN_SCOPES_SRC, "a move over the admin API skips write_check's verdict",
+     "    if verdict.effect != Effect::Allow {\n",
+     "    if false && verdict.effect != Effect::Allow {\n",
+     BINDINGS),
+    ("M02", ADMIN_BINDINGS_SRC, "an assignment needs no manage_access on its scope",
+     "    check_role(&before.model, &role, &subject)?;\n    let decision = locked::decide(&before, tenant.key(), &who, &at, \"manage_access\")?;\n    if !decision.is_allowed() {\n",
+     "    check_role(&before.model, &role, &subject)?;\n    let decision = locked::decide(&before, tenant.key(), &who, &at, \"manage_access\")?;\n    if false && !decision.is_allowed() {\n",
+     BINDINGS),
+    ("M03", ADMIN_BINDINGS_SRC, "a change may give more than its caller holds",
+     "    if !report.no_impact() {\n",
+     "    if false && !report.no_impact() {\n",
+     BINDINGS),
+    ("M04", PDP_GRANT, "the granter's holding is read after the change",
+     "        let g = resolve_unseen(ctx0, w0, t, granter);\n        let held = Seat::unseen(ctx0, r0, &g);\n",
+     "        let g = resolve_unseen(ctx1, w1, t, granter);\n        let held = Seat::unseen(ctx1, r1, &g);\n",
+     PDP_GRANTS),
+    ("M05", ADMIN_BINDINGS_SRC, "a group is managed with read on its org",
+     "        &org_scope(&g.org)?,\n        \"manage_access\",\n    )?;\n    Ok((g, d))\n",
+     "        &org_scope(&g.org)?,\n        \"read\",\n    )?;\n    Ok((g, d))\n",
+     BINDINGS),
+    ("M06", ADMIN_LOCKED_SRC, "an org of another tenant is a place to write in",
+     "        return if before.bundle.data.orgs.contains(&org) {\n",
+     "        return if true || before.bundle.data.orgs.contains(&org) {\n",
+     BINDINGS),
+    ("M07", ADMIN_SCOPES_SRC, "a scope is registered with read on its parent",
+     "    let decision = locked::decide(&before, tenant.key(), &who, &parent, \"write\")?;\n",
+     "    let decision = locked::decide(&before, tenant.key(), &who, &parent, \"read\")?;\n",
+     BINDINGS),
+    ("M08", ADMIN_SCOPES_SRC, "a scope is deleted with read on it",
+     "    let decision = locked::decide(&before, tenant.key(), &who, &at, \"delete\")?;\n",
+     "    let decision = locked::decide(&before, tenant.key(), &who, &at, \"read\")?;\n",
+     BINDINGS),
+    ("M09", ADMIN_BINDINGS_SRC, "anyone may list a scope's assignments",
+     "        if d.is_ok_and(|d| d.is_allowed()) {\n",
+     "        if d.is_ok() {\n",
+     BINDINGS),
+    ("M10", ADMIN_BINDINGS_SRC, "a later end of an assignment is not a grant",
+     "    if longer {\n",
+     "    if false && longer {\n",
+     BINDINGS),
+    ("M11", PDP_GRANT, "a grant is checked at its own scope only, not below it",
+     "            let reached = changed.contains(*place) || path.iter().any(|a| changed.contains(a));\n",
+     "            let reached = changed.contains(*place);\n",
+     PDP_GRANTS),
+    ("M12", PDP_GRANT, "the granter is taken at its highest",
+     "found.extend(gains.into_iter().filter(|d| d.to > held.range(&d.access).0));",
+     "found.extend(gains.into_iter().filter(|d| d.to > held.range(&d.access).1));",
+     PDP_GRANTS),
+    ("M13", ADMIN_SCOPES_SRC, "a person names who approved a move",
+     "    if !approved_by.is_empty() && !is_service(id) {\n",
+     "    if false && !approved_by.is_empty() && !is_service(id) {\n",
+     BINDINGS),
+    ("M14", ADMIN_SCOPES_SRC, "the private flag needs no manage_boundaries",
+     "    let decision = locked::decide(&before, tenant.key(), &who, &at, \"manage_boundaries\")?;\n",
+     "    let decision = locked::decide(&before, tenant.key(), &who, &at, \"read\")?;\n",
+     BINDINGS),
     ("S01", MODELS, "a widening publish needs no token",
      "    if d.is_widening() {\n",
      "    if false && d.is_widening() {\n",

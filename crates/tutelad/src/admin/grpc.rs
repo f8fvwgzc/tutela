@@ -8,9 +8,11 @@ use tonic::{Request, Response, Status};
 
 use super::observed;
 use super::wire::{
-    AgentsQuery, BoundaryBody, DeliveriesQuery, DeliveryOut, NameBody, OrgOut, PrincipalBody,
-    PrincipalOut, RegisterAgentBody, RegisterWebhookBody, ResourceTypesBody, RotateBody, ScopeRef,
-    SetDisabledBody, TenantOut, WebhookOut, WebhookSecretOut,
+    AgentsQuery, AssignBody, AssignmentsQuery, BoundaryBody, DeliveriesQuery, DeliveryOut,
+    ExpiryBody, GroupBody, GroupsQuery, MemberBody, MembersQuery, MoveScopeBody, NameBody, OrgOut,
+    PrincipalBody, PrincipalOut, PrivateBody, PutScopeBody, RegisterAgentBody, RegisterWebhookBody,
+    ResourceTypesBody, RolesQuery, RotateBody, ScopeBody, ScopeRef, ScopesQuery, SetDisabledBody,
+    TenantOut, WebhookOut, WebhookSecretOut,
 };
 use crate::api::AppState;
 use crate::authz::grpc::identity;
@@ -121,6 +123,17 @@ fn delivery(d: DeliveryOut) -> pb::Delivery {
 
 fn some(s: String) -> Option<String> {
     (!s.is_empty()).then_some(s)
+}
+
+fn scope_ref(s: Option<pb::PathEntry>) -> Option<ScopeRef> {
+    s.map(|s| ScopeRef {
+        kind: s.r#type,
+        id: s.id,
+    })
+}
+
+fn limit(n: u32) -> Option<usize> {
+    (n != 0).then(|| usize::try_from(n).unwrap_or(usize::MAX))
 }
 
 fn change(r: pb::ModelChangeRequest) -> PublishBody {
@@ -601,5 +614,223 @@ impl Admin for AdminService {
             "redeliver",
             out,
         )?)))
+    }
+
+    async fn list_scopes(
+        &self,
+        req: Request<pb::ListScopesRequest>,
+    ) -> Result<Response<pb::JsonResult>, Status> {
+        let id = identity(&req)?;
+        let r = req.into_inner();
+        let q = ScopesQuery {
+            under: some(r.under),
+            after: some(r.after),
+            limit: limit(r.limit),
+        };
+        let out = super::scopes::list(&self.state, &id, q).await;
+        json(&observed(&self.state, "list_scopes", out)?)
+    }
+
+    async fn put_scope(
+        &self,
+        req: Request<pb::PutScopeRequest>,
+    ) -> Result<Response<pb::JsonResult>, Status> {
+        let id = identity(&req)?;
+        let r = req.into_inner();
+        let body = PutScopeBody {
+            scope: scope_ref(r.scope),
+            parent: scope_ref(r.parent),
+            private: r.private,
+        };
+        let out = super::scopes::put(&self.state, &id, body).await;
+        json(&observed(&self.state, "put_scope", out)?)
+    }
+
+    async fn move_scope(
+        &self,
+        req: Request<pb::MoveScopeRequest>,
+    ) -> Result<Response<pb::JsonResult>, Status> {
+        let id = identity(&req)?;
+        let r = req.into_inner();
+        let body = MoveScopeBody {
+            scope: scope_ref(r.scope),
+            parent: scope_ref(r.parent),
+            approved_by: (!r.approved_by.is_empty()).then_some(r.approved_by),
+        };
+        let out = super::scopes::move_scope(&self.state, &id, body).await;
+        json(&observed(&self.state, "move_scope", out)?)
+    }
+
+    async fn delete_scope(
+        &self,
+        req: Request<pb::ScopeRequest>,
+    ) -> Result<Response<pb::JsonResult>, Status> {
+        let id = identity(&req)?;
+        let body = ScopeBody {
+            scope: scope_ref(req.into_inner().scope),
+        };
+        let out = super::scopes::delete(&self.state, &id, body).await;
+        json(&observed(&self.state, "delete_scope", out)?)
+    }
+
+    async fn set_private(
+        &self,
+        req: Request<pb::SetPrivateRequest>,
+    ) -> Result<Response<pb::JsonResult>, Status> {
+        let id = identity(&req)?;
+        let r = req.into_inner();
+        let body = PrivateBody {
+            scope: scope_ref(r.scope),
+            private: Some(r.private),
+        };
+        let out = super::scopes::set_private(&self.state, &id, body).await;
+        json(&observed(&self.state, "set_private", out)?)
+    }
+
+    async fn list_assignments(
+        &self,
+        req: Request<pb::ListAssignmentsRequest>,
+    ) -> Result<Response<pb::JsonResult>, Status> {
+        let id = identity(&req)?;
+        let r = req.into_inner();
+        let q = AssignmentsQuery {
+            scope: scope_ref(r.scope),
+            subject: some(r.subject),
+            after: some(r.after),
+            limit: limit(r.limit),
+        };
+        let out = super::bindings::assignments(&self.state, &id, q).await;
+        json(&observed(&self.state, "list_assignments", out)?)
+    }
+
+    async fn assign(
+        &self,
+        req: Request<pb::AssignRequest>,
+    ) -> Result<Response<pb::JsonResult>, Status> {
+        let id = identity(&req)?;
+        let r = req.into_inner();
+        let body = AssignBody {
+            subject: some(r.subject),
+            role: some(r.role),
+            scope: scope_ref(r.scope),
+            expires_at: some(r.expires_at),
+        };
+        let out = super::bindings::assign(&self.state, &id, body).await;
+        json(&observed(&self.state, "assign", out)?)
+    }
+
+    async fn set_assignment_expiry(
+        &self,
+        req: Request<pb::SetAssignmentExpiryRequest>,
+    ) -> Result<Response<pb::JsonResult>, Status> {
+        let id = identity(&req)?;
+        let r = req.into_inner();
+        let body = ExpiryBody {
+            expires_at: Some(r.expires_at),
+        };
+        let out = super::bindings::set_expiry(&self.state, &id, &r.id, body).await;
+        json(&observed(&self.state, "set_assignment_expiry", out)?)
+    }
+
+    async fn unassign(
+        &self,
+        req: Request<pb::AssignmentRequest>,
+    ) -> Result<Response<pb::JsonResult>, Status> {
+        let id = identity(&req)?;
+        let r = req.into_inner();
+        let out = super::bindings::unassign(&self.state, &id, &r.id).await;
+        json(&observed(&self.state, "unassign", out)?)
+    }
+
+    async fn list_groups(
+        &self,
+        req: Request<pb::ListGroupsRequest>,
+    ) -> Result<Response<pb::JsonResult>, Status> {
+        let id = identity(&req)?;
+        let r = req.into_inner();
+        let q = GroupsQuery {
+            org: some(r.org),
+            after: some(r.after),
+            limit: limit(r.limit),
+        };
+        let out = super::bindings::groups(&self.state, &id, q).await;
+        json(&observed(&self.state, "list_groups", out)?)
+    }
+
+    async fn create_group(
+        &self,
+        req: Request<pb::CreateGroupRequest>,
+    ) -> Result<Response<pb::JsonResult>, Status> {
+        let id = identity(&req)?;
+        let r = req.into_inner();
+        let body = GroupBody {
+            org: some(r.org),
+            key: some(r.key),
+            name: some(r.name),
+        };
+        let out = super::bindings::create_group(&self.state, &id, body).await;
+        json(&observed(&self.state, "create_group", out)?)
+    }
+
+    async fn delete_group(
+        &self,
+        req: Request<pb::GroupRequest>,
+    ) -> Result<Response<pb::JsonResult>, Status> {
+        let id = identity(&req)?;
+        let r = req.into_inner();
+        let out = super::bindings::delete_group(&self.state, &id, &r.key).await;
+        json(&observed(&self.state, "delete_group", out)?)
+    }
+
+    async fn list_group_members(
+        &self,
+        req: Request<pb::ListGroupMembersRequest>,
+    ) -> Result<Response<pb::JsonResult>, Status> {
+        let id = identity(&req)?;
+        let r = req.into_inner();
+        let q = MembersQuery {
+            after: some(r.after),
+            limit: limit(r.limit),
+        };
+        let out = super::bindings::members(&self.state, &id, &r.key, q).await;
+        json(&observed(&self.state, "list_members", out)?)
+    }
+
+    async fn add_group_member(
+        &self,
+        req: Request<pb::GroupMemberRequest>,
+    ) -> Result<Response<pb::JsonResult>, Status> {
+        let id = identity(&req)?;
+        let r = req.into_inner();
+        let body = MemberBody {
+            member: some(r.member),
+        };
+        let out = super::bindings::change_member(&self.state, &id, &r.key, body, true).await;
+        json(&observed(&self.state, "add_member", out)?)
+    }
+
+    async fn remove_group_member(
+        &self,
+        req: Request<pb::GroupMemberRequest>,
+    ) -> Result<Response<pb::JsonResult>, Status> {
+        let id = identity(&req)?;
+        let r = req.into_inner();
+        let body = MemberBody {
+            member: some(r.member),
+        };
+        let out = super::bindings::change_member(&self.state, &id, &r.key, body, false).await;
+        json(&observed(&self.state, "remove_member", out)?)
+    }
+
+    async fn list_roles(
+        &self,
+        req: Request<pb::ListRolesRequest>,
+    ) -> Result<Response<pb::JsonResult>, Status> {
+        let id = identity(&req)?;
+        let q = RolesQuery {
+            scope: some(req.into_inner().scope),
+        };
+        let out = super::bindings::roles(&self.state, &id, q).await;
+        json(&observed(&self.state, "list_roles", out)?)
     }
 }

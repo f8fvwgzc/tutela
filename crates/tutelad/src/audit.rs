@@ -287,6 +287,9 @@ fn audit_label(resource_type: &str) -> &'static str {
         "tutela_org" => "org",
         "tutela_tenant" => "tenant",
         "tutela_webhook" => "webhook",
+        "tutela_group" => "group",
+        "tutela_scope" => "scope",
+        "tutela_role" => "role",
         _ => "write_check",
     }
 }

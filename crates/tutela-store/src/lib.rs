@@ -64,8 +64,9 @@ pub use audit::{
     audit_records, deployment_audit_records, verify_audit_chain, verify_deployment_audit_chain,
 };
 pub use bindings::{
-    Assignment, AssignmentQuery, GroupInfo, MAX_PAGE, ancestors, assignment, assignments,
-    assignments_for, group_members, groups, groups_of, members_of, scopes_below, tenants,
+    Assignment, AssignmentQuery, GroupInfo, GroupSummary, MAX_PAGE, ScopeInfo, ancestors,
+    assignment, assignments, assignments_for, group, group_member_page, group_members, group_page,
+    groups, groups_of, members_of, scope_page, scopes_below, tenants,
 };
 pub use connect::{Transport, database_config};
 pub use events::{
@@ -78,7 +79,7 @@ pub use lifecycle::{
     due_tenant_purges, org, orgs, purge_org, purge_tenant, restore_org, restore_tenant,
     set_org_name, set_tenant_name, tenant_info,
 };
-pub use load::{ScopePathSnapshot, TenantBundle, load, rev};
+pub use load::{ScopePathSnapshot, TenantBundle, load, lock, rev};
 pub use manifest::{Publish, StoredManifest, applied_manifest, digest, manifest, publish_manifest};
 pub use migrate::{applied as applied_migration, latest as latest_migration, migrate};
 pub use models::{

@@ -9,7 +9,7 @@ use axum::extract::{DefaultBodyLimit, Extension, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, patch, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router, middleware};
 use serde::Serialize;
 use tower::ServiceExt as _;
@@ -317,6 +317,33 @@ pub fn api_router(state: &AppState, grpc: Router, request_timeout: Duration) -> 
             post(admin::http::revoke_sessions),
         )
         .route("/v1/admin/boundaries", put(admin::http::set_boundary))
+        .route(
+            "/v1/admin/scopes",
+            get(admin::http::scopes).post(admin::http::put_scope),
+        )
+        .route("/v1/admin/scopes/move", post(admin::http::move_scope))
+        .route("/v1/admin/scopes/delete", post(admin::http::delete_scope))
+        .route("/v1/admin/scopes/private", put(admin::http::set_private))
+        .route("/v1/admin/assignments", post(admin::http::assign))
+        .route("/v1/admin/assignments/list", post(admin::http::assignments))
+        .route(
+            "/v1/admin/assignments/{id}",
+            patch(admin::http::set_expiry).delete(admin::http::unassign),
+        )
+        .route(
+            "/v1/admin/groups",
+            get(admin::http::groups).post(admin::http::create_group),
+        )
+        .route("/v1/admin/groups/{key}", delete(admin::http::delete_group))
+        .route(
+            "/v1/admin/groups/{key}/members",
+            get(admin::http::members).post(admin::http::add_member),
+        )
+        .route(
+            "/v1/admin/groups/{key}/members/remove",
+            post(admin::http::remove_member),
+        )
+        .route("/v1/admin/roles", get(admin::http::roles))
         .route(
             "/v1/admin/tenant",
             get(admin::http::tenant)

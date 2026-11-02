@@ -21,11 +21,14 @@
 //! asked: in the change's transaction, last; a refusal for want of a key in
 //! a transaction of its own before the answer (`guard`).
 
+pub mod bindings;
 pub mod boundaries;
 pub mod grpc;
 pub mod http;
 pub mod lifecycle;
+mod locked;
 pub mod principals;
+pub mod scopes;
 pub mod types;
 pub mod webhooks;
 pub mod wire;

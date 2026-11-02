@@ -59,6 +59,7 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0040](#adr-0040-tutelaadminv1-one-code-path-the-admin-token-rule-on-grpc-and-keys-at-every-org) | `tutela.admin.v1`: one code path, the admin token rule on gRPC, and keys at every org | Accepted |
 | [0041](#adr-0041-the-lifecycle-of-tenants-orgs-and-people-the-operator-makes-a-tenant-soft-delete-with-a-grace-a-purge-that-keeps-the-audit-chain) | The lifecycle of tenants, orgs and people: the operator makes a tenant, soft-delete with a grace, a purge that keeps the audit chain | Accepted |
 | [0042](#adr-0042-the-audit-logs-leftovers-a-chain-check-on-a-timer-the-callers-trace-in-each-record) | The audit log's leftovers: a chain check on a timer, the caller's trace in each record | Accepted |
+| [0043](#adr-0043-scopes-assignments-and-groups-over-the-admin-api-checked-on-the-data-they-change) | Scopes, assignments and groups over the admin API, checked on the data they change | Accepted |
 
 ---
 
@@ -1586,4 +1587,37 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 **Alternatives considered.**
 - **Check only the newest records.** Cheaper, but a rewrite of an old record is the attack the chain exists to show.
 - **A span id of `tutelad`'s own, made up per request.** It would name a span nobody can see until OTLP export exists.
+
+---
+
+## ADR-0043: Scopes, assignments and groups over the admin API, checked on the data they change
+
+**Status:** Accepted, 2026-11-02. Built in Phase B, part 4a ([#107](https://github.com/f8fvwgzc/tutela/issues/107)). It builds what [ADR-0040](#adr-0040-tutelaadminv1-one-code-path-the-admin-token-rule-on-grpc-and-keys-at-every-org) item 8 left open, and gives PERMISSION-MODEL.md 7.1 step 6 ("nobody grants what they do not hold") its first code.
+
+**Context.** In library mode a product calls `tutela-store` in its own transaction to register, move and delete scopes, assign roles and manage groups. In service mode it had no way to, and the Console's members and role pages (part 4b) need the same calls. PERMISSION-MODEL.md 15 says binding changes need `manage_access`, "pass role-on-diff and the narrow-only rule, bump the tenant revision and are audited". The store's calls trust their caller. A move must stay behind `write_check` (ADR-0025 item 8).
+
+**Decision.**
+
+1. **Routes and methods** (CONTRACTS.md 7.13.7), each in `tutela.admin.v1` with the route's JSON as `result_json`, under the admin token rule of ADR-0040: `GET`/`POST /v1/admin/scopes`, `POST /v1/admin/scopes/move`, `POST /v1/admin/scopes/delete`, `PUT /v1/admin/scopes/private`; `POST /v1/admin/assignments`, `POST /v1/admin/assignments/list`, `PATCH`/`DELETE /v1/admin/assignments/{id}`; `GET`/`POST /v1/admin/groups`, `DELETE /v1/admin/groups/{key}`, `GET`/`POST /v1/admin/groups/{key}/members`, `POST …/members/remove`; `GET /v1/admin/roles`. A principal is never in a URL: the list of assignments takes its filter as a body.
+2. **Who may ask.** An assignment: `<type>:manage_access` on its scope. A group and its members: `org:manage_access` on the group's org (a group belongs to one org, PERMISSION-MODEL.md 6.4). Registering a scope: `write` on its parent (a new child is a write on its parent). Deleting one: `delete` on it. Its private flag: `manage_boundaries` on it. A page at one scope or org: `read_audit` or `manage_access` there; a page of the whole tenant, and the roles without a scope: `read_audit` at every org. A path is always the store's: a body names a parent, never a path.
+3. **Narrow-only, before and after.** Every change of data is compared before and after, with the calculation of the impact report (ADR-0027), for every principal it can reach (its own assignments, its groups', and everyone below a scope whose private flag or field rules change), at every place below the scopes that changed. Each gain is held up to what the caller holds at the same place before the change; a gain above it is refused with 403 `not_held`, whose detail says what in counts (never a principal). This is `tutela_pdp::grant_excess`. It counts removals too: taking away a narrow direct assignment can uncover a wider one through a group (6.3), and a caller who does not hold that may not uncover it. A check that reaches its bound (`TUTELA_IMPACT_MAX_WORK`) refuses.
+   - The grantee is taken at the highest its conditions can leave it, and the caller at the lowest. So **a caller whose own role has conditions may give only what it holds with every condition false**, even its own role (a known limit that refuses; pairing the two sides' conditions is possible only for conditions that do not name the principal).
+   - The rule holds at every place a grant reaches, not only at its scope: a caller with a narrower assignment of its own deeper down may not give a wider one above it.
+4. **A later end is a grant.** `PATCH /v1/admin/assignments/{id}` with a later `expires_at`, or `null`, is checked as if the assignment were new: the base of the comparison is the data without it. An earlier end needs `manage_access` only.
+5. **Checked on the data the change writes.** The change runs in one transaction that locks the tenant's revision row (`tutela_store::lock`), reads the tenant, checks the key on that read, writes, reads again and compares. Nothing can change between the check and the commit; a refusal rolls the write back and records the refusal in its own transaction. Each such change reads the tenant twice more than a store write does (about 48 ms at the benchmark's size, ADR-0014 item 4).
+6. **A move is `write_check`'s.** `POST /v1/admin/scopes/move {scope, parent, approved_by?}` runs `Pdp::write_check` with the new path on that locked read, for the caller, and moves the scope and everything below it with `move_scope` in the same transaction only when the verdict allows it. A verdict that refuses or waits for an owner is 403 `move_refused`, with the scopes that wait in its detail, and is recorded with both paths. `approved_by` is a service's only (CONTRACTS.md 7.8). The narrow-only rule does not run on a move: its looser check is the verdict's (ADR-0025).
+7. **Store rules stand.** One assignment per subject and scope (409 `exists`), an expiry in the future (400), a role the model has and may give to that kind of subject (400), group cycles, nesting and closure limits (409 `refused`), a soft-deleted org takes nothing (404). The store bumps the revision and emits `tutela.permissions.changed.v1` in the change's transaction; the record of who asked is written last in it (`tutela_assignment:create|update|delete`, `tutela_group:create|delete|add_member|remove_member`, `tutela_scope:create|move|delete|update`).
+8. **Pages** are at most 1000 (default 100) with `next_after`: assignments by id, groups by key (with their member counts), members and scopes by text, ordered by bytes so a cursor is stable on every collation.
+9. **`GET /v1/admin/roles`** gives the active model's roles (levels per type, field levels, grants and admin keys, who may hold them) and types (fields with their sensitivity, features, actions): the rows and columns of the Console's permission matrix.
+
+**Consequences.**
+- A product in service mode registers, moves and deletes its scopes with its service account's token; that account needs the roles the rules ask for, given by ordinary assignments (for example the owner role at each org it serves).
+- An org's owner (a person) may give anything in its org. A scope's owner may give what the owner role holds there. A role with `manage_access` and little else may give only what it holds.
+- An admin change costs two extra reads of the tenant and two evaluator builds.
+
+**Alternatives considered.**
+- **Narrow-only only at the grant's scope, and for new grants only** (the literal words of 7.1 step 6). Simpler, but a removal can widen, and a grant reaches every place below its scope.
+- **Pair the caller's and the grantee's conditions.** Correct only for conditions that do not name the principal, and the rule would need to know which; it refuses instead.
+- **Check on the cached snapshot, write in another transaction.** Cheaper, but another write could land between the check and the commit.
+- **A bare `move_scope` route.** It would skip the boundary rules.
 

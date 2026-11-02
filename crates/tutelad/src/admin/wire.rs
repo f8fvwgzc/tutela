@@ -307,3 +307,383 @@ pub struct DeliveriesOut {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_after: Option<u64>,
 }
+
+// ---------- Scopes, role assignments and groups (CONTRACTS.md 7.13.7) ----------
+
+/// A field that may be missing, `null` or a value: `Some(None)` is `null`.
+fn present<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
+}
+
+/// `POST /v1/admin/scopes`: registers a scope under its parent.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PutScopeBody {
+    /// The new scope.
+    pub scope: Option<ScopeRef>,
+    /// Its parent: an org of the tenant or a registered scope.
+    pub parent: Option<ScopeRef>,
+    /// `true`: it stops inheritance from above. Missing: what its type
+    /// starts as (`starts` in the model).
+    pub private: Option<bool>,
+}
+
+/// `POST /v1/admin/scopes/move`.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MoveScopeBody {
+    /// The registered scope to move.
+    pub scope: Option<ScopeRef>,
+    /// Its new parent: an org of the tenant or a registered scope.
+    pub parent: Option<ScopeRef>,
+    /// Who agreed to a move into a looser scope, in the product's own flow.
+    /// A service only (CONTRACTS.md 7.8).
+    pub approved_by: Option<Vec<String>>,
+}
+
+/// A body that names one scope.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScopeBody {
+    /// The registered scope.
+    pub scope: Option<ScopeRef>,
+}
+
+/// `PUT /v1/admin/scopes/private`.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrivateBody {
+    /// The registered scope.
+    pub scope: Option<ScopeRef>,
+    /// `true` stops inheritance from above; `false` lets it in again.
+    pub private: Option<bool>,
+}
+
+/// The query of `GET /v1/admin/scopes`.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct ScopesQuery {
+    /// `type:id` of an org or a registered scope: the scopes below it.
+    pub under: Option<String>,
+    /// The `next_after` of the page before.
+    pub after: Option<String>,
+    /// How many. At most 1000; 100 when missing.
+    pub limit: Option<usize>,
+}
+
+/// One registered scope.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScopeOut {
+    /// The scope.
+    pub scope: ScopeRef,
+    /// Its ancestors, nearest first, ending at its org.
+    pub ancestors: Vec<ScopeRef>,
+    /// `true` when it stops inheritance from above.
+    pub private: bool,
+    /// `members`, `owners` or `none`; missing: not set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub moves_out: Option<String>,
+    /// `members`, `owners` or `none`; missing: not set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub moves_in: Option<String>,
+    /// `approve` or `block`; missing: not set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_looser: Option<String>,
+    /// `any`, `team` or `none`; missing: not set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub links_from: Option<String>,
+}
+
+/// A page of scopes.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScopesOut {
+    /// By `type:id`.
+    pub scopes: Vec<ScopeOut>,
+    /// Where the next page starts; missing at the end.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_after: Option<String>,
+}
+
+/// A registered or moved scope and the new revision.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScopeChangeOut {
+    /// The scope as it is now.
+    pub scope: ScopeOut,
+    /// The new revision: send it as `at_least_revision`.
+    pub rev: u64,
+}
+
+/// `POST /v1/admin/assignments`.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssignBody {
+    /// A principal, or `group:<key>`.
+    pub subject: Option<String>,
+    /// A role of the tenant's model.
+    pub role: Option<String>,
+    /// An org of the tenant or a registered scope.
+    pub scope: Option<ScopeRef>,
+    /// RFC 3339; missing: it does not end.
+    pub expires_at: Option<String>,
+}
+
+/// `PATCH /v1/admin/assignments/{id}`.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExpiryBody {
+    /// RFC 3339, or `null` to make it permanent. Required.
+    #[serde(default, deserialize_with = "present")]
+    pub expires_at: Option<Option<String>>,
+}
+
+/// `POST /v1/admin/assignments/list`. A principal is personal data, so the
+/// filter is a body, never a query (CONTRACTS.md 9.5).
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssignmentsQuery {
+    /// Only at this scope.
+    pub scope: Option<ScopeRef>,
+    /// Only for this principal or `group:<key>`.
+    pub subject: Option<String>,
+    /// The `next_after` of the page before.
+    pub after: Option<String>,
+    /// How many. At most 1000; 100 when missing.
+    pub limit: Option<usize>,
+}
+
+/// One role assignment.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AssignmentOut {
+    /// `ra_<uuidv7>`.
+    pub id: String,
+    /// A principal, or `group:<key>`.
+    pub subject: String,
+    /// The role.
+    pub role: String,
+    /// Where it applies.
+    pub scope: ScopeRef,
+    /// Who granted it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub granted_by: Option<String>,
+    /// When it was made.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    /// When it ends; missing: never.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+}
+
+impl AssignmentOut {
+    /// The answer for a stored assignment.
+    #[must_use]
+    pub fn of(a: &tutela_store::Assignment) -> Self {
+        use crate::models::wire::time;
+        Self {
+            id: a.id.to_string(),
+            subject: match &a.subject {
+                tutela_pdp::Subject::Principal(p) => p.to_string(),
+                tutela_pdp::Subject::Group(g) => format!("group:{g}"),
+            },
+            role: a.role.to_string(),
+            scope: ScopeRef {
+                kind: a.scope.type_name.to_string(),
+                id: a.scope.id.to_string(),
+            },
+            granted_by: a.granted_by.as_ref().map(ToString::to_string),
+            created_at: time(a.created_at),
+            expires_at: a.expires_at.and_then(time),
+        }
+    }
+}
+
+/// A page of assignments.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AssignmentsOut {
+    /// By id.
+    pub assignments: Vec<AssignmentOut>,
+    /// Where the next page starts; missing at the end.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_after: Option<String>,
+}
+
+/// An assignment after a change, and the new revision.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AssignmentChangeOut {
+    /// The assignment as it is now; missing after a delete.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assignment: Option<AssignmentOut>,
+    /// The new revision: send it as `at_least_revision`.
+    pub rev: u64,
+}
+
+/// `POST /v1/admin/groups`.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GroupBody {
+    /// The org it belongs to.
+    pub org: Option<String>,
+    /// Its key, unique in the tenant.
+    pub key: Option<String>,
+    /// Its display name, at most 256 characters.
+    pub name: Option<String>,
+}
+
+/// The query of `GET /v1/admin/groups`.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct GroupsQuery {
+    /// Only the groups of this org.
+    pub org: Option<String>,
+    /// The `next_after` of the page before.
+    pub after: Option<String>,
+    /// How many. At most 1000; 100 when missing.
+    pub limit: Option<usize>,
+}
+
+/// One group.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GroupOut {
+    /// Its key.
+    pub key: String,
+    /// The org it belongs to.
+    pub org: String,
+    /// Its display name.
+    pub name: String,
+    /// When it was made.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    /// How many direct members it has.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub members: Option<u64>,
+    /// The tenant revision after a change that bumped it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rev: Option<u64>,
+}
+
+impl GroupOut {
+    /// The answer for a stored group.
+    #[must_use]
+    pub fn of(g: &tutela_store::GroupInfo, members: Option<u64>, rev: Option<u64>) -> Self {
+        Self {
+            key: g.key.to_string(),
+            org: g.org.to_string(),
+            name: g.name.clone(),
+            created_at: crate::models::wire::time(g.created_at),
+            members,
+            rev,
+        }
+    }
+}
+
+/// A page of groups.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GroupsOut {
+    /// By key.
+    pub groups: Vec<GroupOut>,
+    /// Where the next page starts; missing at the end.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_after: Option<String>,
+}
+
+/// `POST /v1/admin/groups/{key}/members` and `…/members/remove`.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemberBody {
+    /// A principal, or `group:<key>`.
+    pub member: Option<String>,
+}
+
+/// The query of `GET /v1/admin/groups/{key}/members`.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct MembersQuery {
+    /// The `next_after` of the page before.
+    pub after: Option<String>,
+    /// How many. At most 1000; 100 when missing.
+    pub limit: Option<usize>,
+}
+
+/// A page of a group's direct members.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MembersOut {
+    /// Principals and `group:<key>`, by their text.
+    pub members: Vec<String>,
+    /// Where the next page starts; missing at the end.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_after: Option<String>,
+}
+
+/// The query of `GET /v1/admin/roles`.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct RolesQuery {
+    /// `type:id` of the org or registered scope the caller manages.
+    pub scope: Option<String>,
+}
+
+/// One role of the tenant's active model: a row of the permission matrix.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RoleOut {
+    /// Its key.
+    pub key: String,
+    /// Its display label.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The seeded role it is (`owner`, `member`, ...), if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seeded: Option<String>,
+    /// The item level per type; a type not listed is `none`.
+    pub levels: std::collections::BTreeMap<String, String>,
+    /// Levels of single fields and features (`contract.budget`).
+    pub field_levels: std::collections::BTreeMap<String, String>,
+    /// Custom-action grants and admin keys (`contract:approve`,
+    /// `org:manage_access`).
+    pub grants: Vec<String>,
+    /// Who may receive it: `user`, `sa`, `key`, `agent`, `workload`, `group`.
+    pub assignable_to: Vec<String>,
+}
+
+/// One field of a type.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FieldOut {
+    /// Its name.
+    pub name: String,
+    /// `public`, `internal`, `confidential` or `secret`.
+    pub sensitivity: String,
+    /// Its display label.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+/// One type of the tenant's active model: a column group of the matrix.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TypeOut {
+    /// Its name.
+    pub name: String,
+    /// Its display label.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The types that may be its parent.
+    pub parents: Vec<String>,
+    /// `true` when other resources may live inside it.
+    pub container: bool,
+    /// `true` when a new scope of it starts private.
+    pub starts_private: bool,
+    /// Its data fields.
+    pub fields: Vec<FieldOut>,
+    /// Its features (`@ai`).
+    pub features: Vec<String>,
+    /// Its custom actions.
+    pub actions: Vec<String>,
+}
+
+/// The roles and types of the tenant's active model.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RolesOut {
+    /// The active model version.
+    pub version: i64,
+    /// By key.
+    pub roles: Vec<RoleOut>,
+    /// By name.
+    pub types: Vec<TypeOut>,
+}

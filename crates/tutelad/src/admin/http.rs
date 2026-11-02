@@ -6,9 +6,12 @@ use tutela_sdk::Identity;
 
 use super::observed;
 use super::wire::{
-    AgentsOut, AgentsQuery, BoundaryBody, DeliveriesOut, DeliveriesQuery, DeliveryOut, NameBody,
-    OrgOut, OrgsOut, PrincipalBody, PrincipalOut, RegisterAgentBody, RegisterWebhookBody,
-    ResourceTypesBody, RevOut, RotateBody, SetDisabledBody, TenantOut, WebhookOut,
+    AgentsOut, AgentsQuery, AssignBody, AssignmentChangeOut, AssignmentsOut, AssignmentsQuery,
+    BoundaryBody, DeliveriesOut, DeliveriesQuery, DeliveryOut, ExpiryBody, GroupBody, GroupOut,
+    GroupsOut, GroupsQuery, MemberBody, MembersOut, MembersQuery, MoveScopeBody, NameBody, OrgOut,
+    OrgsOut, PrincipalBody, PrincipalOut, PrivateBody, PutScopeBody, RegisterAgentBody,
+    RegisterWebhookBody, ResourceTypesBody, RevOut, RolesOut, RolesQuery, RotateBody, ScopeBody,
+    ScopeChangeOut, ScopesOut, ScopesQuery, SetDisabledBody, TenantOut, WebhookOut,
     WebhookSecretOut, WebhooksOut,
 };
 use crate::api::{AppState, Problem};
@@ -232,4 +235,170 @@ pub async fn redeliver(
 ) -> Result<Json<DeliveryOut>, Problem> {
     let out = super::webhooks::redeliver(&state, &id, &wid, seq).await;
     observed(&state, "redeliver", out).map(Json)
+}
+
+// ---------- Scopes, role assignments and groups (CONTRACTS.md 7.13.7) ----------
+
+/// `GET /v1/admin/scopes`.
+pub async fn scopes(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Query(q): Query<ScopesQuery>,
+) -> Result<Json<ScopesOut>, Problem> {
+    let out = super::scopes::list(&state, &id, q).await;
+    observed(&state, "list_scopes", out).map(Json)
+}
+
+/// `POST /v1/admin/scopes`.
+pub async fn put_scope(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Body(body): Body<PutScopeBody>,
+) -> Result<Json<ScopeChangeOut>, Problem> {
+    let out = super::scopes::put(&state, &id, body).await;
+    observed(&state, "put_scope", out).map(Json)
+}
+
+/// `POST /v1/admin/scopes/move`.
+pub async fn move_scope(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Body(body): Body<MoveScopeBody>,
+) -> Result<Json<ScopeChangeOut>, Problem> {
+    let out = super::scopes::move_scope(&state, &id, body).await;
+    observed(&state, "move_scope", out).map(Json)
+}
+
+/// `POST /v1/admin/scopes/delete`.
+pub async fn delete_scope(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Body(body): Body<ScopeBody>,
+) -> Result<Json<RevOut>, Problem> {
+    let out = super::scopes::delete(&state, &id, body).await;
+    observed(&state, "delete_scope", out).map(Json)
+}
+
+/// `PUT /v1/admin/scopes/private`.
+pub async fn set_private(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Body(body): Body<PrivateBody>,
+) -> Result<Json<RevOut>, Problem> {
+    let out = super::scopes::set_private(&state, &id, body).await;
+    observed(&state, "set_private", out).map(Json)
+}
+
+/// `POST /v1/admin/assignments/list`.
+pub async fn assignments(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Body(body): Body<AssignmentsQuery>,
+) -> Result<Json<AssignmentsOut>, Problem> {
+    let out = super::bindings::assignments(&state, &id, body).await;
+    observed(&state, "list_assignments", out).map(Json)
+}
+
+/// `POST /v1/admin/assignments`.
+pub async fn assign(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Body(body): Body<AssignBody>,
+) -> Result<Json<AssignmentChangeOut>, Problem> {
+    let out = super::bindings::assign(&state, &id, body).await;
+    observed(&state, "assign", out).map(Json)
+}
+
+/// `PATCH /v1/admin/assignments/{id}`.
+pub async fn set_expiry(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(aid): Path<String>,
+    Body(body): Body<ExpiryBody>,
+) -> Result<Json<AssignmentChangeOut>, Problem> {
+    let out = super::bindings::set_expiry(&state, &id, &aid, body).await;
+    observed(&state, "set_assignment_expiry", out).map(Json)
+}
+
+/// `DELETE /v1/admin/assignments/{id}`.
+pub async fn unassign(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(aid): Path<String>,
+) -> Result<Json<RevOut>, Problem> {
+    let out = super::bindings::unassign(&state, &id, &aid).await;
+    observed(&state, "unassign", out).map(Json)
+}
+
+/// `GET /v1/admin/groups`.
+pub async fn groups(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Query(q): Query<GroupsQuery>,
+) -> Result<Json<GroupsOut>, Problem> {
+    let out = super::bindings::groups(&state, &id, q).await;
+    observed(&state, "list_groups", out).map(Json)
+}
+
+/// `POST /v1/admin/groups`.
+pub async fn create_group(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Body(body): Body<GroupBody>,
+) -> Result<Json<GroupOut>, Problem> {
+    let out = super::bindings::create_group(&state, &id, body).await;
+    observed(&state, "create_group", out).map(Json)
+}
+
+/// `DELETE /v1/admin/groups/{key}`.
+pub async fn delete_group(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(key): Path<String>,
+) -> Result<Json<RevOut>, Problem> {
+    let out = super::bindings::delete_group(&state, &id, &key).await;
+    observed(&state, "delete_group", out).map(Json)
+}
+
+/// `GET /v1/admin/groups/{key}/members`.
+pub async fn members(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(key): Path<String>,
+    Query(q): Query<MembersQuery>,
+) -> Result<Json<MembersOut>, Problem> {
+    let out = super::bindings::members(&state, &id, &key, q).await;
+    observed(&state, "list_members", out).map(Json)
+}
+
+/// `POST /v1/admin/groups/{key}/members`.
+pub async fn add_member(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(key): Path<String>,
+    Body(body): Body<MemberBody>,
+) -> Result<Json<RevOut>, Problem> {
+    let out = super::bindings::change_member(&state, &id, &key, body, true).await;
+    observed(&state, "add_member", out).map(Json)
+}
+
+/// `POST /v1/admin/groups/{key}/members/remove`.
+pub async fn remove_member(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(key): Path<String>,
+    Body(body): Body<MemberBody>,
+) -> Result<Json<RevOut>, Problem> {
+    let out = super::bindings::change_member(&state, &id, &key, body, false).await;
+    observed(&state, "remove_member", out).map(Json)
+}
+
+/// `GET /v1/admin/roles`.
+pub async fn roles(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Query(q): Query<RolesQuery>,
+) -> Result<Json<RolesOut>, Problem> {
+    let out = super::bindings::roles(&state, &id, q).await;
+    observed(&state, "list_roles", out).map(Json)
 }
