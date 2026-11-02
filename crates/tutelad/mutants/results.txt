@@ -11,3 +11,10 @@ S04: caught by 1 test(s) - the keys at one org are enough for a tenant of two
       an_org_admin_of_part_of_a_tenant_does_not_change_the_whole_of_it
 S06: caught by 1 test(s) - an app publish overwrites a tenant's own model
       tests_pg::tm08_a_tenant_keeps_its_own_model_and_its_history_is_never_rewritten
+
+S07: caught by 3 test(s) - explain and simulate need no admin key
+      an_admin_sees_why_and_others_may_not_ask, tm05_an_admin_of_one_tenant_explains_nothing_in_another, a_simulation_answers_for_a_candidate_and_writes_nothing
+S08: caught by 1 test(s) - a made-up path is believed
+      tm09_a_path_made_up_to_reach_a_scope_one_owns_is_refused
+S09: caught by 1 test(s) - a simulation ignores its what-if assignments
+      a_simulation_answers_for_a_candidate_and_writes_nothing

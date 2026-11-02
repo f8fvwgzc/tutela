@@ -66,7 +66,7 @@ pub(crate) fn observed<T>(
 
 /// The person or service behind a token. A delegated token and an external
 /// one have no right here: admin keys never pass through delegation.
-fn principal(id: &Identity) -> Option<&Principal> {
+pub(crate) fn principal(id: &Identity) -> Option<&Principal> {
     match id {
         Identity::Access(c)
             if matches!(

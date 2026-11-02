@@ -1070,3 +1070,30 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 - **A time limit.** Two runs on the same data could differ, and a proposal could go stale for nothing.
 - **Report counts only.** A count can stay the same while the people change.
 
+---
+
+## ADR-0028: Explain and simulate need `read_audit` on the resource
+
+**Status:** Accepted, 2026-11-02. Built in Phase B, part 2b.
+
+**Context.** PERMISSION-MODEL.md 15.1 gives the Console "explain" and "simulate". A plain check already returns `rule_ids` and `reason`; explain says what each id is, and walks the tree, so it shows other principals' assignments and the model. Simulate does the same for a model or assignments that are not there. The brief asks for a stronger right than a check, decided from the docs.
+
+**Decision.**
+
+1. **The right is `<type>:read_audit` on the resource**, held by the caller's own principal, with the same walk as any key. PERMISSION-MODEL.md 5.3 and 8 already say who reads the audit log: org admins for everything, scope owners for their own scope. Explain and simulate show what the audit log shows, so they take its key.
+2. **No exception for a question about oneself**: it would show the reasons the permission map hides (CONTRACTS.md 6.2, "safe to show"). And a service is not trusted for this by being a service: its principal needs the key too.
+3. **On data that has just been checked** (`ActionClass::Admin`), like every admin key. An agent never holds an admin key, and a delegated or an external token never passes one on.
+4. **The path is checked against the store.** The path comes from the caller, and the key is walked on it. Without a check, a scope owner could put any resource under its scope and read who holds it. Each registered scope on the path, and the resource if it is one, must have the stored path. An unregistered entry has no assignment and no rule, so it cannot help.
+5. **Simulate builds its own evaluators** from one fresh read: today's model and data, and the candidate's. Nothing is written, and no snapshot changes. A candidate is a manifest, a kept version, assignments to add (at most 100) and assignment ids to remove.
+6. **One code path.** `Pdp::explain` runs `check` and adds the walks and the rules, so the decision in an explanation is the decision.
+
+**Consequences.**
+- The Console (part 4) calls these with the admin's own token. Until `aud=tutela-admin` exists, that is a `tutela-authz` token (ADR-0026).
+- A product cannot explain a denial to its end user with these: it shows the permission map's reason, which keeps only codes safe to show.
+- Part 3's audit log should record every explain and simulate, with who asked: they read other people's access.
+
+**Alternatives considered.**
+- **`manage_access` for simulate.** Simulate changes nothing; it reads.
+- **Any service may explain.** A product backend would learn every assignment of its tenant through one token.
+- **Trust the path, as a check does.** A check answers about the asked subject only; explain answers about everyone who holds the path.
+

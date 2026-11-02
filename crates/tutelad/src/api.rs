@@ -251,6 +251,12 @@ pub fn api_router(state: &AppState, grpc: Router, request_timeout: Duration) -> 
         )
         .route("/v1/authz/permissions", post(authz::http::permissions))
         .route("/v1/authz/write-check", post(authz::http::write_check))
+        .route("/v1/authz/explain", post(authz::http::explain))
+        .route(
+            "/v1/authz/simulate",
+            post(authz::http::simulate)
+                .layer(DefaultBodyLimit::max(models::http::MODEL_BODY_LIMIT)),
+        )
         .route("/v1/models", get(models::http::versions))
         .route("/v1/models/{version}", get(models::http::version))
         .route(

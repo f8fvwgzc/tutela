@@ -234,6 +234,11 @@ fn attrs(assignee: Option<&Principal>) -> Attrs {
     a
 }
 
+/// A resource with no assignee, at `path_of` its own id.
+pub(crate) fn resource_of(t: &str, id: &str) -> ResourceRef {
+    resource(t, id, None)
+}
+
 fn resource(t: &str, id: &str, assignee: Option<&Principal>) -> ResourceRef {
     let this = entry(t, id);
     ResourceRef {
@@ -244,11 +249,11 @@ fn resource(t: &str, id: &str, assignee: Option<&Principal>) -> ResourceRef {
     }
 }
 
-fn c204() -> ResourceRef {
+pub(crate) fn c204() -> ResourceRef {
     resource("contract", "c-204", Some(&agent(CLAUSE)))
 }
 
-fn req(p: &Principal, act: &str, res: ResourceRef) -> CheckRequest {
+pub(crate) fn req(p: &Principal, act: &str, res: ResourceRef) -> CheckRequest {
     CheckRequest {
         tenant: tenant(1),
         subject: p.clone(),
@@ -260,7 +265,7 @@ fn req(p: &Principal, act: &str, res: ResourceRef) -> CheckRequest {
     }
 }
 
-fn delegated(p: &Principal, a: &Principal, act: &str, res: ResourceRef) -> CheckRequest {
+pub(crate) fn delegated(p: &Principal, a: &Principal, act: &str, res: ResourceRef) -> CheckRequest {
     CheckRequest {
         actors: vec![a.clone()],
         ..req(p, act, res)

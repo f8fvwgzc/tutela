@@ -1171,7 +1171,7 @@ The map is a **UI hint only**. Every server route checks again.
 
 ### 7.6 gRPC `tutela.authz.v1`
 
-The same operations over gRPC, all built: `Evaluate`, `Evaluations`, `SearchResource`, `SearchSubject`, `Permissions` and `WriteCheck` (7.8). Service `tutela.authz.v1.Authz`, on the API port, behind the same token check. The handlers call the same code as HTTP. Messages carry the same fields with the same names and meanings as the JSON above, with these differences: `properties` is flat (`subject.act`, `resource.path`, `resource.attrs`), with no items `Evaluations` answers with one item, and `SearchResource` carries the filter as JSON text in `filter_json`, because a condition is a tree of open shape. The errors of 7.1 become gRPC codes: 400 `INVALID_ARGUMENT`, 401 `UNAUTHENTICATED`, 403 `PERMISSION_DENIED`, 503 `UNAVAILABLE`. The message starts with the problem code. The `.proto` file is `crates/tutela-contracts/proto/tutela/authz/v1/authz.proto`, and it is published with each release (section 10).
+The same operations over gRPC, all built: `Evaluate`, `Evaluations`, `SearchResource`, `SearchSubject`, `Permissions`, `WriteCheck` (7.8), `Explain` and `Simulate` (7.11). Service `tutela.authz.v1.Authz`, on the API port, behind the same token check. The handlers call the same code as HTTP. Messages carry the same fields with the same names and meanings as the JSON above, with these differences: `properties` is flat (`subject.act`, `resource.path`, `resource.attrs`), with no items `Evaluations` answers with one item, and `SearchResource` carries the filter as JSON text in `filter_json`, because a condition is a tree of open shape. The errors of 7.1 become gRPC codes: 400 `INVALID_ARGUMENT`, 401 `UNAUTHENTICATED`, 403 `PERMISSION_DENIED`, 503 `UNAVAILABLE`. The message starts with the problem code. The `.proto` file is `crates/tutela-contracts/proto/tutela/authz/v1/authz.proto`, and it is published with each release (section 10).
 
 ---
 
@@ -1325,6 +1325,48 @@ Publish:
 | 409 | `version_conflict`, `no_change` (this text is the active model), `no_source` (a version with no kept text). |
 
 A body may be up to 16 MiB, so a 4 MiB manifest fits after JSON escaping. `tutelad_model_operations_total` counts each call by `operation` and `outcome`: `ok`, `forbidden`, `refused`, `conflict`, `stale`, `invalid` or `error`.
+
+### 7.11 Explain and simulate
+
+**Status: Phase B, built** ([ADR-0028](DECISIONS.md#adr-0028-explain-and-simulate-need-read_audit-on-the-resource)). Both take the body of 7.2. Both show the model and other principals' assignments, so they need more than a check:
+
+- **Who may ask.** The caller's own principal must hold the admin key `<type>:read_audit` on the resource, at its path, on data that has just been checked: org admins for everything, scope owners for their own scope (PERMISSION-MODEL.md 5.3). So a person asking about itself needs it too, and a product's service account needs it like anyone else. An agent, a delegated token and an external token never pass. Without it: 403 `forbidden`.
+- **The path is checked.** Every registered scope on the path, and the resource if it is one, must have the path the store holds; otherwise 400 `invalid_request`. A caller cannot put a resource under a scope it owns to read who holds it.
+- The subject may be any principal, with actors, as for a service's check (7.1).
+- `tutelad_decisions_total` counts them as `explain` and `simulate`; a refused question counts as `error`.
+
+`POST /v1/authz/explain` answers with the decision of `check`, each principal's walk, and what each rule id is:
+
+```json
+{ "decision": true, "context": { "tutela": {
+  "decision": { "effect": "allow", "level": "read", "…": "…" },
+  "sides": [ { "principal": "user:usr_…", "outcome": "assignment", "org_owner": false,
+               "walk": [ { "scope": { "type": "invoice", "id": "inv-1" }, "assignments": [], "private": false },
+                         { "scope": { "type": "project", "id": "p-1" }, "assignments": ["ra_…"], "private": false } ] } ],
+  "rules": [ { "kind": "assignment", "id": "ra_…", "subject": "user:usr_…", "role": "reader",
+               "scope": { "type": "project", "id": "p-1" } } ]
+} } }
+```
+
+- `outcome` is `assignment`, `no_role`, `private_scope` or `outside_ai_reach`. The walk stops at the node that decided.
+- `rules` describes each of `decision.rule_ids`, in its order: `assignment`, `field_rule` (at one scope), `model_field_rule`, `condition` (a condition that was false: its role, type and `otherwise`), or `other`.
+
+`POST /v1/authz/simulate` adds `candidate` to the body:
+
+```json
+{ "subject": {"…": "…"}, "action": {"…": "…"}, "resource": {"…": "…"},
+  "candidate": {
+    "source": "version = 1\n…",
+    "add": [ { "subject": "user:usr_…", "role": "reader", "scope": { "type": "project", "id": "p-1" } } ],
+    "remove": ["ra_…"]
+  } }
+```
+
+- Every part of `candidate` is optional. `source` is a candidate model, or `restore` a kept version (7.10). `add` takes at most 100 assignments; a subject is a principal string or `group:<key>`. `remove` names stored assignment ids.
+- It answers `{ "decision", "context": { "tutela": <Decision> }, "current": { "decision", "context" }, "changed" }`: the candidate's answer, today's answer from the same read, and whether they differ in any field.
+- **Nothing is written, and no snapshot changes.** Two evaluators are built from one fresh read.
+- A candidate that does not compile, an assignment that is not there, or one that breaks a rule of the tenant data (two for one subject and scope) is 400.
+- gRPC: `Explain` answers `decision` and `explanation_json`; `Simulate` takes `evaluation` and `candidate_json` and answers `decision`, `changed` and `result_json`.
 
 ### 7.9 Ports and operations
 

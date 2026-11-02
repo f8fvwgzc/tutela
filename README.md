@@ -170,6 +170,7 @@ Phase B: parts 1 and 2a are merged: tenants, the bindings store, the check API o
 | `write_check` over the API, with moves and links across scopes checked against boundary rules and compared before and after ([ADR-0025](docs/DECISIONS.md#adr-0025-moves-and-links-in-write_check)) | Done (Phase B) |
 | Model versions: each tenant's published models kept and numbered, with rollback as a new publish and widening refused without an approval token ([ADR-0026](docs/DECISIONS.md#adr-0026-a-tenant-owns-its-model-versions)) | Done (Phase B) |
 | Impact report for a model change: who gains or loses what, from the tenant's own data ([ADR-0027](docs/DECISIONS.md#adr-0027-the-impact-report)) | Done (Phase B) |
+| Explain and simulate over HTTP and gRPC, for whoever holds `read_audit` on the resource ([ADR-0028](docs/DECISIONS.md#adr-0028-explain-and-simulate-need-read_audit-on-the-resource)) | Done (Phase B) |
 | Signed bundles for offline checks | Not built: part 3 ([ADR-0024](docs/DECISIONS.md#adr-0024-signed-bundles-wait-for-part-3)) |
 | Everything else | Planned, see [docs/ROADMAP.md](docs/ROADMAP.md) |
 
