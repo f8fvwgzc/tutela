@@ -1076,6 +1076,7 @@ mod tests {
             "tutela.membership.changed.v1",
             "tutela.session.revoked.v1",
             "tutela.principal.disabled.v1",
+            "tutela.principal.enabled.v1",
             "tutela.model.published.v1",
             "tutela.permissions.changed.v1",
             "tutela.key.created.v1",
