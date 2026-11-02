@@ -15,11 +15,11 @@ LOCKED ?= --locked
 .DEFAULT_GOAL := all
 
 .PHONY: help all ci fmt fmt-check lint test doc deny audit clean \
-	js js-install js-build js-typecheck js-lint js-test js-audit js-licenses
+	js js-install js-build js-typecheck js-lint js-test js-it js-audit js-licenses
 
 help:
 	@echo "Targets: all (fmt-check lint test doc deny audit js), fmt, fmt-check, lint, test, doc, deny, audit, clean"
-	@echo "         js (js-install js-build js-typecheck js-lint js-test js-audit js-licenses)"
+	@echo "         js (js-install js-build js-typecheck js-lint js-test js-it js-audit js-licenses)"
 
 all: fmt-check lint test doc deny audit js
 
@@ -51,7 +51,7 @@ clean:
 
 # ---------- The JavaScript SDKs: sdk/js and sdk/react (ADR-0047) ----------
 
-js: js-install js-build js-typecheck js-lint js-test js-audit js-licenses
+js: js-install js-build js-typecheck js-lint js-test js-it js-audit js-licenses
 
 js-install:
 	$(PNPM) install --frozen-lockfile
@@ -68,6 +68,13 @@ js-lint:
 
 js-test:
 	$(PNPM) -r run test
+
+# @f8fvwgzc/tutela-js against a real tutelad on a real Postgres: the Rust test
+# makes the world and runs sdk/js/test-integration with vitest. Like every
+# database test it needs TUTELA_TEST_DATABASE_URL, and fails without it when
+# TUTELA_REQUIRE_DATABASE=1.
+js-it:
+	TUTELA_JS_INTEGRATION=1 $(CARGO) test -p tutelad --all-features $(LOCKED) --test js_client -- --nocapture
 
 js-audit:
 	$(PNPM) audit
