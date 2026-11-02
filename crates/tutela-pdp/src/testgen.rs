@@ -414,7 +414,6 @@ impl ModelSpec {
 
     /// One random change. The result may not compile, or may widen; the
     /// caller checks both.
-    #[allow(clippy::too_many_lines)]
     pub fn mutate(&self, rng: &mut Rng) -> Self {
         let mut m = self.clone();
         let ri = rng.below(m.roles.len());
@@ -633,7 +632,6 @@ pub(crate) fn principals() -> Vec<Principal> {
 /// being a container (a neutral manifest change). Some rows reuse the id of
 /// a scope of another type. A few rows have 33 ancestors, one more than
 /// `check` accepts; they are never scopes.
-#[allow(clippy::too_many_lines)]
 pub(crate) fn tenant_world(rng: &mut Rng, n: u32, roles: &[String]) -> Tenant {
     let key = tenant(n);
     let org = PathEntry::org(&org_id(n)).unwrap();
