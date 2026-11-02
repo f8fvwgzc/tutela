@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use crate::{StoreError, TenantBundle};
+use crate::{StoreError, StoreErrorKind, TenantBundle};
 use tokio_postgres::{Client, NoTls};
 use tutela_contracts::decision::Effect;
 use tutela_contracts::keys::ActionKey;
@@ -160,6 +160,16 @@ fn gkey(s: &str) -> GroupKey {
     GroupKey::parse(s).unwrap()
 }
 
+/// The kind of a failed call.
+fn kind<T>(r: Result<T, StoreError>) -> Option<StoreErrorKind> {
+    r.err().map(|e| e.kind())
+}
+
+/// The rule a refused change breaks.
+fn refusal<T>(r: Result<T, StoreError>) -> Option<LoadError> {
+    r.err().and_then(|e| e.refusal().cloned())
+}
+
 /// A tenant with one org.
 async fn tenant(c: &mut Client) -> (TenantKey, OrgId) {
     let tx = c.transaction().await.unwrap();
@@ -232,10 +242,10 @@ async fn migrations_run_once_and_a_newer_schema_is_refused() {
         .batch_execute("INSERT INTO tutela.schema_migration (version, name) VALUES (999, 'future')")
         .await
         .unwrap();
-    assert!(matches!(
-        crate::migrate(&mut db.client).await,
-        Err(StoreError::SchemaTooNew(999))
-    ));
+    assert_eq!(
+        kind(crate::migrate(&mut db.client).await),
+        Some(StoreErrorKind::SchemaTooNew)
+    );
     db.finish().await;
 }
 
@@ -304,10 +314,10 @@ async fn tm05_row_level_security_hides_other_tenants_and_everything_with_no_tena
     // A tenant key with the right id but another issuer is unknown.
     let wrong = TenantKey::new("https://other.example.test".parse().unwrap(), a.tid);
     let tx = db.client.transaction().await.unwrap();
-    assert!(matches!(
-        crate::load(&tx, &wrong).await,
-        Err(StoreError::UnknownTenant)
-    ));
+    assert_eq!(
+        kind(crate::load(&tx, &wrong).await),
+        Some(StoreErrorKind::UnknownTenant)
+    );
     drop(tx);
     db.finish().await;
 }
@@ -351,18 +361,20 @@ async fn every_write_bumps_the_revision_in_its_own_transaction() {
     assert!(id.as_str().starts_with("ra_"));
     // One assignment per (subject, scope).
     let tx = db.client.transaction().await.unwrap();
-    assert!(matches!(
-        crate::assign(
-            &tx,
-            &t,
-            &Subject::Principal(user(1)),
-            &role("reader"),
-            &org(&o),
-            None
-        )
-        .await,
-        Err(StoreError::Exists(_))
-    ));
+    assert_eq!(
+        kind(
+            crate::assign(
+                &tx,
+                &t,
+                &Subject::Principal(user(1)),
+                &role("reader"),
+                &org(&o),
+                None
+            )
+            .await
+        ),
+        Some(StoreErrorKind::Exists)
+    );
     drop(tx);
     db.finish().await;
 }
@@ -513,17 +525,19 @@ async fn moving_rewrites_every_path_below_and_refuses_cycles_and_depth() {
         .await
         .unwrap();
     // A path that disagrees with a registered ancestor is refused.
-    assert!(matches!(
-        crate::put_scope(
-            &tx,
-            &t,
-            &entry("contract", "c-2"),
-            &[m.clone(), d2.clone(), org(&o)],
-            false
-        )
-        .await,
-        Err(StoreError::Invalid(_))
-    ));
+    assert_eq!(
+        kind(
+            crate::put_scope(
+                &tx,
+                &t,
+                &entry("contract", "c-2"),
+                &[m.clone(), d2.clone(), org(&o)],
+                false
+            )
+            .await
+        ),
+        Some(StoreErrorKind::Invalid)
+    );
     // The caller rolls back after an error.
     drop(tx);
     // Set up again in one committed transaction.
@@ -554,16 +568,16 @@ async fn moving_rewrites_every_path_below_and_refuses_cycles_and_depth() {
     );
     // Under itself, directly or through a scope below it: refused.
     let tx = db.client.transaction().await.unwrap();
-    assert!(matches!(
-        crate::move_scope(&tx, &t, &m, &[c.clone(), m.clone(), d2.clone(), org(&o)]).await,
-        Err(StoreError::Invalid(_))
-    ));
+    assert_eq!(
+        kind(crate::move_scope(&tx, &t, &m, &[c.clone(), m.clone(), d2.clone(), org(&o)]).await),
+        Some(StoreErrorKind::Invalid)
+    );
     drop(tx);
     let tx = db.client.transaction().await.unwrap();
-    assert!(matches!(
-        crate::move_scope(&tx, &t, &m, &[c.clone(), d2.clone(), org(&o)]).await,
-        Err(StoreError::Invalid(_))
-    ));
+    assert_eq!(
+        kind(crate::move_scope(&tx, &t, &m, &[c.clone(), d2.clone(), org(&o)]).await),
+        Some(StoreErrorKind::Invalid)
+    );
     drop(tx);
     // Too deep below after the move: refused before anything is written.
     // m has c below it, so m may not get more than 31 ancestors.
@@ -579,10 +593,10 @@ async fn moving_rewrites_every_path_below_and_refuses_cycles_and_depth() {
         chain.insert(0, s);
     }
     assert_eq!(chain.len(), 32);
-    assert!(matches!(
-        crate::move_scope(&tx, &t, &m, &chain).await,
-        Err(StoreError::Invalid(_))
-    ));
+    assert_eq!(
+        kind(crate::move_scope(&tx, &t, &m, &chain).await),
+        Some(StoreErrorKind::Invalid)
+    );
     // With one level less it fits: c then has exactly 32 ancestors.
     crate::move_scope(&tx, &t, &m, &chain[1..]).await.unwrap();
     drop(tx);
@@ -663,10 +677,10 @@ async fn group_rules_are_checked_on_every_write() {
             .unwrap();
     }
     // Keys are unique in the tenant.
-    assert!(matches!(
-        crate::create_group(&tx, &t, &o, &gkey("a"), "").await,
-        Err(StoreError::Exists(_))
-    ));
+    assert_eq!(
+        kind(crate::create_group(&tx, &t, &o, &gkey("a"), "").await),
+        Some(StoreErrorKind::Exists)
+    );
     drop(tx);
     let tx = db.client.transaction().await.unwrap();
     for k in ["a", "b"] {
@@ -684,8 +698,8 @@ async fn group_rules_are_checked_on_every_write() {
     // A cycle is refused.
     let tx = db.client.transaction().await.unwrap();
     assert!(matches!(
-        crate::add_member(&tx, &t, &gkey("b"), &Member::Group(gkey("a")), None).await,
-        Err(StoreError::Refused(LoadError::GroupCycle(_)))
+        refusal(crate::add_member(&tx, &t, &gkey("b"), &Member::Group(gkey("a")), None).await),
+        Some(LoadError::GroupCycle(_))
     ));
     drop(tx);
     // Nesting deeper than 32 is refused: a chain of 32 loads, 33 does not.
@@ -710,8 +724,8 @@ async fn group_rules_are_checked_on_every_write() {
         .await
         .unwrap();
     assert!(matches!(
-        crate::add_member(&tx, &t, &gkey("c31"), &Member::Group(gkey("c32")), None).await,
-        Err(StoreError::Refused(LoadError::GroupsTooDeep(_)))
+        refusal(crate::add_member(&tx, &t, &gkey("c31"), &Member::Group(gkey("c32")), None).await),
+        Some(LoadError::GroupsTooDeep(_))
     ));
     drop(tx);
     // A closure over the work limit is refused: 32 levels of 25 groups, each
@@ -743,8 +757,10 @@ async fn group_rules_are_checked_on_every_write() {
     .await
     .unwrap();
     assert!(matches!(
-        crate::add_member(&tx, &t, &gkey("l30g0"), &Member::Group(gkey("l31g0")), None).await,
-        Err(StoreError::Refused(LoadError::GroupClosureTooLarge))
+        refusal(
+            crate::add_member(&tx, &t, &gkey("l30g0"), &Member::Group(gkey("l31g0")), None).await
+        ),
+        Some(LoadError::GroupClosureTooLarge)
     ));
     drop(tx);
     // Deleting a group takes its assignments and its places with it.
@@ -796,10 +812,10 @@ async fn publishing_a_manifest_bumps_every_tenant_and_records_the_change() {
     assert_eq!(stored.version, 1);
     assert_eq!(stored.digest, crate::digest(MANIFEST));
     // Compared against version 0 while version 1 is in: refused.
-    assert!(matches!(
-        crate::publish_manifest(&tx, &publish(None)).await,
-        Err(StoreError::Exists(_))
-    ));
+    assert_eq!(
+        kind(crate::publish_manifest(&tx, &publish(None)).await),
+        Some(StoreErrorKind::Exists)
+    );
     drop(tx);
     // Each tenant has its record.
     let tx = db.client.transaction().await.unwrap();
@@ -815,6 +831,26 @@ async fn publishing_a_manifest_bumps_every_tenant_and_records_the_change() {
         .unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].get::<_, &str>(1), "widening");
+    drop(tx);
+    db.finish().await;
+}
+
+/// A driver error stays in `source()`, its SQLSTATE is readable, and no
+/// driver type is in the public error (#43).
+#[tokio::test]
+async fn a_database_error_keeps_its_cause_and_its_sqlstate() {
+    let Some(mut db) = db().await else { return };
+    let (t, _) = tenant(&mut db.client).await;
+    let tx = db.client.transaction().await.unwrap();
+    tx.batch_execute("SELECT * FROM no_such_table")
+        .await
+        .unwrap_err();
+    // The failed statement aborted the transaction: the next call fails.
+    let e = crate::rev(&tx, &t).await.unwrap_err();
+    assert_eq!(e.kind(), StoreErrorKind::Database);
+    assert_eq!(e.sqlstate(), Some("25P02"));
+    assert_eq!(e.to_string(), "database error");
+    assert!(std::error::Error::source(&e).is_some());
     drop(tx);
     db.finish().await;
 }

@@ -41,9 +41,10 @@ pub enum CliError {
     /// The database is not configured or may not be used.
     #[error("{0}")]
     Database(&'static str),
-    /// The database connection or a statement failed.
+    /// The database connection or a statement failed. The driver's error is
+    /// the `source()`.
     #[error("database error")]
-    Postgres(#[from] tutela_store::tokio_postgres::Error),
+    Postgres(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
     /// The store refused a call.
     #[error(transparent)]
     Store(#[from] tutela_store::StoreError),
@@ -61,18 +62,17 @@ pub enum CliError {
     Internal(&'static str),
 }
 
+impl From<tutela_store::tokio_postgres::Error> for CliError {
+    fn from(e: tutela_store::tokio_postgres::Error) -> Self {
+        Self::Postgres(Box::new(e))
+    }
+}
+
 impl CliError {
     /// The text for a person: this error and its sources, joined by `: `.
-    /// `Display` alone leaves the sources out. `{e:#}` would not add them:
-    /// it walks the chain of an `anyhow::Error`, and a `thiserror` type
-    /// ignores it.
     #[must_use]
     pub fn report(&self) -> String {
-        let first: &(dyn std::error::Error + 'static) = self;
-        let texts: Vec<String> = std::iter::successors(Some(first), |e| e.source())
-            .map(ToString::to_string)
-            .collect();
-        texts.join(": ")
+        tutela_contracts::error_chain(self)
     }
 }
 
@@ -307,7 +307,7 @@ mod tests {
         let io = CliError::from(std::io::Error::other("the disk is full"));
         assert_eq!(io.to_string(), "i/o error");
         assert_eq!(io.report(), "i/o error: the disk is full");
-        let refused = CliError::from(tutela_store::StoreError::Refused(
+        let refused = CliError::from(tutela_store::StoreError::from(
             tutela_pdp::LoadError::RevTooLarge,
         ));
         assert_eq!(

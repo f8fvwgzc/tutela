@@ -23,23 +23,63 @@ use tokio_postgres::types::ToSql;
 use tutela_contracts::keys::FieldName;
 use tutela_pdp::{FilterExpr, FilterValue, ListFilter, MAX_PATH, PathEntry};
 
-/// Why a filter could not become SQL, or the query failed. The caller
-/// fails closed.
-#[derive(Debug, thiserror::Error)]
+/// What kind of failure a [`SqlError`] is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
-pub enum SqlError {
+pub enum SqlErrorKind {
     /// A column name that is not a plain identifier.
-    #[error("column `{0}` is not a plain SQL identifier")]
-    Column(String),
+    Column,
     /// The filter reads a field the mapping has no column for.
-    #[error("no column for field `{0}`")]
-    UnmappedField(String),
+    UnmappedField,
     /// An op or a value this adapter does not know: refuse the filter.
-    #[error("the filter has an op or value this adapter does not support")]
     Unsupported,
     /// The statement timed out, or failed.
+    Query,
+}
+
+/// Why a filter could not become SQL, or the query failed. The caller
+/// fails closed. Branch on [`SqlError::kind`].
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub struct SqlError(#[from] Repr);
+
+#[derive(Debug, thiserror::Error)]
+enum Repr {
+    #[error("column `{0}` is not a plain SQL identifier")]
+    Column(String),
+    #[error("no column for field `{0}`")]
+    UnmappedField(String),
+    #[error("the filter has an op or value this adapter does not support")]
+    Unsupported,
     #[error("the list query failed")]
-    Query(#[from] tokio_postgres::Error),
+    Query(#[source] tokio_postgres::Error),
+}
+
+impl SqlError {
+    /// What kind of failure this is.
+    #[must_use]
+    pub const fn kind(&self) -> SqlErrorKind {
+        match self.0 {
+            Repr::Column(_) => SqlErrorKind::Column,
+            Repr::UnmappedField(_) => SqlErrorKind::UnmappedField,
+            Repr::Unsupported => SqlErrorKind::Unsupported,
+            Repr::Query(_) => SqlErrorKind::Query,
+        }
+    }
+
+    /// The Postgres SQLSTATE of a [`Query`](SqlErrorKind::Query) error, for
+    /// example `57014` for a statement timeout.
+    #[must_use]
+    pub fn sqlstate(&self) -> Option<&str> {
+        match &self.0 {
+            Repr::Query(e) => e.code().map(tokio_postgres::error::SqlState::code),
+            _ => None,
+        }
+    }
+
+    fn query(e: tokio_postgres::Error) -> Self {
+        Self(Repr::Query(e))
+    }
 }
 
 /// A bound parameter.
@@ -88,7 +128,7 @@ pub struct Columns {
 
 fn ident(name: &str) -> Result<String, SqlError> {
     if RESERVED.contains(&name) {
-        return Err(SqlError::Column(name.to_owned()));
+        return Err(Repr::Column(name.to_owned()).into());
     }
     let ok = !name.is_empty()
         && name.len() <= 63
@@ -102,7 +142,7 @@ fn ident(name: &str) -> Result<String, SqlError> {
     if ok {
         Ok(format!("\"{name}\""))
     } else {
-        Err(SqlError::Column(name.to_owned()))
+        Err(Repr::Column(name.to_owned()).into())
     }
 }
 
@@ -221,7 +261,7 @@ impl Builder<'_> {
             .cols
             .fields
             .get(f)
-            .ok_or_else(|| SqlError::UnmappedField(f.to_string()))?;
+            .ok_or_else(|| Repr::UnmappedField(f.to_string()))?;
         ident(col)
     }
 
@@ -274,7 +314,7 @@ impl Builder<'_> {
                 format!("coalesce({} = ANY({c}), false)", take(None))
             }
             FilterExpr::IsNull { attr } => format!("({} IS NULL)", self.field(attr)?),
-            _ => return Err(SqlError::Unsupported),
+            _ => return Err(Repr::Unsupported.into()),
         })
     }
 
@@ -315,7 +355,7 @@ impl Builder<'_> {
                 }
             };
             let Some((_, g)) = groups.get_mut(i) else {
-                return Err(SqlError::Unsupported);
+                return Err(Repr::Unsupported.into());
             };
             g.terms.push(a);
             for s in scopes {
@@ -392,7 +432,7 @@ impl Builder<'_> {
                             .iter()
                             .map(|v| match v {
                                 FilterValue::String(s) => Ok(s.clone()),
-                                _ => Err(SqlError::Unsupported),
+                                _ => Err(Repr::Unsupported),
                             })
                             .collect::<Result<_, _>>()?,
                     ),
@@ -401,11 +441,11 @@ impl Builder<'_> {
                             .iter()
                             .map(|v| match v {
                                 FilterValue::Integer(i) => Ok(*i),
-                                _ => Err(SqlError::Unsupported),
+                                _ => Err(Repr::Unsupported),
                             })
                             .collect::<Result<_, _>>()?,
                     ),
-                    _ => return Err(SqlError::Unsupported),
+                    _ => return Err(Repr::Unsupported.into()),
                 };
                 let p = self.bind(array);
                 format!("coalesce({c} = ANY({p}), false)")
@@ -430,7 +470,7 @@ impl Builder<'_> {
                     under_sql(&ancestors, &p, scopes.len())
                 )
             }
-            _ => return Err(SqlError::Unsupported),
+            _ => return Err(Repr::Unsupported.into()),
         })
     }
 
@@ -448,8 +488,8 @@ impl Builder<'_> {
 ///
 /// # Errors
 ///
-/// [`SqlError::Column`], [`SqlError::UnmappedField`] or
-/// [`SqlError::Unsupported`]: the caller fails closed.
+/// [`SqlErrorKind::Column`], [`SqlErrorKind::UnmappedField`] or
+/// [`SqlErrorKind::Unsupported`]: the caller fails closed.
 pub fn where_clause(
     filter: &ListFilter,
     cols: &Columns,
@@ -516,21 +556,22 @@ async fn run(
     select: &str,
 ) -> Result<Vec<tokio_postgres::Row>, SqlError> {
     tx.execute(&format!("SET LOCAL statement_timeout = {timeout_ms}"), &[])
-        .await?;
+        .await
+        .map_err(SqlError::query)?;
     let (clause, params) = where_clause(filter, cols, 1)?;
     let refs: Vec<&(dyn ToSql + Sync)> = params.iter().map(Param::as_sql).collect();
     let sql = format!(
         "SELECT {select} FROM {} WHERE {clause}",
         ident(&cols.table)?
     );
-    Ok(tx.query(&sql, &refs).await?)
+    tx.query(&sql, &refs).await.map_err(SqlError::query)
 }
 
 /// The number of rows the filter lists, with a statement timeout.
 ///
 /// # Errors
 ///
-/// A [`SqlError`]; a timeout is [`SqlError::Query`], never a partial count.
+/// A [`SqlError`]; a timeout is [`SqlErrorKind::Query`], never a partial count.
 pub async fn count(
     tx: &Transaction<'_>,
     filter: &ListFilter,
@@ -538,14 +579,16 @@ pub async fn count(
     timeout_ms: u32,
 ) -> Result<i64, SqlError> {
     let rows = run(tx, filter, cols, timeout_ms, "count(*)").await?;
-    Ok(rows.first().map_or(Ok(0), |r| r.try_get(0))?)
+    rows.first()
+        .map_or(Ok(0), |r| r.try_get(0))
+        .map_err(SqlError::query)
 }
 
 /// The ids of the rows the filter lists, sorted, with a statement timeout.
 ///
 /// # Errors
 ///
-/// A [`SqlError`]; a timeout is [`SqlError::Query`], never a partial list.
+/// A [`SqlError`]; a timeout is [`SqlErrorKind::Query`], never a partial list.
 pub async fn ids(
     tx: &Transaction<'_>,
     filter: &ListFilter,
@@ -557,7 +600,8 @@ pub async fn ids(
         .await?
         .iter()
         .map(|r| r.try_get(0))
-        .collect::<Result<_, _>>()?;
+        .collect::<Result<_, _>>()
+        .map_err(SqlError::query)?;
     out.sort();
     Ok(out)
 }

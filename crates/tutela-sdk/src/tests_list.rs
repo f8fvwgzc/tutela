@@ -16,7 +16,7 @@ use tutela_pdp::{
 };
 
 use crate::cache::CachedPdp;
-use crate::sql::{self, Columns, SqlError};
+use crate::sql::{self, Columns, SqlErrorKind};
 
 const MANIFEST: &str = r#"
 version = 1
@@ -236,16 +236,16 @@ fn column_names_are_identifiers_and_fields_must_be_mapped() {
     assert!(params.contains(&sql::Param::Text("secret".into())));
     let mut evil = columns();
     evil.ancestors = "ancestors; DROP TABLE item".into();
-    assert!(matches!(
-        sql::where_clause(&f, &evil, 1),
-        Err(SqlError::Column(_))
-    ));
+    assert_eq!(
+        sql::where_clause(&f, &evil, 1).unwrap_err().kind(),
+        SqlErrorKind::Column
+    );
     let mut unmapped = columns();
     unmapped.fields.clear();
-    assert!(matches!(
-        sql::where_clause(&f, &unmapped, 1),
-        Err(SqlError::UnmappedField(_))
-    ));
+    assert_eq!(
+        sql::where_clause(&f, &unmapped, 1).unwrap_err().kind(),
+        SqlErrorKind::UnmappedField
+    );
 }
 
 #[tokio::test]
@@ -344,7 +344,8 @@ async fn tm10_the_sql_lists_exactly_the_rows_check_allows() {
     let mut slow = columns();
     slow.table = "slow".into();
     let err = sql::ids(&tx, &f, &slow, 50).await.unwrap_err();
-    assert!(matches!(err, SqlError::Query(_)));
+    assert_eq!(err.kind(), SqlErrorKind::Query);
+    assert_eq!(err.sqlstate(), Some("57014"));
     // The text leaves the cause to `source()`, so a chain shows it once.
     assert_eq!(err.to_string(), "the list query failed");
     assert!(std::error::Error::source(&err).is_some());
@@ -561,22 +562,21 @@ async fn grouped_terms_list_the_same_rows_as_term_by_term() {
     let mut bad = columns();
     bad.fields
         .insert("status".parse().unwrap(), "tutela_vals".into());
-    assert!(matches!(
-        sql::where_clause(
-            &ListFilter {
-                tenant: tenant(),
-                type_name: "item".parse().unwrap(),
-                rev: 1,
-                ids_in: vec![],
-                container_in: vec![],
-                condition: Some(E::Eq {
-                    attr: "status".parse().unwrap(),
-                    value: V::Boolean(true)
-                })
-            },
-            &bad,
-            1
-        ),
-        Err(SqlError::Column(_))
-    ));
+    let e = sql::where_clause(
+        &ListFilter {
+            tenant: tenant(),
+            type_name: "item".parse().unwrap(),
+            rev: 1,
+            ids_in: vec![],
+            container_in: vec![],
+            condition: Some(E::Eq {
+                attr: "status".parse().unwrap(),
+                value: V::Boolean(true),
+            }),
+        },
+        &bad,
+        1,
+    )
+    .unwrap_err();
+    assert_eq!(e.kind(), SqlErrorKind::Column);
 }

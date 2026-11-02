@@ -304,12 +304,20 @@ async fn a_dry_run_writes_nothing_and_a_broken_manifest_is_an_error() {
 /// report must walk the chain to show it. It shows once on either path.
 #[tokio::test]
 async fn a_database_error_shows_the_server_message_once() {
-    let Some(db) = db().await else { return };
+    let Some(mut db) = db().await else { return };
     let failed = || db.client.batch_execute("SELECT * FROM no_such_table");
     let want = "database error: db error: ERROR: relation \"no_such_table\" does not exist";
     let direct = crate::CliError::from(failed().await.unwrap_err());
     assert_eq!(direct.report(), want);
-    let stored = crate::CliError::from(tutela_store::StoreError::from(failed().await.unwrap_err()));
+    // The same text through the store, whose error hides the driver's type.
+    db.client
+        .batch_execute("DROP TABLE tutela.approver_key")
+        .await
+        .unwrap();
+    let want = "database error: db error: ERROR: relation \"tutela.approver_key\" does not exist";
+    let tx = db.client.transaction().await.unwrap();
+    let stored = crate::CliError::from(tutela_store::approvers(&tx).await.unwrap_err());
     assert_eq!(stored.report(), want);
+    drop(tx);
     db.finish().await;
 }

@@ -33,6 +33,7 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0014](#adr-0014-tutela-store-in-phase-a-the-schema-row-level-security-and-checked-writes) | tutela-store in Phase A: the schema, row-level security and checked writes | Accepted |
 | [0015](#adr-0015-approval-tokens-for-tutela-apply-in-library-mode) | Approval tokens for `tutela apply` in library mode | Accepted |
 | [0016](#adr-0016-the-list-query-grouped-terms-hashed-scope-tests-and-lower-filter-limits) | The list query: grouped terms, hashed scope tests and lower filter limits | Accepted |
+| [0017](#adr-0017-opaque-public-errors-for-the-crates-that-touch-the-outside-world) | Opaque public errors for the crates that touch the outside world | Accepted |
 
 ---
 
@@ -650,3 +651,44 @@ Benchmark (`cargo bench -p tutela-pdp`): the tenant has the sizes of the week-1 
 - **Materialize each principal's visible scopes per revision** (option 3). It needs store tables and invalidation for every binding change. Options 1 and 2 meet the gate without it.
 - **Lower the limits only.** The cost per row stayed: with the old SQL even small limits timed out on the array overlap.
 
+---
+
+## ADR-0017: Opaque public errors for the crates that touch the outside world
+
+**Status:** Accepted, 2026-11-02. Built for v0.2.0 ([#43](https://github.com/f8fvwgzc/tutela/issues/43)).
+
+**Context.** Four public errors held a dependency's type or flattened a cause into a `String`:
+- `StoreError::Db(tokio_postgres::Error)` and `SqlError::Query(tokio_postgres::Error)`: a bump of the driver would be a breaking change for us;
+- `SafenetError::Http(String)`: `reqwest::Error`'s own text leaves its cause out, so the real reason (for example, connection refused) was lost;
+- `VaultError::Kms(String)`: a backend's error had no `source()`.
+
+Our public errors were `#[non_exhaustive]` enums with public variants, so every variant, field and tuple position was public API. v0.2.0 is the moment to break them; texc-symphony and attache stay on `v0.1.0` until they choose to bump.
+
+**Decision.**
+
+1. **`StoreError`, `SqlError`, `SafenetError` and `VaultError` are opaque.** Each is a struct with one private field, a private `thiserror` enum, and `#[error(transparent)]`. So `Display` and `source()` come from the private enum, and nothing of it is public.
+2. **Callers branch on a kind.** Each has `kind()`, which returns a `Copy`, `#[non_exhaustive]` enum: `StoreErrorKind`, `SqlErrorKind`, `SafenetErrorKind`, `VaultErrorKind`. Data lives behind accessors:
+   - `StoreError::detail`, `refusal` and `sqlstate`;
+   - `SqlError::sqlstate`;
+   - `SafenetError::host` and `limit`;
+   - `VaultError::key` and `variable`.
+3. **There is no public `From<tokio_postgres::Error>`.** It would keep the driver's type in the API, and `?` would keep working only by accident. `tutela-store` converts inside with a private `.db()`.
+4. **A SQLSTATE is text.** `sqlstate()` gives a caller what it needs from the driver (`42501` when row-level security refuses a row, `40001` to retry, `57014` for a statement timeout) without the driver's types.
+5. **The `Kms` trait stays open to other backends.** `VaultError::kms`, `unknown_key` and `decrypt` are public constructors, because a backend outside this repo must return them.
+6. **`SafenetErrorKind::Http` keeps `reqwest::Error` privately, with its URL removed** (`without_url`). The chain now holds the reason and still no part of the URL, and a test checks both.
+7. **`tutela_contracts::error_chain` is public.** It replaces the private copies, and `{err}` reporters in other repos can use it at their bump ([#44](https://github.com/f8fvwgzc/tutela/issues/44)).
+8. **Only these four change.** The other public errors stay `#[non_exhaustive]` enums or small structs:
+   - the parse errors of `tutela-contracts` and the errors of `tutela-pdp` hold no dependency's type and no flattened cause, and they describe stable categories (the `library-errors` skill's middle ground);
+   - `AuthError` is already opaque;
+   - `CliError` belongs to a binary; its `Postgres` variant now holds a boxed cause.
+
+**Consequences.**
+- `VaultError` is no longer `Clone`, `PartialEq` or `Eq`: a boxed cause has none of these. Compare `kind()`.
+- A product that used `?` on a `tokio_postgres::Error` in a function returning `StoreError` needs its own error type. A failed `commit` is the product's error, not the store's.
+- `tutela_store` still takes `&tokio_postgres::Transaction` and re-exports `tokio_postgres`, because every call runs in the product's own transaction. So a major driver bump can still be a breaking change. This ADR closes the error path only.
+- The migration note is [MIGRATION-0.2.md](MIGRATION-0.2.md).
+
+**Alternatives considered.**
+- **Keep public enums and box only the causes** (the skill's middle ground). This keeps every variant public. The store's and the safenet's categories are still moving in Phase B.
+- **`anyhow` in the libraries.** It gives callers nothing to branch on.
+- **Make every error in the workspace opaque.** About thirty parse errors would change, with no dependency type to hide, and two consumers would pay for it.

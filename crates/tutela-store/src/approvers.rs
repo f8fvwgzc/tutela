@@ -7,7 +7,7 @@
 use sha2::{Digest, Sha256};
 use tokio_postgres::Transaction;
 
-use crate::StoreError;
+use crate::{DbResult as _, StoreError};
 
 /// The longest approver name.
 const MAX_NAME: usize = 256;
@@ -37,28 +37,30 @@ pub fn approver_id(public_key: &[u8; 32]) -> String {
 ///
 /// # Errors
 ///
-/// [`StoreError::Invalid`] for an empty name, one over 256 characters or one
-/// with control characters; [`StoreError::Exists`] if the key is registered;
-/// or a database error.
+/// [`Invalid`](crate::StoreErrorKind::Invalid) for an empty name, one over 256
+/// characters or one with control characters;
+/// [`Exists`](crate::StoreErrorKind::Exists) if the key is registered; or a
+/// database error.
 pub async fn add_approver(
     tx: &Transaction<'_>,
     name: &str,
     public_key: &[u8; 32],
 ) -> Result<String, StoreError> {
     if name.is_empty() || name.chars().count() > MAX_NAME || name.chars().any(char::is_control) {
-        return Err(StoreError::Invalid(
+        return Err(StoreError::invalid(
             "an approver name is 1 to 256 characters with no control characters",
         ));
     }
     let id = approver_id(public_key);
     if approver(tx, &id).await?.is_some() {
-        return Err(StoreError::Exists("this approver key"));
+        return Err(StoreError::exists("this approver key"));
     }
     tx.execute(
         "INSERT INTO tutela.approver_key (id, name, public_key) VALUES ($1, $2, $3)",
         &[&id, &name, &public_key.as_slice()],
     )
-    .await?;
+    .await
+    .db()?;
     Ok(id)
 }
 
@@ -67,17 +69,17 @@ pub async fn add_approver(
 ///
 /// # Errors
 ///
-/// [`StoreError::NotFound`] for an unknown or already revoked key, or a
-/// database error.
+/// [`NotFound`](crate::StoreErrorKind::NotFound) for an unknown or already
+/// revoked key, or a database error.
 pub async fn revoke_approver(tx: &Transaction<'_>, id: &str) -> Result<(), StoreError> {
     let n = tx
         .execute(
             "UPDATE tutela.approver_key SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL",
             &[&id],
         )
-        .await?;
+        .await.db()?;
     if n == 0 {
-        return Err(StoreError::NotFound("approver key"));
+        return Err(StoreError::not_found("approver key"));
     }
     Ok(())
 }
@@ -86,7 +88,8 @@ pub async fn revoke_approver(tx: &Transaction<'_>, id: &str) -> Result<(), Store
 ///
 /// # Errors
 ///
-/// A database error, or [`StoreError::Corrupt`] for a bad stored key.
+/// A database error, or [`Corrupt`](crate::StoreErrorKind::Corrupt) for a bad
+/// stored key.
 pub async fn approver(tx: &Transaction<'_>, id: &str) -> Result<Option<Approver>, StoreError> {
     let row = tx
         .query_opt(
@@ -94,7 +97,8 @@ pub async fn approver(tx: &Transaction<'_>, id: &str) -> Result<Option<Approver>
              WHERE id = $1",
             &[&id],
         )
-        .await?;
+        .await
+        .db()?;
     row.map(|r| to_approver(&r)).transpose()
 }
 
@@ -102,27 +106,29 @@ pub async fn approver(tx: &Transaction<'_>, id: &str) -> Result<Option<Approver>
 ///
 /// # Errors
 ///
-/// A database error, or [`StoreError::Corrupt`] for a bad stored key.
+/// A database error, or [`Corrupt`](crate::StoreErrorKind::Corrupt) for a bad
+/// stored key.
 pub async fn approvers(tx: &Transaction<'_>) -> Result<Vec<Approver>, StoreError> {
     tx.query(
         "SELECT id, name, public_key, revoked_at IS NOT NULL FROM tutela.approver_key \
          ORDER BY created_at, id",
         &[],
     )
-    .await?
+    .await
+    .db()?
     .iter()
     .map(to_approver)
     .collect()
 }
 
 fn to_approver(r: &tokio_postgres::Row) -> Result<Approver, StoreError> {
-    let key: &[u8] = r.try_get(2)?;
+    let key: &[u8] = r.try_get(2).db()?;
     Ok(Approver {
-        id: r.try_get(0)?,
-        name: r.try_get(1)?,
+        id: r.try_get(0).db()?,
+        name: r.try_get(1).db()?,
         public_key: key
             .try_into()
-            .map_err(|_| StoreError::Corrupt("approver public key"))?,
-        revoked: r.try_get(3)?,
+            .map_err(|_| StoreError::corrupt("approver public key"))?,
+        revoked: r.try_get(3).db()?,
     })
 }

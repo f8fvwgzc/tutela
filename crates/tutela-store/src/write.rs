@@ -15,7 +15,8 @@ use tutela_pdp::model::{GroupKey, RoleKey};
 use tutela_pdp::{MAX_PATH, Member, PathEntry, Subject};
 
 use crate::{
-    StoreError, begin_write, entry_text, finish_write, new_rule_id, parse_entry, set_tenant, uuid7,
+    DbResult as _, StoreError, begin_write, entry_text, finish_write, new_rule_id, parse_entry,
+    set_tenant, uuid7,
 };
 
 /// The longest group name.
@@ -33,13 +34,15 @@ pub async fn create_tenant(tx: &Transaction<'_>, iss: &Issuer) -> Result<TenantK
         "INSERT INTO tutela.tenant (tenant_id, iss) VALUES ($1, $2)",
         &[&tid.to_string(), &iss.as_str()],
     )
-    .await?;
+    .await
+    .db()?;
     set_tenant(tx, &tid).await?;
     tx.execute(
         "INSERT INTO tutela.tenant_rev (tenant_id, rev) VALUES ($1, 0)",
         &[&tid.to_string()],
     )
-    .await?;
+    .await
+    .db()?;
     Ok(TenantKey::new(iss.clone(), tid))
 }
 
@@ -47,7 +50,7 @@ pub async fn create_tenant(tx: &Transaction<'_>, iss: &Issuer) -> Result<TenantK
 ///
 /// # Errors
 ///
-/// [`StoreError::UnknownTenant`] or a database error.
+/// [`UnknownTenant`](crate::StoreErrorKind::UnknownTenant) or a database error.
 pub async fn add_org(tx: &Transaction<'_>, tenant: &TenantKey) -> Result<(OrgId, u64), StoreError> {
     let rev = begin_write(tx, tenant).await?;
     let org = OrgId::new(uuid7()?);
@@ -55,7 +58,8 @@ pub async fn add_org(tx: &Transaction<'_>, tenant: &TenantKey) -> Result<(OrgId,
         "INSERT INTO tutela.org (tenant_id, org_id) VALUES ($1, $2)",
         &[&tenant.tid.to_string(), &org.to_string()],
     )
-    .await?;
+    .await
+    .db()?;
     Ok((org, finish_write(tx, tenant, rev).await?))
 }
 
@@ -65,10 +69,11 @@ pub async fn add_org(tx: &Transaction<'_>, tenant: &TenantKey) -> Result<(OrgId,
 ///
 /// # Errors
 ///
-/// [`StoreError::NotFound`] for an unregistered scope or an unknown group,
-/// [`StoreError::Exists`] if the subject already has an assignment at the
-/// scope (one per (subject, scope)), [`StoreError::Refused`] if the data
-/// would break a rule, or a database error.
+/// [`NotFound`](crate::StoreErrorKind::NotFound) for an unregistered scope or
+/// an unknown group, [`Exists`](crate::StoreErrorKind::Exists) if the subject
+/// already has an assignment at the scope (one per (subject, scope)),
+/// [`Refused`](crate::StoreErrorKind::Refused) if the data would break a rule,
+/// or a database error.
 pub async fn assign(
     tx: &Transaction<'_>,
     tenant: &TenantKey,
@@ -93,9 +98,10 @@ pub async fn assign(
                 &scope.id.as_str(),
             ],
         )
-        .await?;
+        .await
+        .db()?;
     if taken.is_some() {
-        return Err(StoreError::Exists(
+        return Err(StoreError::exists(
             "an assignment for this subject at this scope",
         ));
     }
@@ -116,7 +122,8 @@ pub async fn assign(
             &db_rev(rev)?,
         ],
     )
-    .await?;
+    .await
+    .db()?;
     Ok((rule, finish_write(tx, tenant, rev).await?))
 }
 
@@ -124,7 +131,7 @@ pub async fn assign(
 ///
 /// # Errors
 ///
-/// [`StoreError::NotFound`] or a database error.
+/// [`NotFound`](crate::StoreErrorKind::NotFound) or a database error.
 pub async fn unassign(
     tx: &Transaction<'_>,
     tenant: &TenantKey,
@@ -136,9 +143,10 @@ pub async fn unassign(
             "DELETE FROM tutela.role_assignment WHERE tenant_id = $1 AND id = $2",
             &[&tenant.tid.to_string(), &id.as_str()],
         )
-        .await?;
+        .await
+        .db()?;
     if gone == 0 {
-        return Err(StoreError::NotFound("assignment"));
+        return Err(StoreError::not_found("assignment"));
     }
     finish_write(tx, tenant, rev).await
 }
@@ -148,10 +156,10 @@ pub async fn unassign(
 ///
 /// # Errors
 ///
-/// [`StoreError::NotFound`] for an org of another tenant,
-/// [`StoreError::Exists`] for a key in use, [`StoreError::Invalid`] for a
-/// name over 256 characters or with control characters, or a database
-/// error.
+/// [`NotFound`](crate::StoreErrorKind::NotFound) for an org of another tenant,
+/// [`Exists`](crate::StoreErrorKind::Exists) for a key in use,
+/// [`Invalid`](crate::StoreErrorKind::Invalid) for a name over 256 characters
+/// or with control characters, or a database error.
 pub async fn create_group(
     tx: &Transaction<'_>,
     tenant: &TenantKey,
@@ -160,7 +168,7 @@ pub async fn create_group(
     name: &str,
 ) -> Result<u64, StoreError> {
     if name.chars().count() > MAX_GROUP_NAME || name.chars().any(char::is_control) {
-        return Err(StoreError::Invalid(
+        return Err(StoreError::invalid(
             "a group name is at most 256 characters with no control characters",
         ));
     }
@@ -171,13 +179,14 @@ pub async fn create_group(
             "SELECT 1 FROM tutela.org WHERE tenant_id = $1 AND org_id = $2",
             &[&tid, &org.to_string()],
         )
-        .await?
+        .await
+        .db()?
         .is_none()
     {
-        return Err(StoreError::NotFound("org"));
+        return Err(StoreError::not_found("org"));
     }
     if group_id(tx, &tid, key).await?.is_some() {
-        return Err(StoreError::Exists("a group with this key"));
+        return Err(StoreError::exists("a group with this key"));
     }
     let id = format!("grp_{}", uuid7()?);
     tx.execute(
@@ -185,7 +194,8 @@ pub async fn create_group(
          VALUES ($1, $2, $3, $4, $5)",
         &[&tid, &id, &org.to_string(), &key.as_str(), &name],
     )
-    .await?;
+    .await
+    .db()?;
     finish_write(tx, tenant, rev).await
 }
 
@@ -193,9 +203,10 @@ pub async fn create_group(
 ///
 /// # Errors
 ///
-/// [`StoreError::NotFound`] for an unknown group, [`StoreError::Exists`] if
-/// it is already a member, [`StoreError::Refused`] for a cycle, nesting
-/// deeper than 32 or a closure over the limits, or a database error.
+/// [`NotFound`](crate::StoreErrorKind::NotFound) for an unknown group,
+/// [`Exists`](crate::StoreErrorKind::Exists) if it is already a member,
+/// [`Refused`](crate::StoreErrorKind::Refused) for a cycle, nesting deeper than
+/// 32 or a closure over the limits, or a database error.
 pub async fn add_member(
     tx: &Transaction<'_>,
     tenant: &TenantKey,
@@ -207,7 +218,7 @@ pub async fn add_member(
     let tid = tenant.tid.to_string();
     let gid = group_id(tx, &tid, group)
         .await?
-        .ok_or(StoreError::NotFound("group"))?;
+        .ok_or(StoreError::not_found("group"))?;
     let (kind, id) = member_row(tx, &tid, member).await?;
     if tx
         .query_opt(
@@ -215,17 +226,19 @@ pub async fn add_member(
              AND member_kind = $3 AND member_id = $4",
             &[&tid, &gid, &kind, &id],
         )
-        .await?
+        .await
+        .db()?
         .is_some()
     {
-        return Err(StoreError::Exists("this member of the group"));
+        return Err(StoreError::exists("this member of the group"));
     }
     tx.execute(
         "INSERT INTO tutela.group_member (tenant_id, group_id, member_kind, member_id, added_by) \
          VALUES ($1, $2, $3, $4, $5)",
         &[&tid, &gid, &kind, &id, &added_by.map(ToString::to_string)],
     )
-    .await?;
+    .await
+    .db()?;
     finish_write(tx, tenant, rev).await
 }
 
@@ -233,7 +246,7 @@ pub async fn add_member(
 ///
 /// # Errors
 ///
-/// [`StoreError::NotFound`] or a database error.
+/// [`NotFound`](crate::StoreErrorKind::NotFound) or a database error.
 pub async fn remove_member(
     tx: &Transaction<'_>,
     tenant: &TenantKey,
@@ -244,7 +257,7 @@ pub async fn remove_member(
     let tid = tenant.tid.to_string();
     let gid = group_id(tx, &tid, group)
         .await?
-        .ok_or(StoreError::NotFound("group"))?;
+        .ok_or(StoreError::not_found("group"))?;
     let (kind, id) = member_row(tx, &tid, member).await?;
     let gone = tx
         .execute(
@@ -252,9 +265,10 @@ pub async fn remove_member(
              AND member_kind = $3 AND member_id = $4",
             &[&tid, &gid, &kind, &id],
         )
-        .await?;
+        .await
+        .db()?;
     if gone == 0 {
-        return Err(StoreError::NotFound("member"));
+        return Err(StoreError::not_found("member"));
     }
     finish_write(tx, tenant, rev).await
 }
@@ -265,7 +279,7 @@ pub async fn remove_member(
 ///
 /// # Errors
 ///
-/// [`StoreError::NotFound`] or a database error.
+/// [`NotFound`](crate::StoreErrorKind::NotFound) or a database error.
 pub async fn delete_group(
     tx: &Transaction<'_>,
     tenant: &TenantKey,
@@ -275,24 +289,27 @@ pub async fn delete_group(
     let tid = tenant.tid.to_string();
     let gid = group_id(tx, &tid, group)
         .await?
-        .ok_or(StoreError::NotFound("group"))?;
+        .ok_or(StoreError::not_found("group"))?;
     tx.execute(
         "DELETE FROM tutela.role_assignment WHERE tenant_id = $1 AND principal_kind = 'group' \
          AND principal_id = $2",
         &[&tid, &gid],
     )
-    .await?;
+    .await
+    .db()?;
     tx.execute(
         "DELETE FROM tutela.group_member WHERE tenant_id = $1 AND member_kind = 'group' \
          AND member_id = $2",
         &[&tid, &gid],
     )
-    .await?;
+    .await
+    .db()?;
     tx.execute(
         "DELETE FROM tutela.\"group\" WHERE tenant_id = $1 AND id = $2",
         &[&tid, &gid],
     )
-    .await?;
+    .await
+    .db()?;
     finish_write(tx, tenant, rev).await
 }
 
@@ -305,9 +322,10 @@ pub async fn delete_group(
 ///
 /// # Errors
 ///
-/// [`StoreError::Invalid`] for a path that breaks a rule or disagrees with
-/// a registered ancestor, [`StoreError::Exists`] if the scope is
-/// registered, or a database error.
+/// [`Invalid`](crate::StoreErrorKind::Invalid) for a path that breaks a rule or
+/// disagrees with a registered ancestor,
+/// [`Exists`](crate::StoreErrorKind::Exists) if the scope is registered, or a
+/// database error.
 pub async fn put_scope(
     tx: &Transaction<'_>,
     tenant: &TenantKey,
@@ -319,7 +337,7 @@ pub async fn put_scope(
     let tid = tenant.tid.to_string();
     check_path(tx, &tid, scope, ancestors).await?;
     if path_of(tx, &tid, scope).await?.is_some() {
-        return Err(StoreError::Exists("a registered scope"));
+        return Err(StoreError::exists("a registered scope"));
     }
     let texts: Vec<String> = ancestors.iter().map(entry_text).collect();
     tx.execute(
@@ -327,7 +345,8 @@ pub async fn put_scope(
          VALUES ($1, $2, $3, $4)",
         &[&tid, &scope.type_name.as_str(), &scope.id.as_str(), &texts],
     )
-    .await?;
+    .await
+    .db()?;
     if private {
         write_private(tx, &tid, scope, true, rev).await?;
     }
@@ -338,7 +357,8 @@ pub async fn put_scope(
 ///
 /// # Errors
 ///
-/// [`StoreError::NotFound`] for an unregistered scope, or a database error.
+/// [`NotFound`](crate::StoreErrorKind::NotFound) for an unregistered scope, or
+/// a database error.
 pub async fn set_private(
     tx: &Transaction<'_>,
     tenant: &TenantKey,
@@ -349,7 +369,7 @@ pub async fn set_private(
     let tid = tenant.tid.to_string();
     require_scope(tx, &tid, scope).await?;
     if scope.is_org() {
-        return Err(StoreError::Invalid("an org is never private"));
+        return Err(StoreError::invalid("an org is never private"));
     }
     write_private(tx, &tid, scope, private, rev).await?;
     finish_write(tx, tenant, rev).await
@@ -367,10 +387,10 @@ pub async fn set_private(
 ///
 /// # Errors
 ///
-/// [`StoreError::NotFound`] for an unregistered scope,
-/// [`StoreError::Invalid`] for a path that breaks a rule, puts the scope
-/// under itself, or makes a path below it longer than 32, or a database
-/// error.
+/// [`NotFound`](crate::StoreErrorKind::NotFound) for an unregistered scope,
+/// [`Invalid`](crate::StoreErrorKind::Invalid) for a path that breaks a rule,
+/// puts the scope under itself, or makes a path below it longer than 32, or a
+/// database error.
 pub async fn move_scope(
     tx: &Transaction<'_>,
     tenant: &TenantKey,
@@ -380,7 +400,7 @@ pub async fn move_scope(
     let rev = begin_write(tx, tenant).await?;
     let tid = tenant.tid.to_string();
     if scope.is_org() {
-        return Err(StoreError::Invalid("an org has no parent"));
+        return Err(StoreError::invalid("an org has no parent"));
     }
     require_scope(tx, &tid, scope).await?;
     check_path(tx, &tid, scope, ancestors).await?;
@@ -394,11 +414,13 @@ pub async fn move_scope(
              FROM tutela.scope_path WHERE tenant_id = $1 AND $2 = ANY(ancestors)",
             &[&tid, &me],
         )
-        .await?
-        .try_get::<_, i64>(0)?;
-    let longest = usize::try_from(longest).map_err(|_| StoreError::Corrupt("path length"))?;
+        .await
+        .db()?
+        .try_get::<_, i64>(0)
+        .db()?;
+    let longest = usize::try_from(longest).map_err(|_| StoreError::corrupt("path length"))?;
     if longest + ancestors.len() > MAX_PATH {
-        return Err(StoreError::Invalid(
+        return Err(StoreError::invalid(
             "after the move a scope below would have more than 32 ancestors",
         ));
     }
@@ -408,13 +430,14 @@ pub async fn move_scope(
          WHERE tenant_id = $1 AND $2 = ANY(ancestors)",
         &[&tid, &me, &texts],
     )
-    .await?;
+    .await.db()?;
     tx.execute(
         "UPDATE tutela.scope_path SET ancestors = $4 \
          WHERE tenant_id = $1 AND scope_kind = $2 AND scope_id = $3",
         &[&tid, &scope.type_name.as_str(), &scope.id.as_str(), &texts],
     )
-    .await?;
+    .await
+    .db()?;
     finish_write(tx, tenant, rev).await
 }
 
@@ -425,7 +448,8 @@ pub async fn move_scope(
 ///
 /// # Errors
 ///
-/// [`StoreError::NotFound`] for an unregistered scope, or a database error.
+/// [`NotFound`](crate::StoreErrorKind::NotFound) for an unregistered scope, or
+/// a database error.
 pub async fn delete_scope(
     tx: &Transaction<'_>,
     tenant: &TenantKey,
@@ -434,7 +458,7 @@ pub async fn delete_scope(
     let rev = begin_write(tx, tenant).await?;
     let tid = tenant.tid.to_string();
     if scope.is_org() {
-        return Err(StoreError::Invalid(
+        return Err(StoreError::invalid(
             "an org is not deleted through the store",
         ));
     }
@@ -448,10 +472,11 @@ pub async fn delete_scope(
              WHERE tenant_id = $1 AND $2 = ANY(ancestors)",
             &[&tid, &me],
         )
-        .await?
+        .await
+        .db()?
     {
-        kinds.push(r.try_get(0)?);
-        ids.push(r.try_get(1)?);
+        kinds.push(r.try_get(0).db()?);
+        ids.push(r.try_get(1).db()?);
     }
     for table in [
         "role_assignment",
@@ -466,7 +491,8 @@ pub async fn delete_scope(
             ),
             &[&tid, &kinds, &ids],
         )
-        .await?;
+        .await
+        .db()?;
     }
     finish_write(tx, tenant, rev).await
 }
@@ -477,8 +503,9 @@ pub async fn delete_scope(
 ///
 /// # Errors
 ///
-/// [`StoreError::Invalid`] at an org root, [`StoreError::NotFound`] for an
-/// unregistered scope, or a database error.
+/// [`Invalid`](crate::StoreErrorKind::Invalid) at an org root,
+/// [`NotFound`](crate::StoreErrorKind::NotFound) for an unregistered scope, or
+/// a database error.
 pub async fn put_field_rule(
     tx: &Transaction<'_>,
     tenant: &TenantKey,
@@ -489,7 +516,7 @@ pub async fn put_field_rule(
     created_by: Option<&Principal>,
 ) -> Result<(RuleId, u64), StoreError> {
     if scope.is_org() {
-        return Err(StoreError::Invalid(
+        return Err(StoreError::invalid(
             "org-root field rules come from the manifest",
         ));
     }
@@ -508,7 +535,8 @@ pub async fn put_field_rule(
             &role_text,
         ],
     )
-    .await?;
+    .await
+    .db()?;
     let rule = new_rule_id("fr")?;
     tx.execute(
         "INSERT INTO tutela.field_rule (tenant_id, id, scope_kind, scope_id, item_type, field_key, \
@@ -526,7 +554,8 @@ pub async fn put_field_rule(
             &db_rev(rev)?,
         ],
     )
-    .await?;
+    .await
+    .db()?;
     Ok((rule, finish_write(tx, tenant, rev).await?))
 }
 
@@ -534,7 +563,7 @@ pub async fn put_field_rule(
 ///
 /// # Errors
 ///
-/// [`StoreError::NotFound`] or a database error.
+/// [`NotFound`](crate::StoreErrorKind::NotFound) or a database error.
 pub async fn delete_field_rule(
     tx: &Transaction<'_>,
     tenant: &TenantKey,
@@ -546,9 +575,10 @@ pub async fn delete_field_rule(
             "DELETE FROM tutela.field_rule WHERE tenant_id = $1 AND id = $2",
             &[&tenant.tid.to_string(), &id.as_str()],
         )
-        .await?;
+        .await
+        .db()?;
     if gone == 0 {
-        return Err(StoreError::NotFound("field rule"));
+        return Err(StoreError::not_found("field rule"));
     }
     finish_write(tx, tenant, rev).await
 }
@@ -556,7 +586,7 @@ pub async fn delete_field_rule(
 // ---------- helpers ----------
 
 fn db_rev(rev: u64) -> Result<i64, StoreError> {
-    i64::try_from(rev).map_err(|_| StoreError::RevOutOfRange)
+    i64::try_from(rev).map_err(|_| StoreError::rev_out_of_range())
 }
 
 async fn write_private(
@@ -578,7 +608,8 @@ async fn write_private(
             &db_rev(rev)?,
         ],
     )
-    .await?;
+    .await
+    .db()?;
     Ok(())
 }
 
@@ -594,11 +625,12 @@ async fn path_of(
              WHERE tenant_id = $1 AND scope_kind = $2 AND scope_id = $3",
             &[&tid, &scope.type_name.as_str(), &scope.id.as_str()],
         )
-        .await?
+        .await
+        .db()?
     else {
         return Ok(None);
     };
-    let texts: Vec<&str> = row.try_get(0)?;
+    let texts: Vec<&str> = row.try_get(0).db()?;
     texts
         .into_iter()
         .map(parse_entry)
@@ -615,19 +647,20 @@ async fn require_scope(
     if scope.is_org() {
         let org = scope
             .org_id()
-            .ok_or(StoreError::Invalid("an org scope needs an org id"))?;
+            .ok_or(StoreError::invalid("an org scope needs an org id"))?;
         let found = tx
             .query_opt(
                 "SELECT 1 FROM tutela.org WHERE tenant_id = $1 AND org_id = $2",
                 &[&tid, &org.to_string()],
             )
-            .await?;
-        return found.map(|_| ()).ok_or(StoreError::NotFound("org"));
+            .await
+            .db()?;
+        return found.map(|_| ()).ok_or(StoreError::not_found("org"));
     }
     path_of(tx, tid, scope)
         .await?
         .map(|_| ())
-        .ok_or(StoreError::NotFound("registered scope"))
+        .ok_or(StoreError::not_found("registered scope"))
 }
 
 /// The rules of a scope path (CONTRACTS.md 6.5): 1 to 32 entries, nearest
@@ -641,20 +674,20 @@ async fn check_path(
     ancestors: &[PathEntry],
 ) -> Result<(), StoreError> {
     if scope.is_org() {
-        return Err(StoreError::Invalid("an org is not a registered scope"));
+        return Err(StoreError::invalid("an org is not a registered scope"));
     }
     let Some((last, rest)) = ancestors.split_last() else {
-        return Err(StoreError::Invalid("a path ends at an org"));
+        return Err(StoreError::invalid("a path ends at an org"));
     };
     if ancestors.len() > MAX_PATH {
-        return Err(StoreError::Invalid("a path has at most 32 entries"));
+        return Err(StoreError::invalid("a path has at most 32 entries"));
     }
     if !last.is_org() || rest.iter().any(PathEntry::is_org) {
-        return Err(StoreError::Invalid("a path ends at an org, and only there"));
+        return Err(StoreError::invalid("a path ends at an org, and only there"));
     }
     let mut seen = BTreeSet::from([scope]);
     if !ancestors.iter().all(|e| seen.insert(e)) {
-        return Err(StoreError::Invalid(
+        return Err(StoreError::invalid(
             "a path holds no entry twice and not the scope itself",
         ));
     }
@@ -663,12 +696,12 @@ async fn check_path(
         if let Some(theirs) = path_of(tx, tid, a).await? {
             let ours = ancestors.get(i + 1..).unwrap_or_default();
             if theirs != ours {
-                return Err(StoreError::Invalid(
+                return Err(StoreError::invalid(
                     "the path disagrees with a registered ancestor's path",
                 ));
             }
             if theirs.contains(scope) {
-                return Err(StoreError::Invalid("a scope cannot sit under itself"));
+                return Err(StoreError::invalid("a scope cannot sit under itself"));
             }
         }
     }
@@ -680,14 +713,15 @@ async fn group_id(
     tid: &str,
     key: &GroupKey,
 ) -> Result<Option<String>, StoreError> {
-    Ok(tx
-        .query_opt(
-            "SELECT id FROM tutela.\"group\" WHERE tenant_id = $1 AND key = $2",
-            &[&tid, &key.as_str()],
-        )
-        .await?
-        .map(|r| r.try_get(0))
-        .transpose()?)
+    tx.query_opt(
+        "SELECT id FROM tutela.\"group\" WHERE tenant_id = $1 AND key = $2",
+        &[&tid, &key.as_str()],
+    )
+    .await
+    .db()?
+    .map(|r| r.try_get(0))
+    .transpose()
+    .db()
 }
 
 /// (kind, id) of a principal, as stored.
@@ -695,7 +729,7 @@ fn principal_row(p: &Principal) -> Result<(String, String), StoreError> {
     let text = p.to_string();
     let (kind, id) = text
         .split_once(':')
-        .ok_or(StoreError::Corrupt("principal"))?;
+        .ok_or(StoreError::corrupt("principal"))?;
     Ok((kind.to_owned(), id.to_owned()))
 }
 
@@ -710,7 +744,7 @@ async fn subject_row(
             "group".to_owned(),
             group_id(tx, tid, k)
                 .await?
-                .ok_or(StoreError::NotFound("group"))?,
+                .ok_or(StoreError::not_found("group"))?,
         )),
     }
 }
@@ -726,7 +760,7 @@ async fn member_row(
             "group".to_owned(),
             group_id(tx, tid, k)
                 .await?
-                .ok_or(StoreError::NotFound("member group"))?,
+                .ok_or(StoreError::not_found("member group"))?,
         )),
     }
 }

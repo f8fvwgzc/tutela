@@ -12,7 +12,7 @@ use tutela_pdp::{
     TenantData,
 };
 
-use crate::{StoreError, enter, entry, parse_entry, parse_org, to_rev};
+use crate::{DbResult as _, StoreError, enter, entry, parse_entry, parse_org, to_rev};
 
 /// A tenant at one revision: what [`tutela_pdp::Pdp::load`] needs, and the
 /// scope paths for [`tutela_pdp::Pdp::list_filter`].
@@ -87,8 +87,8 @@ impl ScopePaths for ScopePathSnapshot {
 ///
 /// # Errors
 ///
-/// [`StoreError::UnknownTenant`] for an unknown (iss, tid), or a database
-/// error.
+/// [`UnknownTenant`](crate::StoreErrorKind::UnknownTenant) for an unknown (iss,
+/// tid), or a database error.
 pub async fn rev(tx: &Transaction<'_>, tenant: &TenantKey) -> Result<u64, StoreError> {
     enter(tx, tenant).await?;
     read_rev(tx, tenant, false).await
@@ -100,8 +100,9 @@ pub async fn rev(tx: &Transaction<'_>, tenant: &TenantKey) -> Result<u64, StoreE
 ///
 /// # Errors
 ///
-/// [`StoreError::UnknownTenant`], a database error, or
-/// [`StoreError::Corrupt`] if a stored value does not parse.
+/// [`UnknownTenant`](crate::StoreErrorKind::UnknownTenant), a database error,
+/// or [`Corrupt`](crate::StoreErrorKind::Corrupt) if a stored value does not
+/// parse.
 pub async fn load(tx: &Transaction<'_>, tenant: &TenantKey) -> Result<TenantBundle, StoreError> {
     enter(tx, tenant).await?;
     let rev = read_rev(tx, tenant, true).await?;
@@ -118,9 +119,10 @@ async fn read_rev(tx: &Transaction<'_>, tenant: &TenantKey, lock: bool) -> Resul
     };
     let row = tx
         .query_opt(sql, &[&tenant.tid.to_string()])
-        .await?
-        .ok_or(StoreError::Corrupt("tenant revision row"))?;
-    to_rev(row.try_get(0)?)
+        .await
+        .db()?
+        .ok_or(StoreError::corrupt("tenant revision row"))?;
+    to_rev(row.try_get(0).db()?)
 }
 
 /// The tenant data. The caller has entered the tenant. Every query names the
@@ -137,9 +139,10 @@ pub(crate) async fn tenant_data(
             "SELECT org_id FROM tutela.org WHERE tenant_id = $1",
             &[&tid],
         )
-        .await?
+        .await
+        .db()?
     {
-        data.orgs.insert(parse_org(r.try_get(0)?)?);
+        data.orgs.insert(parse_org(r.try_get(0).db()?)?);
     }
 
     // Groups: ids to keys, then the members.
@@ -149,10 +152,12 @@ pub(crate) async fn tenant_data(
             "SELECT id, key FROM tutela.\"group\" WHERE tenant_id = $1 ORDER BY id",
             &[&tid],
         )
-        .await?
+        .await
+        .db()?
     {
-        let key = GroupKey::parse(r.try_get(1)?).map_err(|_| StoreError::Corrupt("group key"))?;
-        keys.insert(r.try_get(0)?, key);
+        let key =
+            GroupKey::parse(r.try_get(1).db()?).map_err(|_| StoreError::corrupt("group key"))?;
+        keys.insert(r.try_get(0).db()?, key);
     }
     let mut members: BTreeMap<String, Vec<Member>> = BTreeMap::new();
     for r in tx
@@ -161,16 +166,17 @@ pub(crate) async fn tenant_data(
              WHERE tenant_id = $1 ORDER BY group_id, member_kind, member_id",
             &[&tid],
         )
-        .await?
+        .await
+        .db()?
     {
-        let group: String = r.try_get(0)?;
-        let kind: &str = r.try_get(1)?;
-        let id: &str = r.try_get(2)?;
+        let group: String = r.try_get(0).db()?;
+        let kind: &str = r.try_get(1).db()?;
+        let id: &str = r.try_get(2).db()?;
         let m = if kind == "group" {
             Member::Group(
                 keys.get(id)
                     .cloned()
-                    .ok_or(StoreError::Corrupt("member group"))?,
+                    .ok_or(StoreError::corrupt("member group"))?,
             )
         } else {
             Member::Principal(principal(kind, id)?)
@@ -195,27 +201,29 @@ pub(crate) async fn tenant_data(
              ORDER BY created_at, id",
             &[&tid],
         )
-        .await?
+        .await
+        .db()?
     {
-        let kind: &str = r.try_get(1)?;
-        let id: &str = r.try_get(2)?;
+        let kind: &str = r.try_get(1).db()?;
+        let id: &str = r.try_get(2).db()?;
         let subject = if kind == "group" {
             Subject::Group(
                 keys.get(id)
                     .cloned()
-                    .ok_or(StoreError::Corrupt("assigned group"))?,
+                    .ok_or(StoreError::corrupt("assigned group"))?,
             )
         } else {
             Subject::Principal(principal(kind, id)?)
         };
         data.bindings.push(Binding {
             id: r
-                .try_get::<_, &str>(0)?
+                .try_get::<_, &str>(0)
+                .db()?
                 .parse()
-                .map_err(|_| StoreError::Corrupt("assignment id"))?,
+                .map_err(|_| StoreError::corrupt("assignment id"))?,
             subject,
-            role: RoleKey::parse(r.try_get(5)?).map_err(|_| StoreError::Corrupt("role"))?,
-            scope: entry(r.try_get(3)?, r.try_get(4)?)?,
+            role: RoleKey::parse(r.try_get(5).db()?).map_err(|_| StoreError::corrupt("role"))?,
+            scope: entry(r.try_get(3).db()?, r.try_get(4).db()?)?,
         });
     }
 
@@ -226,9 +234,10 @@ pub(crate) async fn tenant_data(
              WHERE tenant_id = $1 AND private",
             &[&tid],
         )
-        .await?
+        .await
+        .db()?
     {
-        private.insert(entry(r.try_get(0)?, r.try_get(1)?)?);
+        private.insert(entry(r.try_get(0).db()?, r.try_get(1).db()?)?);
     }
     data.private_scopes = private;
 
@@ -238,27 +247,31 @@ pub(crate) async fn tenant_data(
              FROM tutela.field_rule WHERE tenant_id = $1 ORDER BY created_at, id",
             &[&tid],
         )
-        .await?
+        .await
+        .db()?
     {
-        let role: Option<&str> = r.try_get(4)?;
+        let role: Option<&str> = r.try_get(4).db()?;
         data.field_rules.push(ScopeFieldRule {
             id: r
-                .try_get::<_, &str>(0)?
+                .try_get::<_, &str>(0)
+                .db()?
                 .parse()
-                .map_err(|_| StoreError::Corrupt("field rule id"))?,
-            scope: entry(r.try_get(1)?, r.try_get(2)?)?,
+                .map_err(|_| StoreError::corrupt("field rule id"))?,
+            scope: entry(r.try_get(1).db()?, r.try_get(2).db()?)?,
             field: r
-                .try_get::<_, &str>(3)?
+                .try_get::<_, &str>(3)
+                .db()?
                 .parse()
-                .map_err(|_| StoreError::Corrupt("field key"))?,
+                .map_err(|_| StoreError::corrupt("field key"))?,
             role: role
                 .map(RoleKey::parse)
                 .transpose()
-                .map_err(|_| StoreError::Corrupt("role"))?,
+                .map_err(|_| StoreError::corrupt("role"))?,
             max: r
-                .try_get::<_, &str>(5)?
+                .try_get::<_, &str>(5)
+                .db()?
                 .parse::<Level>()
-                .map_err(|_| StoreError::Corrupt("level"))?,
+                .map_err(|_| StoreError::corrupt("level"))?,
         });
     }
     Ok(data)
@@ -274,14 +287,15 @@ async fn scope_paths(
             "SELECT scope_kind, scope_id, ancestors FROM tutela.scope_path WHERE tenant_id = $1",
             &[&tenant.tid.to_string()],
         )
-        .await?
+        .await
+        .db()?
     {
-        let ancestors: Vec<&str> = r.try_get(2)?;
+        let ancestors: Vec<&str> = r.try_get(2).db()?;
         let path = ancestors
             .into_iter()
             .map(parse_entry)
             .collect::<Result<Vec<_>, _>>()?;
-        paths.insert(entry(r.try_get(0)?, r.try_get(1)?)?, path);
+        paths.insert(entry(r.try_get(0).db()?, r.try_get(1).db()?)?, path);
     }
     Ok(ScopePathSnapshot {
         tenant: tenant.clone(),
@@ -293,5 +307,5 @@ async fn scope_paths(
 pub(crate) fn principal(kind: &str, id: &str) -> Result<Principal, StoreError> {
     format!("{kind}:{id}")
         .parse()
-        .map_err(|_| StoreError::Corrupt("principal"))
+        .map_err(|_| StoreError::corrupt("principal"))
 }

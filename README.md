@@ -202,3 +202,4 @@ The repo is under the MIT licence ([LICENSE](LICENSE)). The SDKs, crates and con
 | [docs/INTEGRATION.md](docs/INTEGRATION.md) | How cores and products adopt Tutela |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Phases A–D, exit checks and sizes |
 | [docs/DECISIONS.md](docs/DECISIONS.md) | Decisions made, and the ones still open |
+| [docs/MIGRATION-0.2.md](docs/MIGRATION-0.2.md) | What breaks for a consumer at v0.2, and the change to make |

@@ -56,51 +56,168 @@ pub use write::{
     delete_scope, move_scope, put_field_rule, put_scope, remove_member, set_private, unassign,
 };
 
-/// Why a store call failed. A failed call leaves the caller's transaction
-/// in a state it must roll back.
-#[derive(Debug, thiserror::Error)]
+/// What kind of failure a [`StoreError`] is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
-pub enum StoreError {
+pub enum StoreErrorKind {
     /// The database refused or failed the statement.
-    #[error("database error")]
-    Db(#[from] tokio_postgres::Error),
+    /// [`StoreError::sqlstate`] gives the code.
+    Database,
     /// The database has a migration this build does not know.
-    #[error("the database has migration {0}, which this build does not know")]
-    SchemaTooNew(i32),
+    SchemaTooNew,
     /// No tenant with this (iss, tid).
-    #[error("unknown tenant")]
     UnknownTenant,
     /// The named row does not exist in this tenant.
-    #[error("not found: {0}")]
-    NotFound(&'static str),
+    NotFound,
     /// The row already exists in this tenant.
-    #[error("already exists: {0}")]
-    Exists(&'static str),
+    Exists,
     /// The input breaks a rule of the store (the text says which).
-    #[error("invalid input: {0}")]
-    Invalid(&'static str),
+    Invalid,
     /// The change would break a rule of the tenant data; nothing may commit.
-    #[error("the change is refused")]
-    Refused(#[from] LoadError),
+    /// [`StoreError::refusal`] gives the rule.
+    Refused,
     /// A stored value does not parse. The table was changed outside the
     /// store.
+    Corrupt,
+    /// The revision is past the JSON integer range.
+    RevOutOfRange,
+}
+
+/// Why a store call failed. A failed call leaves the caller's transaction in a
+/// state it must roll back. Branch on [`StoreError::kind`].
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub struct StoreError(#[from] Repr);
+
+#[derive(Debug, thiserror::Error)]
+enum Repr {
+    #[error("database error")]
+    Db(#[source] tokio_postgres::Error),
+    #[error("the database has migration {0}, which this build does not know")]
+    SchemaTooNew(i32),
+    #[error("unknown tenant")]
+    UnknownTenant,
+    #[error("not found: {0}")]
+    NotFound(&'static str),
+    #[error("already exists: {0}")]
+    Exists(&'static str),
+    #[error("invalid input: {0}")]
+    Invalid(&'static str),
+    #[error("the change is refused")]
+    Refused(#[source] LoadError),
     #[error("stored data does not parse: {0}")]
     Corrupt(&'static str),
-    /// The revision is past the JSON integer range.
     #[error("the tenant revision is out of range")]
     RevOutOfRange,
 }
 
+impl StoreError {
+    /// What kind of failure this is.
+    #[must_use]
+    pub const fn kind(&self) -> StoreErrorKind {
+        match self.0 {
+            Repr::Db(_) => StoreErrorKind::Database,
+            Repr::SchemaTooNew(_) => StoreErrorKind::SchemaTooNew,
+            Repr::UnknownTenant => StoreErrorKind::UnknownTenant,
+            Repr::NotFound(_) => StoreErrorKind::NotFound,
+            Repr::Exists(_) => StoreErrorKind::Exists,
+            Repr::Invalid(_) => StoreErrorKind::Invalid,
+            Repr::Refused(_) => StoreErrorKind::Refused,
+            Repr::Corrupt(_) => StoreErrorKind::Corrupt,
+            Repr::RevOutOfRange => StoreErrorKind::RevOutOfRange,
+        }
+    }
+
+    /// The short text of a [`NotFound`](StoreErrorKind::NotFound),
+    /// [`Exists`](StoreErrorKind::Exists),
+    /// [`Invalid`](StoreErrorKind::Invalid) or
+    /// [`Corrupt`](StoreErrorKind::Corrupt) error.
+    #[must_use]
+    pub const fn detail(&self) -> Option<&'static str> {
+        match self.0 {
+            Repr::NotFound(d) | Repr::Exists(d) | Repr::Invalid(d) | Repr::Corrupt(d) => Some(d),
+            _ => None,
+        }
+    }
+
+    /// The rule a [`Refused`](StoreErrorKind::Refused) change breaks.
+    #[must_use]
+    pub const fn refusal(&self) -> Option<&LoadError> {
+        match &self.0 {
+            Repr::Refused(e) => Some(e),
+            _ => None,
+        }
+    }
+
+    /// The Postgres SQLSTATE of a [`Database`](StoreErrorKind::Database)
+    /// error, for example `42501` when row-level security refuses a row.
+    /// `None` when the server sent no code (a lost connection).
+    #[must_use]
+    pub fn sqlstate(&self) -> Option<&str> {
+        match &self.0 {
+            Repr::Db(e) => e.code().map(tokio_postgres::error::SqlState::code),
+            _ => None,
+        }
+    }
+
+    const fn not_found(detail: &'static str) -> Self {
+        Self(Repr::NotFound(detail))
+    }
+
+    const fn exists(detail: &'static str) -> Self {
+        Self(Repr::Exists(detail))
+    }
+
+    const fn invalid(detail: &'static str) -> Self {
+        Self(Repr::Invalid(detail))
+    }
+
+    const fn corrupt(detail: &'static str) -> Self {
+        Self(Repr::Corrupt(detail))
+    }
+
+    const fn unknown_tenant() -> Self {
+        Self(Repr::UnknownTenant)
+    }
+
+    const fn rev_out_of_range() -> Self {
+        Self(Repr::RevOutOfRange)
+    }
+
+    const fn schema_too_new(version: i32) -> Self {
+        Self(Repr::SchemaTooNew(version))
+    }
+}
+
+impl From<LoadError> for StoreError {
+    fn from(e: LoadError) -> Self {
+        Self(Repr::Refused(e))
+    }
+}
+
+/// `.db()?` turns a driver result into a store result. There is no public
+/// `From<tokio_postgres::Error>`: it would put the driver's type in this
+/// crate's API (#43).
+trait DbResult<T> {
+    fn db(self) -> Result<T, StoreError>;
+}
+
+impl<T> DbResult<T> for Result<T, tokio_postgres::Error> {
+    fn db(self) -> Result<T, StoreError> {
+        self.map_err(|e| StoreError(Repr::Db(e)))
+    }
+}
+
 /// A new UUIDv7.
 fn uuid7() -> Result<Uuid7, StoreError> {
-    Uuid7::from_uuid(uuid::Uuid::now_v7()).map_err(|_| StoreError::Corrupt("uuid"))
+    Uuid7::from_uuid(uuid::Uuid::now_v7()).map_err(|_| StoreError::corrupt("uuid"))
 }
 
 /// A new rule id: `<prefix>_<uuidv7>`.
 fn new_rule_id(prefix: &str) -> Result<tutela_contracts::decision::RuleId, StoreError> {
     format!("{prefix}_{}", uuid7()?)
         .parse()
-        .map_err(|_| StoreError::Corrupt("rule id"))
+        .map_err(|_| StoreError::corrupt("rule id"))
 }
 
 /// Checks the tenant key against the directory and sets `tutela.tenant_id`
@@ -112,9 +229,10 @@ async fn enter(tx: &Transaction<'_>, tenant: &TenantKey) -> Result<(), StoreErro
             "SELECT 1 FROM tutela.tenant WHERE tenant_id = $1 AND iss = $2",
             &[&tid, &tenant.iss.as_str()],
         )
-        .await?;
+        .await
+        .db()?;
     if known.is_none() {
-        return Err(StoreError::UnknownTenant);
+        return Err(StoreError::unknown_tenant());
     }
     set_tenant(tx, &tenant.tid).await
 }
@@ -125,7 +243,8 @@ async fn set_tenant(tx: &Transaction<'_>, tid: &TenantId) -> Result<(), StoreErr
         "SELECT set_config('tutela.tenant_id', $1, true)",
         &[&tid.to_string()],
     )
-    .await?;
+    .await
+    .db()?;
     Ok(())
 }
 
@@ -138,9 +257,10 @@ async fn begin_write(tx: &Transaction<'_>, tenant: &TenantKey) -> Result<u64, St
             "UPDATE tutela.tenant_rev SET rev = rev + 1 WHERE tenant_id = $1 RETURNING rev",
             &[&tenant.tid.to_string()],
         )
-        .await?
-        .ok_or(StoreError::Corrupt("tenant revision row"))?;
-    to_rev(row.try_get(0)?)
+        .await
+        .db()?
+        .ok_or(StoreError::corrupt("tenant revision row"))?;
+    to_rev(row.try_get(0).db()?)
 }
 
 /// Ends a write: the whole tenant data must pass the evaluator's load
@@ -172,11 +292,11 @@ fn check_model() -> Result<Arc<Model>, StoreError> {
                 .map(Arc::new)
         })
         .clone()
-        .ok_or(StoreError::Corrupt("check model"))
+        .ok_or(StoreError::corrupt("check model"))
 }
 
 fn to_rev(v: i64) -> Result<u64, StoreError> {
-    u64::try_from(v).map_err(|_| StoreError::RevOutOfRange)
+    u64::try_from(v).map_err(|_| StoreError::rev_out_of_range())
 }
 
 /// `type:id`, the stored form of one path entry.
@@ -186,17 +306,17 @@ fn entry_text(e: &PathEntry) -> String {
 
 /// Parses `type:id`. A type name never holds `:`.
 fn parse_entry(s: &str) -> Result<PathEntry, StoreError> {
-    let (t, id) = s.split_once(':').ok_or(StoreError::Corrupt("path entry"))?;
+    let (t, id) = s.split_once(':').ok_or(StoreError::corrupt("path entry"))?;
     entry(t, id)
 }
 
 fn entry(t: &str, id: &str) -> Result<PathEntry, StoreError> {
     Ok(PathEntry::new(
-        t.parse().map_err(|_| StoreError::Corrupt("scope type"))?,
-        id.parse().map_err(|_| StoreError::Corrupt("scope id"))?,
+        t.parse().map_err(|_| StoreError::corrupt("scope type"))?,
+        id.parse().map_err(|_| StoreError::corrupt("scope id"))?,
     ))
 }
 
 fn parse_org(s: &str) -> Result<OrgId, StoreError> {
-    s.parse().map_err(|_| StoreError::Corrupt("org id"))
+    s.parse().map_err(|_| StoreError::corrupt("org id"))
 }
