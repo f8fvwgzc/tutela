@@ -1,0 +1,143 @@
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    "includes": [
+      "sdk/**",
+      "scripts/**",
+      "package.json",
+      "biome.json",
+      "tsconfig.base.json",
+      "!**/dist",
+      "!**/node_modules"
+    ]
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100
+  },
+  "assist": {
+    "enabled": true,
+    "actions": {
+      "source": {
+        "organizeImports": "on"
+      }
+    }
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "preset": "recommended",
+      "a11y": "error",
+      "correctness": {
+        "noUnusedImports": "error",
+        "noUnusedVariables": "error",
+        "noUnusedFunctionParameters": "error",
+        "useExhaustiveDependencies": "error",
+        "useHookAtTopLevel": "error"
+      },
+      "suspicious": {
+        "noExplicitAny": "error",
+        "noConsole": "error"
+      },
+      "style": {
+        "noNonNullAssertion": "error",
+        "useConst": "error"
+      },
+      "security": {
+        "noDangerouslySetInnerHtml": "error",
+        "noGlobalEval": "error"
+      },
+      "nursery": {
+        "noFloatingPromises": "error",
+        "noMisusedPromises": "error",
+        "noImpliedEval": "error"
+      }
+    }
+  },
+  "overrides": [
+    {
+      "includes": ["sdk/*/src/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedGlobals": {
+              "level": "error",
+              "options": {
+                "deniedGlobals": {
+                  "localStorage": "Tokens live in memory only (THREAT-MODEL.md TM-06).",
+                  "sessionStorage": "Tokens live in memory only (THREAT-MODEL.md TM-06).",
+                  "indexedDB": "Tokens live in memory only (THREAT-MODEL.md TM-06).",
+                  "process": "The browser build has no Node globals.",
+                  "Buffer": "The browser build has no Node globals.",
+                  "require": "ES modules only."
+                }
+              }
+            },
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["node:*"],
+                    "message": "The browser build has no Node modules."
+                  }
+                ]
+              }
+            }
+          },
+          "nursery": {
+            "noJsRestrictedProperties": {
+              "level": "error",
+              "options": {
+                "entries": [
+                  {
+                    "object": "document",
+                    "property": "cookie",
+                    "message": "Tokens live in memory only (THREAT-MODEL.md TM-06)."
+                  },
+                  {
+                    "object": "window",
+                    "property": "localStorage",
+                    "message": "Tokens live in memory only (THREAT-MODEL.md TM-06)."
+                  },
+                  {
+                    "object": "window",
+                    "property": "sessionStorage",
+                    "message": "Tokens live in memory only (THREAT-MODEL.md TM-06)."
+                  },
+                  {
+                    "object": "globalThis",
+                    "property": "localStorage",
+                    "message": "Tokens live in memory only (THREAT-MODEL.md TM-06)."
+                  },
+                  {
+                    "object": "globalThis",
+                    "property": "sessionStorage",
+                    "message": "Tokens live in memory only (THREAT-MODEL.md TM-06)."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["scripts/**"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noConsole": "off"
+          }
+        }
+      }
+    }
+  ]
+}

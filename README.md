@@ -187,7 +187,7 @@ Phases: **A** packages and library mode, **B** `tutelad` service and Tutela Cons
 
 ## Build
 
-You need Rust (the exact version is pinned in `rust-toolchain.toml`; rustup installs it), plus `cargo-deny` and `cargo-audit`:
+You need Rust (the exact version is pinned in `rust-toolchain.toml`; rustup installs it), plus `cargo-deny` and `cargo-audit`, and node 22.12 or later with pnpm 10 for the JavaScript SDKs in `sdk/` ([ADR-0047](docs/DECISIONS.md#adr-0047-the-javascript-sdks-a-pnpm-workspace-under-sdk-checked-by-make)):
 
 ```sh
 cargo install --locked cargo-deny cargo-audit
@@ -196,7 +196,8 @@ cargo install --locked cargo-deny cargo-audit
 Then:
 
 ```sh
-make            # all gates: fmt check, clippy -D warnings, tests, docs, cargo-deny, cargo-audit
+make            # all gates: fmt check, clippy -D warnings, tests, docs, cargo-deny, cargo-audit, and `make js`
+make js         # the JavaScript SDKs: build, typecheck, Biome, vitest, pnpm audit, licences
 make fmt        # format the code
 make test       # tests only
 make help       # list all targets

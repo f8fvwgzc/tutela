@@ -63,6 +63,7 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0044](#adr-0044-apps-one-tenant-each-a-hashed-client-secret-and-azp-bound-to-the-client-that-authenticated) | Apps: one tenant each, a hashed client secret, and `azp` bound to the client that authenticated | Accepted |
 | [0045](#adr-0045-the-audit-producer-key-sealed-in-the-database-rotated-with-its-old-keys-kept) | The audit producer key sealed in the database, rotated with its old keys kept | Accepted |
 | [0046](#adr-0046-the-cli-against-tutelad-apply-with-the-impact-report-apps-and-keys-through-the-key-store) | The CLI against `tutelad`: `apply` with the impact report, `apps`, and `keys` through the key store | Accepted |
+| [0047](#adr-0047-the-javascript-sdks-a-pnpm-workspace-under-sdk-checked-by-make) | The JavaScript SDKs: a pnpm workspace under `sdk/`, checked by `make` | Accepted |
 
 ---
 
@@ -1710,3 +1711,32 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 **Alternatives considered.**
 - **`tutela keys` over an admin route.** There is no operator identity on the API (ADR-0041, TM-08), and a tenant's admin must never reach the deployment's keys.
 - **Let `tutelad` refuse a widening change alone.** It does; refusing in the CLI first keeps a refused publish out of the tenant's audit log as an attempt, and prints the approver's command.
+
+---
+
+## ADR-0047: The JavaScript SDKs: a pnpm workspace under `sdk/`, checked by `make`
+
+**Status:** Accepted, 2026-11-02. Phase B, part 4b1 ([#126](https://github.com/f8fvwgzc/tutela/issues/126)). It sets up the toolchain for `@f8fvwgzc/tutela-js` and `@f8fvwgzc/tutela-react` (ADR-0001's npm names), which the Console of part 4b2 builds on.
+
+**Context.** The repo had no JavaScript except a generated fixture of `tutela codegen`. AGENTS.md section 2 plans the packages at `sdk/js` and `sdk/react`. INTEGRATION.md names GitHub Packages (`https://npm.pkg.github.com`) as the registry of the `@f8fvwgzc` scope. TM-21 wants pinned dependencies, no unknown sources and a gate that blocks. The machines that run `make` have node 22.12 and pnpm 10.18. GitHub Actions cannot run (account billing), so `make` is the only gate, and plain `cargo build` and `cargo test` must still work where there is no node.
+
+**Decision.**
+
+1. **Layout.** A pnpm workspace at the repo root (`package.json` private, `pnpm-workspace.yaml`, one `pnpm-lock.yaml`, committed) with `sdk/js` (`@f8fvwgzc/tutela-js`) and `sdk/react` (`@f8fvwgzc/tutela-react`), as AGENTS.md section 2 has them. The Console of part 4b2 joins as another member. `tutela-react` depends on `tutela-js` with `workspace:*`, which a publish turns into the exact version.
+2. **Pinned versions.** Every version is exact (`save-exact`), the lockfile is installed with `--frozen-lockfile`, and node (`>=22.12`) and pnpm (`10.18`, `packageManager`) are enforced (`engine-strict`). A version must be a week old before pnpm installs it (`minimumReleaseAge`), and no dependency runs an install script (`onlyBuiltDependencies: []`).
+3. **TypeScript, strict.** `tsconfig.base.json`: `strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `verbatimModuleSyntax`, ES2022, `module: NodeNext`. Each package builds with `tsc` alone to ES modules with type declarations (`dist/`); there is no bundler: a product's bundler takes the modules as they are. The browser client is built with the DOM library and **no Node types**, so a Node-only API in `sdk/js/src` does not compile; tests have Node types.
+4. **Lint: Biome, not ESLint.** ESLint 10 and typescript-eslint 8 need node 22.13 or later, and ESLint 9 is out of support. Biome 2 is one native binary with no install script and no node version rule. `biome ci --error-on-warnings` checks formatting and lints with its recommended rules, every accessibility rule, the React hooks rules, `noFloatingPromises` and `noMisusedPromises`, `noExplicitAny`, `noNonNullAssertion` and `noConsole`. In `sdk/*/src` it refuses `localStorage`, `sessionStorage`, `indexedDB`, `document.cookie`, Node globals and `node:` imports (TM-06: tokens live in memory only).
+5. **Tests: vitest.** Unit tests in node or jsdom (`jsdom` 28: the newest that runs on node 22.12), Testing Library for React, and axe-core for accessibility. An integration test against a real `tutelad` comes with `tutela-js`.
+6. **`make` runs it.** `make` (= `make all`) runs the Rust gates, then `make js`: `js-install` (frozen lockfile), `js-build`, `js-typecheck`, `js-lint`, `js-test`, `js-audit` (`pnpm audit` over every dependency, dev tools too, as `cargo audit` covers dev dependencies) and `js-licenses` (a production dependency of the SDKs must have a licence of the permissive part of `deny.toml`; dev tools never reach a product). The Rust targets are unchanged, so `cargo build` and `cargo test` need no node.
+7. **Publishing is the owner's step.** Nothing here publishes. A release sets the same version in every artifact (CONTRACTS.md 10.5), and the owner publishes from a clean checkout of the tag with `pnpm -r publish --access restricted` to GitHub Packages (`publishConfig.registry` in each package), after `make` passes on that commit. Registering the `@f8fvwgzc` scope on the public npm registry (TM-21) stays an owner step before any public publish.
+
+**Consequences.**
+- `make` needs node 22.12+ and pnpm 10 besides Rust. A machine without them runs the Rust targets one by one.
+- The lockfile is part of every change that adds a dependency: run `pnpm install` once, then commit `pnpm-lock.yaml`.
+- `.github/workflows/ci.yml` gets a `js` job that runs `make js` (it does not run while Actions is off).
+
+**Alternatives considered.**
+- **ESLint with typescript-eslint and jsx-a11y.** Typed rules are richer, but it needs a newer node than the machines have, or an ESLint version out of support.
+- **npm workspaces.** No `minimumReleaseAge`, and install scripts run by default.
+- **A bundler (tsup, Vite library mode).** Another tool in the supply chain; `tsc` already emits what bundlers and node take.
+- **`packages/` at the root.** AGENTS.md section 2 already planned `sdk/js` and `sdk/react`.

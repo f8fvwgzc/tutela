@@ -5,3 +5,6 @@
 .env.*
 !.env.example
 /.claude/worktrees
+node_modules/
+/sdk/*/dist/
+*.tsbuildinfo

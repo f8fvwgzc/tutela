@@ -1,0 +1,57 @@
+{
+  "name": "@f8fvwgzc/tutela-react",
+  "version": "0.0.0",
+  "description": "React admin components for Tutela: MembersTable, RoleEditor and the permission matrix, on @f8fvwgzc/tutela-js.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/f8fvwgzc/tutela.git",
+    "directory": "sdk/react"
+  },
+  "type": "module",
+  "sideEffects": [
+    "*.css"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./styles.css": "./styles/tutela.css",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "styles",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "restricted"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@f8fvwgzc/tutela-js": "workspace:*"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "10.4.2",
+    "@testing-library/react": "16.3.3",
+    "@testing-library/user-event": "14.6.8",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "axe-core": "4.14.0",
+    "react": "19.1.10",
+    "react-dom": "19.1.10"
+  }
+}
