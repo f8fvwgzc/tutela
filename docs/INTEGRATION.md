@@ -209,7 +209,9 @@ delegated tokens.
    evidence ledger. Tutela forwards copies of its audit events there when
    configured (not through the OpenTelemetry collector, which can drop data).
 8. **SPIFFE stays in attache.** Workload principals are
-   `workload:<spiffe uri>`, bound to a trust bundle. The trust domain must be
+   `workload:<spiffe uri>`, bound to a trust bundle. attache's path names a
+   service: `spiffe://<trust domain>/ns/<namespace>/svc/<service>`
+   ([CONTRACTS.md 1.4](CONTRACTS.md#14-workload-principals-spiffe)). The trust domain must be
    unique per cluster; today it is the constant `agentsc` in
    `crates/agentsc-common/src/identity.rs`, so it must become configurable.
 
