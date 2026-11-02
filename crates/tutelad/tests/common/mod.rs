@@ -350,6 +350,12 @@ pub fn state(config: &Config, issuer: &Issuer) -> AppState {
 
 /// [`state`], with delegated (`agent+jwt`) tokens on or off.
 pub fn state_with(config: &Config, issuer: &Issuer, delegation: bool) -> AppState {
+    state_with_jwks(config, Arc::new(Keys(issuer.jwks())), delegation)
+}
+
+/// [`state_with`], with the other issuers' JWKS from `other`: for example
+/// `config.jwks_source()`, which fetches them over HTTP as production does.
+pub fn state_with_jwks(config: &Config, other: Arc<dyn JwksSource>, delegation: bool) -> AppState {
     let vc: VerifierConfig = config.verifier_config();
     let vc = VerifierConfig {
         issuers: vc
@@ -369,7 +375,6 @@ pub fn state_with(config: &Config, issuer: &Issuer, delegation: bool) -> AppStat
     let metrics = Arc::new(Metrics::new());
     let keys = Arc::new(config.key_ring().unwrap());
     let events_keys = Arc::clone(&keys);
-    let other: Arc<dyn JwksSource> = Arc::new(Keys(issuer.jwks()));
     let clock: Arc<dyn Clock> = Arc::new(Now);
     AppState {
         verifier: Arc::new(Verifier::with(

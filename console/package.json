@@ -12,7 +12,8 @@
     "build": "vite build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "dev": "vite build --watch"
+    "dev": "vite build --watch",
+    "e2e": "playwright test"
   },
   "dependencies": {
     "@f8fvwgzc/tutela-js": "workspace:*",
@@ -21,6 +22,7 @@
     "react-dom": "19.1.10"
   },
   "devDependencies": {
+    "@playwright/test": "1.63.0",
     "@testing-library/dom": "10.4.2",
     "@testing-library/react": "16.3.3",
     "@testing-library/user-event": "14.6.8",

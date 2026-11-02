@@ -176,7 +176,7 @@
       }
     },
     {
-      "includes": ["scripts/**"],
+      "includes": ["scripts/**", "console/e2e/**"],
       "linter": {
         "rules": {
           "suspicious": {
