@@ -54,6 +54,7 @@ import type {
   ScopeChange,
   ScopeRef,
   ScopesPage,
+  SearchResourceAnswer,
   SimulateCandidate,
   SubjectString,
   Tenant,
@@ -255,6 +256,41 @@ export class TutelaClient {
     }
     this.permissionStore.set(q.resource, map);
     return map;
+  }
+
+  /**
+   * `POST /access/v1/search/resource` (CONTRACTS.md 7.4), with the
+   * `tutela-authz` token: the registered scopes of `type` where the caller
+   * (or `subject`) may do `action`, page by page. A UI uses it to find the
+   * orgs and scopes a person can reach before it may list them.
+   */
+  async *searchResources(
+    q: { type: string; action: string; subject?: CheckSubject; limit?: number },
+    o?: CallOptions,
+  ): AsyncGenerator<ScopeRef, void, undefined> {
+    const subject = q.subject ?? (await this.self(o));
+    const seen = new Set<string>();
+    let token = "";
+    for (;;) {
+      const body = {
+        subject,
+        action: { name: q.action },
+        resource: { type: q.type },
+        page: { token, limit: q.limit ?? 100 },
+        ...(this.#rev > 0 ? { context: { at_least_revision: this.#rev } } : {}),
+      };
+      const a = await this.#call(
+        "authz",
+        { method: "POST", path: "/access/v1/search/resource", json: body, retry: true },
+        o,
+      );
+      const r = a.body as SearchResourceAnswer;
+      yield* r.results;
+      token = r.page?.next_token ?? "";
+      // A token that does not move would loop for ever.
+      if (token === "" || seen.has(token)) return;
+      seen.add(token);
+    }
   }
 
   /** `true` when a loaded map allows `action` on `resource` (see {@link permissionStore}). */

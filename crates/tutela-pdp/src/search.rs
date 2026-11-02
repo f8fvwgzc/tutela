@@ -220,9 +220,15 @@ impl Pdp {
                 break;
             }
             last = Some(scope);
-            let path = paths
-                .ancestors(&req.tenant, scope)
-                .map_err(|e| path_error(scope, e))?;
+            // An org is a root: it has no ancestors, as `check` takes it, and
+            // a provider of scope paths knows only the scopes below orgs.
+            let path = if scope.is_org() {
+                Vec::new()
+            } else {
+                paths
+                    .ancestors(&req.tenant, scope)
+                    .map_err(|e| path_error(scope, e))?
+            };
             let passes = path.len() <= MAX_PATH
                 && condition
                     .as_ref()

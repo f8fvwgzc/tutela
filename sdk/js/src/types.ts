@@ -417,7 +417,14 @@ export interface SimulateCandidate {
   remove?: string[];
 }
 
-/** `GET /v1/whoami`. */
+/** `POST /access/v1/search/resource` (7.4): one page. */
+export interface SearchResourceAnswer {
+  results: ScopeRef[];
+  page?: { next_token?: string; count?: number };
+  context?: unknown;
+}
+
+/** `GET /v1/whoami` (7.7). */
 export interface WhoAmI {
   iss: string;
   tid: string;

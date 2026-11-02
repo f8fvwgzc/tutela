@@ -1,8 +1,9 @@
-# The JavaScript SDKs (ADR-0047). `make js` installs with --frozen-lockfile
+# The JavaScript SDKs (ADR-0047) and the Tutela Console (ADR-0052). `make js` installs with --frozen-lockfile
 # and runs build, typecheck, lint, the unit tests and the integration test.
 packages:
   - sdk/js
   - sdk/react
+  - console
 
 # Supply chain (THREAT-MODEL.md TM-21): a version must be a week old before
 # it can be installed, and no dependency runs an install script.

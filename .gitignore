@@ -8,3 +8,4 @@
 node_modules/
 /sdk/*/dist/
 *.tsbuildinfo
+/console/dist/

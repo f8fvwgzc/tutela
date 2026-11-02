@@ -194,6 +194,54 @@ fn a_resource_behind_a_field_condition_is_not_named_and_the_filter_still_covers_
     assert_eq!(page.results.len(), 3);
 }
 
+/// Orgs are roots, which a provider of scope paths does not hold: a search
+/// for `org` names the orgs where the subject may act, as `check` decides,
+/// instead of failing on the org's path (found by the Console, part 4b2).
+#[test]
+fn a_search_for_orgs_names_the_orgs_check_allows() {
+    let viewer = user(1);
+    let reader = user(2);
+    let pdp = pdp(
+        MANIFEST,
+        data(vec![
+            bind(1, who(&viewer), "viewer", root()),
+            bind(2, who(&reader), "reader", entry("project", "p")),
+        ]),
+    );
+    let ask = |p: &Principal| ListFilterRequest {
+        action: ActionKey::parse("org:read").unwrap(),
+        ..list(p)
+    };
+    let page = pdp
+        .search_resources(&ask(&viewer), &tree(1), None, 10)
+        .unwrap();
+    assert_eq!(page.results, [root()]);
+    let page = pdp
+        .search_resources(&ask(&reader), &tree(1), None, 10)
+        .unwrap();
+    assert!(page.results.is_empty(), "{:?}", page.results);
+    // The same answers as `check`.
+    for (p, want) in [(&viewer, true), (&reader, false)] {
+        let d = pdp
+            .check(&crate::CheckRequest {
+                tenant: tenant(),
+                subject: p.clone(),
+                actors: Vec::new(),
+                action: ActionKey::parse("org:read").unwrap(),
+                resource: ResourceRef {
+                    type_name: root().type_name,
+                    id: root().id,
+                    path: Vec::new(),
+                    attrs: crate::Attrs::default(),
+                },
+                fields: None,
+                at_least_revision: None,
+            })
+            .unwrap();
+        assert_eq!(d.is_allowed(), want);
+    }
+}
+
 #[test]
 fn pages_cover_the_list_once_each_in_order() {
     let u = user(1);
