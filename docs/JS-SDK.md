@@ -254,7 +254,7 @@ Each Keycloak access token must have a `jti` (Keycloak's do, like `onrtac:<id>`)
 ## Develop and test
 
 ```sh
-pnpm install          # node >= 22.12, pnpm 10
+pnpm install          # node >= 22.22.2 (.nvmrc), pnpm 10
 make js               # build, tsc, Biome, vitest, the integration test, the browser check, pnpm audit, licences
 make js-it            # only the integration test: needs TUTELA_TEST_DATABASE_URL
 make js-e2e           # only the Console's browser check: needs TUTELA_TEST_DATABASE_URL and Chromium 1243

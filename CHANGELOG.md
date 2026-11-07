@@ -10,6 +10,11 @@ Each release is a git tag; depend on it by tag, never by path. What a consumer m
 - JS-SDK.md, "Configure Keycloak for it": the steps that worked against Keycloak 26.8.1 (the browser flow's levels and max ages, `acr` and `amr` values, the hostname).
 - `tutela-sdk`: a test with a captured Keycloak 26.8.1 JWKS and two of its tokens, run without Docker.
 
+### The JavaScript toolchain ([#156](https://github.com/f8fvwgzc/tutela/issues/156), Dependabot #153, [ADR-0047](docs/DECISIONS.md#adr-0047-the-javascript-sdks-a-pnpm-workspace-under-sdk-checked-by-make))
+- **node 22.22.2 or later** (`engines`, `.nvmrc`, the image's node stage `node:22.22.2-bookworm-slim` pinned by digest), for `jsdom` 30. With nvm: `nvm install` in the repo.
+- `typescript` 7.0.2, `vitest` 5.0.5, `jsdom` 30.1.3, `@biomejs/biome` 2.6.4 (Markdown left out of its files), React 19.3.1 in the Console and the tests (`tutela-react`'s peer range stays `^19.0.0`). No source change was needed.
+- Not bumped: `@playwright/test` stays at 1.63.0, whose Chromium is build 1243 ([#163](https://github.com/f8fvwgzc/tutela/issues/163)); `@types/node` stays at 22.x, the node major that runs the tests.
+
 ## v0.2.0 (Phase B, the service): 2026-11-07
 
 **Pre-release.** GitHub Actions did not run (account billing); every merge was gated by local `make` with a real Postgres (`TUTELA_REQUIRE_DATABASE=1`): fmt, clippy `-D warnings`, tests, doc, cargo-deny, cargo-audit, the JavaScript gates (build, tsc, Biome, vitest, the integration test against a real `tutelad`, the Console's browser check in Playwright's Chromium, `pnpm audit`, licences), hadolint on the `Dockerfile` and the Helm chart check.

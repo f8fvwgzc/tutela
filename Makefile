@@ -6,7 +6,7 @@
 #                   #   and, with TUTELA_REQUIRE_KEYCLOAK=1, the real Keycloak (keycloak)
 #
 # Requirements: Rust (pinned by rust-toolchain.toml), cargo-deny and cargo-audit;
-# node >= 22.12 and pnpm 10 for `make js` (ADR-0047). Plain `cargo build` and
+# node >= 22.22.2 (.nvmrc) and pnpm 10 for `make js` (ADR-0047). Plain `cargo build` and
 # `cargo test` never need node.
 
 CARGO  ?= cargo

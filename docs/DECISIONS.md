@@ -1742,6 +1742,7 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 
 **Consequences.**
 - `make` needs node 22.12+ and pnpm 10 besides Rust. A machine without them runs the Rust targets one by one.
+- **Changed on 2026-11-07 by [#156](https://github.com/f8fvwgzc/tutela/issues/156)** (Dependabot #153): node **22.22.2 or later** (`engines` in every package, `engine-strict`, `.nvmrc` with 22.22.2, the image's `NODE_IMAGE`, ADR-0055), because `jsdom` 30 needs `^22.22.2`. With it: `jsdom` 30.1.3, `typescript` 7.0.2 (the native compiler; `tsc` builds and checks with the same `tsconfig` files, no change), `vitest` 5.0.5 (no config change), `@biomejs/biome` 2.6.4 and React 19.3.1. Biome 2.6 also formats Markdown; Markdown is left out of its files (`!**/*.md`), as Biome 2.5 never read it: the docs are not code. `@types/node` stays at 22.20.5: the types follow the node major that runs the tests, not 26. `@playwright/test` stays at 1.63.0: 1.64.1 needs another Chromium build than 1243, and ADR-0053 never downloads one ([#163](https://github.com/f8fvwgzc/tutela/issues/163)). Every version is older than a week (item 2).
 - The lockfile is part of every change that adds a dependency: run `pnpm install` once, then commit `pnpm-lock.yaml`.
 - `.github/workflows/ci.yml` gets a `js` job that runs `make js` (it does not run while Actions is off).
 

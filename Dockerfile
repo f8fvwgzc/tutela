@@ -10,11 +10,11 @@
 # build); change a digest on purpose, never a tag alone. No HEALTHCHECK:
 # Kubernetes probes /healthz and /readyz on the ops port.
 
-ARG NODE_IMAGE=node:22.12-bookworm-slim@sha256:35531c52ce27b6575d69755c73e65d4468dba93a25644eed56dc12879cae9213
+ARG NODE_IMAGE=node:22.22.2-bookworm-slim@sha256:9f6d5975c7dca860947d3915877f85607946403fc55349f39b4bc3688448bb6e
 ARG RUST_IMAGE=rust:1.99.0-slim-bookworm@sha256:2c3a22f0a5533ea2dd5a16627bc841228151faa2d4de2644ac9987e4a2f1f2fa
 ARG RUNTIME_IMAGE=gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
 
-# ---------- The Console: node 22.12 and pnpm 10.18 (ADR-0047) ----------
+# ---------- The Console: node 22.22.2 and pnpm 10.18 (ADR-0047) ----------
 FROM ${NODE_IMAGE} AS console
 ARG PNPM_VERSION=10.18.1
 WORKDIR /src
