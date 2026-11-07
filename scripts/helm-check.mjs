@@ -251,6 +251,10 @@ function checkRender(label, docs, v) {
   check(c.implicitFlowEnabled === false, at("no implicit flow"));
   check(c.directAccessGrantsEnabled === false, at("no direct access grants"));
   check(c.serviceAccountsEnabled === false, at("no service account"));
+  // Keycloak's default full scope puts every client the person has a role
+  // of into `aud` ("account" for the realm's default roles): two audiences,
+  // which tutelad refuses (CONTRACTS.md 4.6, ADR-0057).
+  check(c.fullScopeAllowed === false, at("no full scope: the one audience is TUTELA_AUDIENCE"));
   check(c.attributes?.["pkce.code.challenge.method"] === "S256", at("PKCE S256 required"));
   check(
     JSON.stringify(c.redirectUris) === JSON.stringify([`https://${v.host}/console/callback`]),

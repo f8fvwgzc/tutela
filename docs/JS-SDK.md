@@ -227,13 +227,29 @@ One public client per deployment, in the realm `TUTELA_CONSOLE_ISSUER` names (an
 | Web origins | `https://<tutelad host>` (CORS for discovery and the token endpoint) |
 | Valid post-logout redirect URIs | `https://<tutelad host>/console/` |
 | Audience | an "Audience" mapper that adds `TUTELA_AUDIENCE` (`tutela-authz`) to the access token |
+| Full scope allowed | **off** (client scopes, the dedicated scope). Keycloak's default puts every role of the person into the token and adds each client of a client role to `aud`: a person with the realm's default roles gets `["tutela-authz", "account"]`, and `tutelad` refuses a token with two audiences |
 | Step-up | an ACR-to-LoA mapping whose MFA level is named as the first value of `TUTELA_ADMIN_ACR` (for example `{"mfa": 2}`), and a browser flow that asks for OTP at that level; the Console asks for it with `acr_values` |
 
-Each Keycloak access token must have a `jti` (Keycloak's do): `tutelad` exchanges each one once.
+The Helm chart ships this client as a partial-import file (ADR-0056); `make keycloak` imports it into a real Keycloak 26.8.1 and signs people in with it ([ADR-0057](DECISIONS.md#adr-0057-a-real-keycloak-26-in-the-tests-a-pinned-image-a-realm-made-from-the-chart-and-a-client-without-full-scope)). What worked there, step by step:
+
+1. Import the client: `kcadm.sh create partialImport -r <realm> -s ifResourceExists=SKIP -o -f client.json` (or the admin API's `POST /admin/realms/<realm>/partialImport`).
+2. The browser flow, as a copy of Keycloak's step-up example, bound as the realm's browser flow:
+   - `Cookie`, alternative;
+   - a sub-flow, alternative, holding two conditional sub-flows:
+     - level 1: `Condition - Level of Authentication` (level 1, max age 36000 s), then `Username Password Form`, both required;
+     - level 2: `Condition - Level of Authentication` (level 2, max age 300 s, the life of an admin token), then `OTP Form`, both required.
+3. A person steps up with an OTP credential (the test people have one from the start).
+4. Without `acr_values` Keycloak signs in at level 1 and writes `acr: "1"`; with `acr_values=mfa` it asks for the OTP form and writes `acr: "mfa"`. A refreshed token keeps its session's `acr`.
+5. `amr` is not in Keycloak's tokens unless the client has the "Authentication Method Reference (AMR)" mapper, and then it is empty unless each form's execution names its reference (`pwd`, `otp`). `tutelad` does not read `amr` for step-up (ADR-0032).
+6. `iss` is Keycloak's public URL for the realm: set its hostname (`KC_HOSTNAME`) so it is the same for the browser and for `tutelad`, and write it exactly so in the trust file and `TUTELA_CONSOLE_ISSUER`.
+
+Each Keycloak access token must have a `jti` (Keycloak's do, like `onrtac:<id>`): `tutelad` exchanges each one once.
 
 ### The browser check
 
 `make js-e2e` (part of `make`) runs the Phase B exit check in Playwright's Chromium against a real `tutelad`, a real Postgres and the test provider (ADR-0053). It needs `TUTELA_TEST_DATABASE_URL` like every database test, and Chromium build 1243, which `@playwright/test` 1.63.0 uses: install it once with `pnpm --filter @f8fvwgzc/tutela-console exec playwright install chromium` if your machine does not have it. Set `TUTELA_E2E_SHOTS=<dir>` to keep screenshots of the main pages.
+
+`make keycloak` runs the same check against a real Keycloak 26.8.1 in Docker, signing in at Keycloak's own login and OTP pages, after `crates/tutelad/tests/keycloak.rs` has exchanged real Keycloak tokens. It is skipped unless `TUTELA_REQUIRE_KEYCLOAK=1`, because it pulls the pinned image and starts a container; with it set, it needs docker, helm, `TUTELA_TEST_DATABASE_URL` and the built Console, and fails without them. `node scripts/keycloak-check.mjs --keep` makes only the realm and leaves Keycloak running, and prints the fixture file with its URL and the test people.
 
 ## Develop and test
 
@@ -242,6 +258,7 @@ pnpm install          # node >= 22.12, pnpm 10
 make js               # build, tsc, Biome, vitest, the integration test, the browser check, pnpm audit, licences
 make js-it            # only the integration test: needs TUTELA_TEST_DATABASE_URL
 make js-e2e           # only the Console's browser check: needs TUTELA_TEST_DATABASE_URL and Chromium 1243
+TUTELA_REQUIRE_KEYCLOAK=1 make keycloak   # the exchange and the browser check against a real Keycloak (Docker)
 ```
 
 - `sdk/js/test`: unit tests against a mocked `fetch`, one per error path, and a jsdom test that no storage API is touched.

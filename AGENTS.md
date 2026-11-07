@@ -129,6 +129,7 @@ corepack enable   # or install pnpm 10.18 another way
 | `make js` | the JavaScript SDKs and the Console: `pnpm install --frozen-lockfile`, build, `tsc` typecheck, `biome ci` (format and lint), vitest, the JS integration test, the Console's browser check (`make js-e2e`, Playwright's Chromium 1243), `pnpm audit`, production licences | js |
 | `make image-lint` | `hadolint Dockerfile` (skipped without hadolint unless `TUTELA_REQUIRE_HADOLINT=1`) | none |
 | `make helm` | the Helm chart: `helm lint`, `helm template` and checks on the manifests (skipped without helm unless `TUTELA_REQUIRE_HELM=1`) | none |
+| `make keycloak` | token exchange and the Console's browser check against a real Keycloak 26 in Docker (skipped unless `TUTELA_REQUIRE_KEYCLOAK=1`; with it, needs docker, helm, a database and the built Console) | none |
 | `make fmt` | formats the code (not a gate) | none |
 
 Notes:

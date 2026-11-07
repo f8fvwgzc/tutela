@@ -13,6 +13,7 @@
   "implicitFlowEnabled" false
   "directAccessGrantsEnabled" false
   "serviceAccountsEnabled" false
+  "fullScopeAllowed" false
   "frontchannelLogout" true
   "redirectUris" (list (printf "https://%s/console/callback" $host))
   "webOrigins" (list (printf "https://%s" $host))
