@@ -1,6 +1,6 @@
 {
   "name": "@f8fvwgzc/tutela-react",
-  "version": "0.0.0",
+  "version": "0.2.0",
   "description": "React admin components for Tutela: MembersTable, RoleEditor and the permission matrix, on @f8fvwgzc/tutela-js.",
   "license": "MIT",
   "repository": {
