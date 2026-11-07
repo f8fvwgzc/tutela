@@ -1,0 +1,18 @@
+# The image needs the workspace manifests, crates/, sdk/ and console/ only.
+**/target
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+.git
+.github
+.claude
+.archify
+.env
+.env.*
+console/test-results
+console/playwright-report
+deploy
+docs
+scripts
+spike
+*.md

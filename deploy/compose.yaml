@@ -11,7 +11,10 @@
 #
 #   TUTELA_OWNER_DATABASE_URL=... TUTELA_SERVICE_ROLE=tutela_service tutelad migrate
 #
-# The image is not published yet (issue #49).
+# The image is built from the repo's Dockerfile (ADR-0055); a release
+# publishes it as ghcr.io/f8fvwgzc/tutelad:<version>. It ships the Console
+# and sets TUTELA_CONSOLE_DIR=/srv/tutela/console; tutelad.env sets it empty,
+# so the Console is off until its settings there are made.
 services:
   tutelad:
     image: ghcr.io/f8fvwgzc/tutelad:${TUTELAD_TAG:?set TUTELAD_TAG to a release}
