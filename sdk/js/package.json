@@ -22,7 +22,7 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=22.22.2"
   },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com",

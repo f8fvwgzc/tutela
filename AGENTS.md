@@ -110,7 +110,7 @@ For these changes:
 
 ## 5. Running the gates
 
-You need Rust (pinned in `rust-toolchain.toml`), `cargo-deny` and `cargo-audit`, and for the JavaScript SDKs node 22.12 or later and pnpm 10 ([ADR-0047](docs/DECISIONS.md#adr-0047-the-javascript-sdks-a-pnpm-workspace-under-sdk-checked-by-make)):
+You need Rust (pinned in `rust-toolchain.toml`), `cargo-deny` and `cargo-audit`, and for the JavaScript SDKs node 22.22.2 or later (`.nvmrc`) and pnpm 10 ([ADR-0047](docs/DECISIONS.md#adr-0047-the-javascript-sdks-a-pnpm-workspace-under-sdk-checked-by-make)):
 
 ```sh
 cargo install --locked cargo-deny cargo-audit

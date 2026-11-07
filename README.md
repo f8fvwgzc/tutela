@@ -190,7 +190,7 @@ Phases: **A** packages and library mode, **B** `tutelad` service and Tutela Cons
 
 ## Build
 
-You need Rust (the exact version is pinned in `rust-toolchain.toml`; rustup installs it), plus `cargo-deny` and `cargo-audit`, and node 22.12 or later with pnpm 10 for the JavaScript SDKs in `sdk/` ([ADR-0047](docs/DECISIONS.md#adr-0047-the-javascript-sdks-a-pnpm-workspace-under-sdk-checked-by-make)):
+You need Rust (the exact version is pinned in `rust-toolchain.toml`; rustup installs it), plus `cargo-deny` and `cargo-audit`, and node 22.22.2 or later (`.nvmrc`) with pnpm 10 for the JavaScript SDKs in `sdk/` ([ADR-0047](docs/DECISIONS.md#adr-0047-the-javascript-sdks-a-pnpm-workspace-under-sdk-checked-by-make)):
 
 ```sh
 cargo install --locked cargo-deny cargo-audit
