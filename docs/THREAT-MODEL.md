@@ -222,6 +222,7 @@ Each threat has an id (TM-01 ... TM-23). Its tests carry the id in their name, f
   - Embeddable admin components (RoleEditor, MembersTable, permission matrix) use a separate `aud=tutela-admin` token with a 5-minute TTL, issued only after step-up MFA (checked through `acr` and `amr`).
   - State-changing requests check `Origin` and a CSRF token.
   - The Tutela Console sends a strict Content-Security-Policy and `frame-ancestors` (built in part 4b2: `default-src 'self'`, no inline script or style, `frame-ancestors 'none'`, `base-uri 'none'`, `nosniff`, `Referrer-Policy: no-referrer`; ADR-0050). It keeps tokens in memory only; the pending sign-in (state, nonce, PKCE verifier) sits in `sessionStorage` only for the round trip to the realm (ADR-0052).
+  - CORS is off by default; `TUTELA_CORS_ORIGINS` lists exact origins, never `*`, and `tutelad` never allows credentials, so a listed page can read answers only with a token it holds (ADR-0054).
   - Browser SSE (`/v1/events`) uses the session cookie. Tokens never go into a URL.
   - Pure single-page apps that keep access tokens in browser JavaScript are not a default in v1 (DPoP, which would bind them, is out of v1). If a product does it anyway: memory only, never `localStorage`, short TTL.
 - **Phase.** A (React and Node SDKs default to BFF). B (Console, admin token, permission map). C (step-up MFA in the own login server; before that, step-up comes from the upstream IdP's `acr`).

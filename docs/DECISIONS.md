@@ -70,6 +70,7 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0051](#adr-0051-a-test-openid-provider-shaped-like-keycloak-a-dev-only-crate-on-loopback) | A test OpenID provider shaped like Keycloak: a dev-only crate on loopback | Accepted |
 | [0052](#adr-0052-the-console-a-vite-app-on-the-sdks-sign-in-by-code-with-pkce-the-permission-map-asked-again-every-half-second) | The Console: a Vite app on the SDKs, sign-in by code with PKCE, the permission map asked again every half second | Accepted |
 | [0053](#adr-0053-the-exit-check-in-a-real-browser-playwrights-chromium-a-real-tutelad-and-the-test-provider-run-by-make) | The exit check in a real browser: Playwright's Chromium, a real `tutelad` and the test provider, run by `make` | Accepted |
+| [0054](#adr-0054-cors-exact-origins-from-configuration-off-by-default-never-credentials) | CORS: exact origins from configuration, off by default, never credentials | Accepted |
 
 ---
 
@@ -1930,4 +1931,29 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 - **The installed Google Chrome (`channel: "chrome"`).** It works, but its version moves under the test; the pinned build does not.
 - **Wait six minutes for a real admin token to age.** It would make `make` six minutes longer for one assertion.
 - **The `tutelad` binary as a separate process.** `ha.rs` already runs it; in-process gives the test the key ring for the minted tokens, and the library is the binary's code.
+
+---
+
+## ADR-0054: CORS: exact origins from configuration, off by default, never credentials
+
+**Status:** Accepted, 2026-11-07. Phase B, part 4b2 ([#135](https://github.com/f8fvwgzc/tutela/issues/135)). It answers what [ADR-0048](#adr-0048-tutela-js-the-browser-token-flow-in-memory-typed-errors-and-a-retry-that-never-makes-twice) and [ADR-0049](#adr-0049-tutela-react-embeddable-admin-components-scoped-css-variables-and-the-host-names-the-people) left open: a product page on another origin that embeds the components had to proxy `tutelad`.
+
+**Context.** `@f8fvwgzc/tutela-js` sends its token in `Authorization` with `credentials: "omit"`, so no cookie of the page's origin ever reaches `tutelad`. A browser still refuses to give the page an answer from another origin without CORS headers, and sends a preflight before a request with `Authorization` or JSON. The preflight carries no token. TM-06 wants nothing that lets a hostile page act with someone's session.
+
+**Decision.**
+
+1. **Off by default.** `TUTELA_CORS_ORIGINS` is a comma-separated list of exact origins, `scheme://host[:port]`: `https`, or `http` only on loopback in dev mode. `*`, `null`, a wildcard host, a path, a trailing slash or credentials are refused at start-up.
+2. **Only a listed origin gets headers**, and the answer names that origin, never `*`, with `Vary: Origin`. It may read `etag`, `retry-after`, `x-request-id` and `www-authenticate` besides the safe headers. A refusal (401, 403, 503) carries them too, so the page can tell why.
+3. **Never credentials.** `Access-Control-Allow-Credentials` is never sent. A listed page can only use a token it holds; a cookie would not reach `tutelad` anyway.
+4. **A listed origin's preflight is answered without a token**, 204, with the methods of the HTTP API, the headers the client sends (`authorization`, `content-type`, `if-none-match`, `x-request-id`, `traceparent`) and a 600 s cache. It holds no data. Any other `OPTIONS`, and any other origin's preflight, goes to the token check as before (401).
+5. **Not for gRPC or the Console**: gRPC is for services, and `/console/` is same-origin with its own headers (ADR-0050).
+
+**Consequences.**
+- A product lists its page origins and passes `tutelad`'s URL as `baseUrl`; the proxy of JS-SDK.md stays an option.
+- A listed origin with an XSS can call `tutelad` with the tokens that page holds, as it could through a proxy; CORS adds no reach beyond them.
+
+**Alternatives considered.**
+- **A wildcard or a pattern of origins.** One typo or a takeover of a subdomain would open the API to it; exact origins are simple to review.
+- **Allow credentials.** Nothing uses a cookie at `tutelad`; allowing them would only add a risk if one ever did.
+- **`tower-http`'s CORS layer.** It needs another feature of the crate and answers preflights for any path on its own rules; twenty lines keep the rules here and tested.
 
