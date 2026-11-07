@@ -1061,6 +1061,39 @@ mod tests {
         let compose = include_str!("../../../deploy/compose.yaml");
         assert!(compose.contains("- tutelad.env"));
         TrustFile::parse(include_str!("../../../deploy/trust.example.toml"), false).unwrap();
+        // The image turns the Console on; the env file turns it off until
+        // its settings are made, or start-up would fail without them.
+        assert!(env.lines().any(|l| l == "TUTELA_CONSOLE_DIR="));
+    }
+
+    /// The image (ADR-0055) sets what the env file says every deployment
+    /// sets, runs as a non-root user and leaves health to Kubernetes.
+    #[test]
+    fn the_image_stays_true() {
+        let docker = include_str!("../../../Dockerfile");
+        for setting in [
+            "RUST_BACKTRACE=1",
+            "RUST_LIB_BACKTRACE=0",
+            "TUTELA_CONSOLE_DIR=/srv/tutela/console",
+            "TUTELA_LISTEN=0.0.0.0:8080",
+            "TUTELA_OPS_LISTEN=0.0.0.0:9090",
+        ] {
+            assert!(docker.contains(setting), "{setting}");
+        }
+        assert!(docker.contains("COPY --from=console /src/console/dist/ /srv/tutela/console/"));
+        assert!(docker.contains("\nUSER 65532:65532\n"));
+        assert!(!docker.contains("\nHEALTHCHECK"));
+        assert!(!docker.contains("TUTELA_AUDIT_KEY"));
+        // Every base image is pinned by digest.
+        let froms = docker
+            .lines()
+            .filter(|l| l.starts_with("ARG ") && l.contains("_IMAGE="));
+        let mut n = 0;
+        for f in froms {
+            assert!(f.contains("@sha256:"), "{f}");
+            n += 1;
+        }
+        assert_eq!(n, 3);
     }
 
     #[test]

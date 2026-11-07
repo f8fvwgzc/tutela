@@ -71,6 +71,7 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0052](#adr-0052-the-console-a-vite-app-on-the-sdks-sign-in-by-code-with-pkce-the-permission-map-asked-again-every-half-second) | The Console: a Vite app on the SDKs, sign-in by code with PKCE, the permission map asked again every half second | Accepted |
 | [0053](#adr-0053-the-exit-check-in-a-real-browser-playwrights-chromium-a-real-tutelad-and-the-test-provider-run-by-make) | The exit check in a real browser: Playwright's Chromium, a real `tutelad` and the test provider, run by `make` | Accepted |
 | [0054](#adr-0054-cors-exact-origins-from-configuration-off-by-default-never-credentials) | CORS: exact origins from configuration, off by default, never credentials | Accepted |
+| [0055](#adr-0055-the-oci-image-three-stages-a-distroless-runtime-the-console-on-and-publishing-left-to-a-release) | The OCI image: three stages, a distroless runtime, the Console on, and publishing left to a release | Accepted |
 
 ---
 
@@ -1956,4 +1957,45 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 - **A wildcard or a pattern of origins.** One typo or a takeover of a subdomain would open the API to it; exact origins are simple to review.
 - **Allow credentials.** Nothing uses a cookie at `tutelad`; allowing them would only add a risk if one ever did.
 - **`tower-http`'s CORS layer.** It needs another feature of the crate and answers preflights for any path on its own rules; twenty lines keep the rules here and tested.
+
+---
+
+## ADR-0055: The OCI image: three stages, a distroless runtime, the Console on, and publishing left to a release
+
+**Status:** Accepted, 2026-11-07. Phase B, part 4c ([#49](https://github.com/f8fvwgzc/tutela/issues/49)). It builds the image the notes for part 4c plan ("What the image must copy").
+
+**Context.** The README lists `ghcr.io/f8fvwgzc/tutelad` as a package of Phase B: the service and the Tutela Console. The Console is read from `TUTELA_CONSOLE_DIR` once at start (ADR-0050) and is built by node 22.12 and pnpm 10.18 (ADR-0047); `cargo build` never runs node. `deploy/tutelad.env` sets `RUST_BACKTRACE=1` and `RUST_LIB_BACKTRACE=0`. GitHub Actions cannot run (billing), so nothing in CI builds or pushes an image. Image pulls hung on the owner's Mac: it was the Docker CLI's credential helper (`credsStore: desktop`), not the network; with an empty `DOCKER_CONFIG` pulls work.
+
+**Decision.**
+
+1. **One `Dockerfile` at the repo root, three stages.** `console`: node 22.12 (bookworm-slim) installs pnpm 10.18.1, runs `pnpm install --frozen-lockfile` (the lockfile, the one-week release age and no install scripts of ADR-0047 hold) and `pnpm -r run build`, and checks that `console/dist/index.html` is there. `build`: Rust 1.99.0 (the version `rust-toolchain.toml` pins) runs `cargo build --release --locked -p tutelad`, with cache mounts for the registry and `target/`. The runtime gets only `/usr/local/bin/tutelad` and `/srv/tutela/console/`. `.dockerignore` keeps `target/`, `node_modules/`, `.git` and the docs out of the context.
+2. **The runtime is `gcr.io/distroless/cc-debian12:nonroot`**: glibc, `libgcc`, CA certificates and tzdata, no shell and no package manager, user `65532:65532`. `tutelad` is linked against glibc (aws-lc-rs and rustls), so `static` would need a musl build; `cc` is the smallest image that runs the glibc binary. The TLS roots are the image's CA bundle, which the base image names in `SSL_CERT_FILE`; a private CA (a database's) is added with `SSL_CERT_DIR` naming its directory, and `rustls-native-certs` then reads both.
+3. **Base images pinned by digest**, each an image index (linux/amd64 and linux/arm64), as build arguments (`NODE_IMAGE`, `RUST_IMAGE`, `RUNTIME_IMAGE`) so a mirror can be named. A digest changes on purpose, in a pull request.
+4. **What the image sets**: `RUST_BACKTRACE=1`, `RUST_LIB_BACKTRACE=0`, `TUTELA_LISTEN=0.0.0.0:8080`, `TUTELA_OPS_LISTEN=0.0.0.0:9090` and `TUTELA_CONSOLE_DIR=/srv/tutela/console`, as the notes say. So the Console is **on** in the image: start-up then needs `TUTELA_CONSOLE_ISSUER`, `TUTELA_CONSOLE_CLIENT_ID` and `TUTELA_ADMIN_ACR` (ADR-0050). An empty `TUTELA_CONSOLE_DIR` turns it off; `deploy/tutelad.env` now sets it empty, so Compose starts without the Console until its settings are made. `ENTRYPOINT ["/usr/local/bin/tutelad"]`, `CMD ["serve"]`: the same image runs `tutelad migrate`, `tenant` and `apps`, so the Helm chart's bootstrap job needs no image of its own. The `tutela` CLI is not in the image.
+5. **No `HEALTHCHECK`.** Kubernetes probes `/healthz` and `/readyz` on the ops port; a shell-less image has no command to run one with anyway.
+6. **OCI labels**: `title`, `description`, `source`, `url`, `documentation`, `licenses` (MIT), `vendor`, and `version` and `revision` from build arguments.
+7. **Checked by `make`**: `make image-lint` runs `hadolint Dockerfile`, skipped without hadolint unless `TUTELA_REQUIRE_HADOLINT=1`, like the database tests; `config::tests::the_image_stays_true` checks the settings above, the non-root user, no `HEALTHCHECK` and the digests under plain `cargo test`.
+8. **Publishing is a release step, not done here.** A release builds both platforms from the tag and pushes to `ghcr.io/f8fvwgzc/tutelad` with the version and the digest recorded in the release notes:
+
+   ```sh
+   git checkout v0.2.0
+   echo "$GHCR_TOKEN" | docker login ghcr.io -u f8fvwgzc --password-stdin   # a token with write:packages
+   docker buildx build --platform linux/amd64,linux/arm64 \
+     --build-arg VERSION=0.2.0 --build-arg REVISION="$(git rev-parse HEAD)" \
+     -t ghcr.io/f8fvwgzc/tutelad:0.2.0 --push .
+   docker buildx imagetools inspect ghcr.io/f8fvwgzc/tutelad:0.2.0   # the digest for the release notes and the chart's image.digest
+   ```
+
+   No `latest` tag: deployments name a version, and the chart its digest. When Actions can run, a workflow on a `v*` tag does the same with `GITHUB_TOKEN` (`packages: write`), and may add provenance and an SBOM (`--provenance --sbom`).
+
+**Consequences.**
+- One image serves, migrates and bootstraps; a new Console is a new image.
+- A deployment that uses the image and not the chart must set the Console's three settings or empty `TUTELA_CONSOLE_DIR`.
+- The image is not published until the owner runs the release step; `deploy/compose.yaml` and the chart name `ghcr.io/f8fvwgzc/tutelad:<version>`.
+
+**Alternatives considered.**
+- **`scratch` with a static musl binary.** No CA certificates or tzdata unless copied by hand, and a second libc to build aws-lc-rs for.
+- **`debian:bookworm-slim` as the runtime.** It has a shell and apt: more to patch and more to use after a break-in.
+- **The Console off in the image, on in the chart.** The notes for part 4c set `TUTELA_CONSOLE_DIR` in the image; an empty value turns it off where it is not wanted.
+- **A `HEALTHCHECK` with a small probe binary.** Kubernetes ignores it, and Compose users can probe the ops port from outside.
 
