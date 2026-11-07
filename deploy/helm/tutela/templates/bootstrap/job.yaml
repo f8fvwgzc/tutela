@@ -1,0 +1,202 @@
+{{- if .Values.bootstrap.enabled }}
+{{- include "tutela.check" . -}}
+{{- $name := printf "%s-bootstrap" (include "tutela.fullname" .) -}}
+{{- $secretNames := list -}}
+{{- $apps := list -}}
+{{- range .Values.apps -}}
+{{- $roles := list -}}
+{{- range (default list .roles) -}}
+{{- $roles = append $roles (dict "role" (required "apps[].roles[].role" .role) "scope" (default "org" .scope)) -}}
+{{- end -}}
+{{- $apps = append $apps (dict "name" (required "apps[].name" .name) "secret" (required "apps[].secretName" .secretName) "roles" $roles) -}}
+{{- $secretNames = append $secretNames .secretName -}}
+{{- end -}}
+{{- $hooks := list -}}
+{{- range .Values.webhooks -}}
+{{- $hooks = append $hooks (dict "app" (required "webhooks[].app" .app) "url" (required "webhooks[].url" .url) "types" (default list .types) "secret" (required "webhooks[].secretName" .secretName)) -}}
+{{- $secretNames = append $secretNames .secretName -}}
+{{- end -}}
+{{- $owners := list -}}
+{{- range .Values.tenant.owners -}}
+{{- $owners = append $owners (printf "%s=%s" $.Values.keycloak.realm .) -}}
+{{- end -}}
+{{- $tenant := dict "id" .Values.tenant.id "admin_upstream" $owners -}}
+{{- with .Values.tenant.name }}{{ $_ := set $tenant "name" . }}{{ end -}}
+{{- with .Values.tenant.orgName }}{{ $_ := set $tenant "org_name" . }}{{ end -}}
+{{- $plan := dict "tenant" $tenant "apps" $apps "webhooks" $hooks -}}
+{{- if .Values.console.enabled }}{{ $_ := set $plan "console_url" (printf "https://%s/console/" (include "tutela.consoleHost" .)) }}{{ end -}}
+# The bootstrap job (ADR-0056): `tutelad bootstrap` as a pre-install and
+# pre-upgrade hook, so the schema is current and the tenant, the products'
+# apps, their roles and webhooks are there before the service (or its new
+# version) starts. It runs again on every upgrade and changes only what is
+# missing. Its objects are hooks: the plan, the account and its Role go when
+# the hooks succeed; the Job stays until the next run, for its log.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "tutela.labels" . | nindent 4 }}
+    app.kubernetes.io/component: bootstrap
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+data:
+  plan.json: |
+    {{- toPrettyJson $plan | nindent 4 }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "tutela.labels" . | nindent 4 }}
+    app.kubernetes.io/component: bootstrap
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+---
+# Only Secrets, only in this namespace: read and replace the named ones, and
+# make new ones (Kubernetes cannot limit `create` by name).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "tutela.labels" . | nindent 4 }}
+    app.kubernetes.io/component: bootstrap
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+rules:
+  {{- if $secretNames }}
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames:
+      {{- toYaml $secretNames | nindent 6 }}
+    verbs: ["get", "update"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+  {{- else }}
+  []
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "tutela.labels" . | nindent 4 }}
+    app.kubernetes.io/component: bootstrap
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "tutela.labels" . | nindent 4 }}
+    app.kubernetes.io/component: bootstrap
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: {{ .Values.bootstrap.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.bootstrap.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "tutela.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: bootstrap
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ $name }}
+      # The job writes Secrets through the API with this account's token.
+      automountServiceAccountToken: true
+      enableServiceLinks: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "tutela.podSecurity" . | nindent 8 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: bootstrap
+          image: {{ include "tutela.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["bootstrap", "--plan", "/etc/tutela/bootstrap/plan.json"]
+          env:
+            - name: RUST_BACKTRACE
+              value: "1"
+            - name: RUST_LIB_BACKTRACE
+              value: "0"
+            - name: TUTELA_OWNER_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.ownerDatabase.name }}
+                  key: {{ .Values.secrets.ownerDatabase.key }}
+            - name: TUTELA_SERVICE_ROLE
+              value: {{ .Values.serviceRole | quote }}
+            - name: TUTELA_ISSUER
+              value: {{ .Values.issuer | quote }}
+            - name: TUTELA_KEY_PEPPER_VERSION
+              value: {{ .Values.config.keyPepperVersion | quote }}
+            - name: TUTELA_DEV_MODE
+              value: {{ ternary "1" "0" .Values.devMode | quote }}
+            {{- include "tutela.secretEnv" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.bootstrap.resources | nindent 12 }}
+          securityContext:
+            {{- include "tutela.containerSecurity" . | nindent 12 }}
+          volumeMounts:
+            - name: plan
+              mountPath: /etc/tutela/bootstrap
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.secrets.databaseCA.name }}
+            - name: database-ca
+              mountPath: /etc/tutela/database-ca
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: plan
+          configMap:
+            name: {{ $name }}
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+        {{- if .Values.secrets.databaseCA.name }}
+        - name: database-ca
+          secret:
+            secretName: {{ .Values.secrets.databaseCA.name }}
+            items:
+              - key: {{ .Values.secrets.databaseCA.key }}
+                path: ca.crt
+        {{- end }}
+{{- end }}

@@ -1,0 +1,214 @@
+# Values of the tutela chart (ADR-0056). Secrets are never values: the
+# chart only names Kubernetes Secrets you make (see `secrets`). Every value
+# of deploy/tutelad.env is set from `config`; `make helm` checks it.
+
+image:
+  repository: ghcr.io/f8fvwgzc/tutelad
+  # Defaults to the chart's appVersion.
+  tag: ""
+  # sha256:…; when set, the image is pulled by digest (do this in production).
+  digest: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# Two or more: Phase B's exit check is 2+ replicas (ROADMAP.md).
+replicaCount: 2
+
+# tutelad's own issuer (TUTELA_ISSUER): the public https URL it is reached at.
+# The defaults of this file are examples (example.com) so that `helm template`
+# renders; NOTES.txt warns while any of them is in use. Replace them all.
+issuer: https://tutela.example.com
+
+# TUTELA_DEV_MODE: loopback http issuers and webhooks. Never in production.
+devMode: false
+
+# The tenant of this deployment (one realm per deployment, ARCHITECTURE.md).
+# The bootstrap job makes it on the first install and keeps it after.
+tenant:
+  # ten_<uuidv7>: make one once and never change it (the chart's README).
+  # The trust file names it for the realm. This one is an example.
+  id: ten_01a1b4a2-0000-7000-8000-000000000000
+  name: ""
+  orgName: ""
+  # The first owners: their Keycloak user ids (`sub`) in keycloak.realm.
+  owners:
+    - 00000000-0000-0000-0000-000000000000
+
+# The tenant's Keycloak realm: people sign in there (the Console, products).
+keycloak:
+  # Its issuer, exactly as in its tokens: https://<host>/realms/<realm>.
+  realm: https://keycloak.example.com/realms/example
+  # Defaults to <realm>/protocol/openid-connect/certs.
+  jwksUri: ""
+  # true when Keycloak is on a private network: its host goes into the trust
+  # file's private_hosts, so the JWKS fetch may reach it.
+  privateNetwork: false
+  # The level of authentication (LoA) of the step-up acr (config.adminAcr's
+  # first value) in the realm's ACR-to-LoA mapping.
+  stepUpLevel: 2
+
+# The Tutela Console under /console/ (ADR-0050). The image ships it.
+console:
+  enabled: true
+  # The Console's public client in keycloak.realm (TUTELA_CONSOLE_CLIENT_ID).
+  clientId: tutela-console
+  # The public host people open the Console at, for the Keycloak client's
+  # redirect URI; defaults to ingress.host, then to issuer's host.
+  host: ""
+  # Ship the Keycloak client as a partial-import JSON in a ConfigMap
+  # (<release>-keycloak-client), for `kcadm.sh create partialImport`.
+  keycloakClient: true
+
+# Extra entries of the trust file (docs/CONTRACTS.md 1.6) besides the realm.
+trust:
+  privateHosts: []
+  # Each: {iss, jwks_uri, algs: [...], tenants: [...], external, allow_typ_jwt, workloads}
+  issuers: []
+  # Each: {name, delegation_aware}
+  audiences: []
+
+# The products' apps (ADR-0044). The bootstrap job makes each once, writes its
+# client secret to `secretName` (keys client_id, client_secret, principal,
+# tenant, issuer, token_url) and gives its service account `roles`.
+apps: []
+#  - name: attache
+#    secretName: attache-tutela-client
+#    roles:
+#      - role: owner
+#        scope: org      # the tenant's first org, or <type>:<id>
+
+# Webhooks registered for an app (ADR-0036). The secret goes to `secretName`
+# (keys webhook_id, secret, url). The URL must be a public https URL.
+webhooks: []
+#  - app: attache
+#    url: https://attache.example.com/hooks/tutela
+#    types: [tutela.permissions.changed.v1]
+#    secretName: attache-tutela-webhook
+
+# Names of Kubernetes Secrets you make. The chart never makes or reads them.
+secrets:
+  # TUTELA_DATABASE_URL: the service role, which owns nothing. A database
+  # not on the pod's host needs sslmode=require; the certificate is verified.
+  database:
+    name: tutela-database
+    key: url
+  # TUTELA_OWNER_DATABASE_URL: the owner role, for the bootstrap job only.
+  ownerDatabase:
+    name: tutela-owner-database
+    key: url
+  # TUTELA_MASTER_KEY and TUTELA_KEY_PEPPER: 32 random bytes each, different.
+  masterKey:
+    name: tutela-keys
+    key: master-key
+  keyPepper:
+    name: tutela-keys
+    key: key-pepper
+  # TUTELA_MASTER_KEY_PREVIOUS, during a master key rotation only.
+  masterKeyPrevious:
+    name: ""
+    key: master-key-previous
+  # TUTELA_LEDGER_TOKEN, when config.ledgerUrl is set.
+  ledgerToken:
+    name: ""
+    key: token
+  # A CA bundle (PEM) for the database's certificate, when a private CA
+  # signs it. It is added to the system's CAs (SSL_CERT_DIR).
+  databaseCA:
+    name: ""
+    key: ca.crt
+
+# The role TUTELA_DATABASE_URL names; `tutelad migrate` grants it.
+serviceRole: tutela_service
+
+# The settings of deploy/tutelad.env, one by one. TUTELA_AUDIT_KEY is never
+# set: the producer key is sealed in the database (ADR-0045).
+config:
+  log: info
+  shutdownDrainSecs: 5
+  shutdownTimeoutSecs: 30
+  expirySweepSecs: 30
+  # At most 1000 for the documented 1.5 s revocation delay.
+  revisionCheckMs: 1000
+  maxAgeReadSecs: 60
+  maxAgeWriteSecs: 10
+  impactMaxWork: 2000000
+  jwksCacheSecs: 300
+  keyRefreshSecs: 10
+  keyPepperVersion: 1
+  tokenTtlSecs: 300
+  delegatedTtlSecs: 90
+  # TUTELA_ADMIN_ACR: required with the Console. The first value is what the
+  # Console asks for at sign-in: the realm's MFA level.
+  adminAcr: mfa
+  audience: tutela-authz
+  webhookPollMs: 1000
+  eventRetentionSecs: 604800
+  eventsPollMs: 500
+  sseMaxStreams: 1000
+  sseMaxSecs: 900
+  sseBuffer: 256
+  bundleTtlSecs: 300
+  purgeGraceSecs: 2592000
+  auditVerifySecs: 3600
+  # Exact https origins of product pages that call tutelad (ADR-0054).
+  corsOrigins: []
+  # attache's ledger Append API (ADR-0039); off when empty.
+  ledgerUrl: ""
+
+service:
+  type: ClusterIP
+  port: 8080
+
+# One rule for every path to the API port: /console/, /oauth2/token, the
+# JWKS, /access/v1/ and /v1/. The chart adds no header and no
+# Content-Security-Policy: tutelad sends its own (ADR-0050).
+ingress:
+  enabled: false
+  className: ""
+  host: ""
+  annotations: {}
+  # The TLS Secret for host; the Console needs https.
+  tlsSecretName: ""
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+networkPolicy:
+  enabled: true
+  # Who may reach the API port (8080); empty: everyone.
+  apiFrom: []
+  # Who may reach the ops port (9090: health, readiness, metrics).
+  opsFrom: []
+  # The database's port and where it is; empty `databaseTo`: anywhere.
+  databasePort: 5432
+  databaseTo: []
+  # The bootstrap job's way to the Kubernetes API server.
+  apiServerPorts: [443, 6443]
+
+# The bootstrap job (ADR-0056): a Helm hook that runs `tutelad bootstrap`
+# before the service starts on install, and before the new version on
+# upgrade: migrate, the tenant, the apps, their roles and webhooks.
+bootstrap:
+  enabled: true
+  backoffLimit: 2
+  activeDeadlineSeconds: 600
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

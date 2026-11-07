@@ -1,0 +1,99 @@
+{{- include "tutela.check" . -}}
+# Every setting of deploy/tutelad.env, and the Console's (the notes for part
+# 4c). No secret: those come from Secrets by reference (deployment.yaml).
+# Never TUTELA_AUDIT_KEY (ADR-0045).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "tutela.fullname" . }}-env
+  labels:
+    {{- include "tutela.labels" . | nindent 4 }}
+data:
+  RUST_BACKTRACE: "1"
+  RUST_LIB_BACKTRACE: "0"
+  TUTELA_LOG: {{ .Values.config.log | quote }}
+  TUTELA_LISTEN: "0.0.0.0:8080"
+  TUTELA_OPS_LISTEN: "0.0.0.0:9090"
+  TUTELA_ISSUER: {{ .Values.issuer | quote }}
+  TUTELA_TRUST_FILE: /etc/tutela/trust/trust.toml
+  TUTELA_DEV_MODE: {{ ternary "1" "0" .Values.devMode | quote }}
+  TUTELA_AUDIENCE: {{ .Values.config.audience | quote }}
+  TUTELA_SHUTDOWN_DRAIN_SECS: {{ .Values.config.shutdownDrainSecs | quote }}
+  TUTELA_SHUTDOWN_TIMEOUT_SECS: {{ .Values.config.shutdownTimeoutSecs | quote }}
+  TUTELA_EXPIRY_SWEEP_SECS: {{ .Values.config.expirySweepSecs | quote }}
+  TUTELA_REVISION_CHECK_MS: {{ .Values.config.revisionCheckMs | quote }}
+  TUTELA_MAX_AGE_READ_SECS: {{ .Values.config.maxAgeReadSecs | quote }}
+  TUTELA_MAX_AGE_WRITE_SECS: {{ .Values.config.maxAgeWriteSecs | quote }}
+  TUTELA_IMPACT_MAX_WORK: {{ .Values.config.impactMaxWork | int64 | quote }}
+  TUTELA_JWKS_CACHE_SECS: {{ .Values.config.jwksCacheSecs | quote }}
+  TUTELA_KEY_REFRESH_SECS: {{ .Values.config.keyRefreshSecs | quote }}
+  TUTELA_KEY_PEPPER_VERSION: {{ .Values.config.keyPepperVersion | quote }}
+  TUTELA_TOKEN_TTL_SECS: {{ .Values.config.tokenTtlSecs | quote }}
+  TUTELA_DELEGATED_TTL_SECS: {{ .Values.config.delegatedTtlSecs | quote }}
+  TUTELA_ADMIN_ACR: {{ .Values.config.adminAcr | quote }}
+  TUTELA_CONSOLE_DIR: {{ ternary "/srv/tutela/console" "" .Values.console.enabled | quote }}
+  TUTELA_CONSOLE_ISSUER: {{ ternary .Values.keycloak.realm "" .Values.console.enabled | quote }}
+  TUTELA_CONSOLE_CLIENT_ID: {{ ternary .Values.console.clientId "" .Values.console.enabled | quote }}
+  TUTELA_CORS_ORIGINS: {{ join "," .Values.config.corsOrigins | quote }}
+  TUTELA_WEBHOOK_POLL_MS: {{ .Values.config.webhookPollMs | quote }}
+  TUTELA_EVENT_RETENTION_SECS: {{ .Values.config.eventRetentionSecs | int64 | quote }}
+  TUTELA_EVENTS_POLL_MS: {{ .Values.config.eventsPollMs | quote }}
+  TUTELA_SSE_MAX_STREAMS: {{ .Values.config.sseMaxStreams | quote }}
+  TUTELA_SSE_MAX_SECS: {{ .Values.config.sseMaxSecs | quote }}
+  TUTELA_SSE_BUFFER: {{ .Values.config.sseBuffer | quote }}
+  TUTELA_BUNDLE_TTL_SECS: {{ .Values.config.bundleTtlSecs | quote }}
+  TUTELA_PURGE_GRACE_SECS: {{ .Values.config.purgeGraceSecs | int64 | quote }}
+  TUTELA_AUDIT_VERIFY_SECS: {{ .Values.config.auditVerifySecs | quote }}
+  TUTELA_LEDGER_URL: {{ .Values.config.ledgerUrl | quote }}
+---
+# The trust file (docs/CONTRACTS.md 1.6): the tenant's realm, as the notes
+# for part 4c say (external, typ JWT, RS256, one tenant), and any extra
+# issuers and audiences. It holds no secret.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "tutela.fullname" . }}-trust
+  labels:
+    {{- include "tutela.labels" . | nindent 4 }}
+data:
+  trust.toml: |
+    {{- $hosts := .Values.trust.privateHosts }}
+    {{- if .Values.keycloak.privateNetwork }}
+    {{- $hosts = append $hosts (urlParse .Values.keycloak.realm).hostname }}
+    {{- end }}
+    {{- $hosts = uniq $hosts }}
+    {{- if $hosts }}
+    private_hosts = [{{ range $i, $h := $hosts }}{{ if $i }}, {{ end }}{{ $h | quote }}{{ end }}]
+    {{- end }}
+
+    # The tenant's Keycloak realm (people and the Console sign in here).
+    [[issuer]]
+    iss = {{ .Values.keycloak.realm | quote }}
+    jwks_uri = {{ include "tutela.jwksUri" . | quote }}
+    algs = ["RS256"]
+    tenants = [{{ .Values.tenant.id | quote }}]
+    external = true
+    allow_typ_jwt = true
+    {{- range .Values.trust.issuers }}
+
+    [[issuer]]
+    iss = {{ required "trust.issuers[].iss" .iss | quote }}
+    jwks_uri = {{ required "trust.issuers[].jwks_uri" .jwks_uri | quote }}
+    algs = [{{ range $i, $a := .algs }}{{ if $i }}, {{ end }}{{ $a | quote }}{{ end }}]
+    tenants = [{{ range $i, $t := .tenants }}{{ if $i }}, {{ end }}{{ $t | quote }}{{ end }}]
+    {{- if .external }}
+    external = true
+    {{- end }}
+    {{- if .allow_typ_jwt }}
+    allow_typ_jwt = true
+    {{- end }}
+    {{- if .workloads }}
+    workloads = true
+    {{- end }}
+    {{- end }}
+    {{- range .Values.trust.audiences }}
+
+    [[audience]]
+    name = {{ required "trust.audiences[].name" .name | quote }}
+    delegation_aware = {{ .delegation_aware | default false }}
+    {{- end }}

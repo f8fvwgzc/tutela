@@ -10,7 +10,7 @@
 
 use tutela_contracts::audit::{Actor, AuditDraft};
 use tutela_contracts::principal::{Principal, PrincipalKind};
-use tutela_contracts::tenant::{Issuer, OrgId, TenantKey};
+use tutela_contracts::tenant::{Issuer, OrgId, TenantId, TenantKey};
 use tutela_pdp::model::RoleKey;
 use tutela_pdp::{PathEntry, Subject};
 use tutela_store::OutboxEvent;
@@ -51,7 +51,7 @@ pub struct Created {
 }
 
 /// A record about a tenant by `tutelad` itself.
-fn system_record(
+pub(crate) fn system_record(
     tenant: &TenantKey,
     action: &str,
     resource: (&str, &str),
@@ -88,7 +88,7 @@ pub fn deployment_record(
     .detail("tenant_iss", of.iss.to_string()))
 }
 
-fn drafts(records: Vec<Record>) -> Result<Vec<AuditDraft>, BuildError> {
+pub(crate) fn drafts(records: Vec<Record>) -> Result<Vec<AuditDraft>, BuildError> {
     records.into_iter().map(Record::build).collect()
 }
 
@@ -103,6 +103,31 @@ fn drafts(records: Vec<Record>) -> Result<Vec<AuditDraft>, BuildError> {
 pub async fn create_tenant(
     owner: &mut Client,
     own: &Issuer,
+    new: &NewTenant,
+) -> anyhow::Result<Created> {
+    create(owner, own, None, new).await
+}
+
+/// As [`create_tenant`], with the tenant id `tid` the operator chose: the
+/// Helm bootstrap job names the tenant in the trust file before it makes it
+/// (ADR-0056). An id in the directory already, in any state, is refused.
+///
+/// # Errors
+///
+/// As [`create_tenant`], and an id that is in use.
+pub async fn create_tenant_with_id(
+    owner: &mut Client,
+    own: &Issuer,
+    tid: TenantId,
+    new: &NewTenant,
+) -> anyhow::Result<Created> {
+    create(owner, own, Some(tid), new).await
+}
+
+async fn create(
+    owner: &mut Client,
+    own: &Issuer,
+    tid: Option<TenantId>,
     new: &NewTenant,
 ) -> anyhow::Result<Created> {
     anyhow::ensure!(
@@ -120,7 +145,16 @@ pub async fn create_tenant(
     }
     let role = RoleKey::parse(OWNER_ROLE)?;
     let tx = owner.transaction().await?;
-    let key = tutela_store::create_tenant(&tx, own).await?;
+    let key = match tid {
+        Some(tid) => {
+            anyhow::ensure!(
+                tutela_store::directory_entry(&tx, &tid).await?.is_none(),
+                "the tenant id is in use"
+            );
+            tutela_store::create_tenant_with_id(&tx, own, tid).await?
+        }
+        None => tutela_store::create_tenant(&tx, own).await?,
+    };
     if new.name.is_some() {
         tutela_store::set_tenant_name(&tx, &key, new.name.as_deref()).await?;
     }

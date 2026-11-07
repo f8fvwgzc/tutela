@@ -34,7 +34,22 @@ const MAX_GROUP_NAME: usize = 256;
 ///
 /// A database error.
 pub async fn create_tenant(tx: &Transaction<'_>, iss: &Issuer) -> Result<TenantKey, StoreError> {
-    let tid = TenantId::new(uuid7()?);
+    create_tenant_with_id(tx, iss, TenantId::new(uuid7()?)).await
+}
+
+/// As [`create_tenant`], with a tenant id the operator chose (the Helm
+/// bootstrap job, ADR-0056: the trust file names the tenant before it is
+/// made). An id that is in the directory already, in any state, is refused:
+/// a tenant id is never reused.
+///
+/// # Errors
+///
+/// A database error; a unique violation for an id in use.
+pub async fn create_tenant_with_id(
+    tx: &Transaction<'_>,
+    iss: &Issuer,
+    tid: TenantId,
+) -> Result<TenantKey, StoreError> {
     tx.execute(
         "INSERT INTO tutela.tenant (tenant_id, iss) VALUES ($1, $2)",
         &[&tid.to_string(), &iss.as_str()],

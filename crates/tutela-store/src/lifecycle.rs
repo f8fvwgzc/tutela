@@ -66,6 +66,45 @@ pub struct TenantInfo {
     pub created_at: SystemTime,
 }
 
+/// Where a tenant id stands in the directory, for the operator: whether it
+/// is there under which issuer, and whether it is soft-deleted or purged.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct DirectoryEntry {
+    /// The issuer it is under.
+    pub iss: String,
+    /// When it was soft-deleted.
+    pub deleted_at: Option<SystemTime>,
+    /// When its data was purged.
+    pub purged_at: Option<SystemTime>,
+}
+
+/// The directory row of tenant id `tid`, in any state, or `None` when the id
+/// was never used. It enters no tenant: the directory holds no tenant data
+/// and every role reads it (ADR-0019).
+///
+/// # Errors
+///
+/// A database error.
+pub async fn directory_entry(
+    tx: &Transaction<'_>,
+    tid: &tutela_contracts::tenant::TenantId,
+) -> Result<Option<DirectoryEntry>, StoreError> {
+    tx.query_opt(
+        "SELECT iss, deleted_at, purged_at FROM tutela.tenant WHERE tenant_id = $1",
+        &[&tid.to_string()],
+    )
+    .await
+    .db()?
+    .map(|r| {
+        Ok(DirectoryEntry {
+            iss: r.try_get(0).db()?,
+            deleted_at: r.try_get(1).db()?,
+            purged_at: r.try_get(2).db()?,
+        })
+    })
+    .transpose()
+}
+
 /// One org of a tenant.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct OrgInfo {

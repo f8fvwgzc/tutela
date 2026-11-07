@@ -1,0 +1,161 @@
+{{- include "tutela.check" . -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "tutela.fullname" . }}
+  labels:
+    {{- include "tutela.labels" . | nindent 4 }}
+# tutelad never calls the Kubernetes API.
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "tutela.fullname" . }}
+  labels:
+    {{- include "tutela.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  replicas: {{ .Values.replicaCount }}
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- include "tutela.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      labels:
+        {{- include "tutela.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: server
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        # A changed setting or trust file rolls the pods: both are read at start.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "tutela.fullname" . }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "tutela.podSecurity" . | nindent 8 }}
+      # The drain, then running requests get the timeout, plus a margin.
+      terminationGracePeriodSeconds: {{ add .Values.config.shutdownDrainSecs .Values.config.shutdownTimeoutSecs 5 }}
+      {{- if .Values.affinity }}
+      affinity:
+        {{- toYaml .Values.affinity | nindent 8 }}
+      {{- else }}
+      # Replicas on different nodes where the cluster allows it.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- include "tutela.selectorLabels" . | nindent 20 }}
+                    app.kubernetes.io/component: server
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: tutelad
+          image: {{ include "tutela.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["serve"]
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: ops
+              containerPort: 9090
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "tutela.fullname" . }}-env
+          env:
+            - name: TUTELA_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.database.name }}
+                  key: {{ .Values.secrets.database.key }}
+            {{- include "tutela.secretEnv" . | nindent 12 }}
+            {{- if .Values.config.ledgerUrl }}
+            - name: TUTELA_LEDGER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.ledgerToken.name }}
+                  key: {{ .Values.secrets.ledgerToken.key }}
+            {{- end }}
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: ops
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: ops
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          # Ready only with the database reachable and safe; it fails first
+          # when the pod stops, for the drain.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: ops
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 2
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- include "tutela.containerSecurity" . | nindent 12 }}
+          volumeMounts:
+            - name: trust
+              mountPath: /etc/tutela/trust
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.secrets.databaseCA.name }}
+            - name: database-ca
+              mountPath: /etc/tutela/database-ca
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: trust
+          configMap:
+            name: {{ include "tutela.fullname" . }}-trust
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+        {{- if .Values.secrets.databaseCA.name }}
+        - name: database-ca
+          secret:
+            secretName: {{ .Values.secrets.databaseCA.name }}
+            items:
+              - key: {{ .Values.secrets.databaseCA.key }}
+                path: ca.crt
+        {{- end }}

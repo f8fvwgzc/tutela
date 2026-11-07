@@ -2,7 +2,7 @@
 #
 #   make            # = make all: the Rust gates (format check, clippy, tests, docs,
 #                   #   cargo-deny, cargo-audit), the JavaScript SDKs' gates (js)
-#                   #   and the image's Dockerfile lint (image-lint)
+#                   #   the image's Dockerfile lint (image-lint) and the Helm chart (helm)
 #
 # Requirements: Rust (pinned by rust-toolchain.toml), cargo-deny and cargo-audit;
 # node >= 22.12 and pnpm 10 for `make js` (ADR-0047). Plain `cargo build` and
@@ -15,14 +15,14 @@ LOCKED ?= --locked
 
 .DEFAULT_GOAL := all
 
-.PHONY: help all ci fmt fmt-check lint test doc deny audit clean image-lint \
+.PHONY: help all ci fmt fmt-check lint test doc deny audit clean image-lint helm \
 	js js-install js-build js-typecheck js-lint js-test js-it js-e2e js-audit js-licenses
 
 help:
-	@echo "Targets: all (fmt-check lint test doc deny audit js image-lint), fmt, fmt-check, lint, test, doc, deny, audit, clean"
+	@echo "Targets: all (fmt-check lint test doc deny audit js image-lint helm), fmt, fmt-check, lint, test, doc, deny, audit, clean"
 	@echo "         js (js-install js-build js-typecheck js-lint js-test js-it js-e2e js-audit js-licenses)"
 
-all: fmt-check lint test doc deny audit js image-lint
+all: fmt-check lint test doc deny audit js image-lint helm
 
 ci: all
 
@@ -61,6 +61,13 @@ image-lint:
 	else \
 		echo "skipped: hadolint is not installed (set TUTELA_REQUIRE_HADOLINT=1 to fail instead)"; \
 	fi
+
+# The Helm chart deploy/helm/tutela (ADR-0056): helm lint, helm template with
+# the default and the production-like values, and checks on the rendered
+# manifests (scripts/helm-check.mjs). Without helm it says it is skipped,
+# unless TUTELA_REQUIRE_HELM=1, which fails it.
+helm:
+	node scripts/helm-check.mjs
 
 # ---------- The JavaScript SDKs: sdk/js and sdk/react (ADR-0047) ----------
 

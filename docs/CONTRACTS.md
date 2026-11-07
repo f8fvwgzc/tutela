@@ -1600,7 +1600,7 @@ Registering, moving and deleting scopes, their private flag, role assignments an
 
 An org is `{"org", "name"?, "created_at", "deleted_at"?, "purge_after"?, "purged_at"?, "rev"?}`; times are RFC 3339 (section 0). An org id may be in a URL path: it names a container, not a person.
 
-**Making and restoring a tenant** is the operator's, never the API's: `tutelad tenant create [--name <name>] [--org-name <name>] --admin <principal>… --admin-upstream <iss>=<sub>…` as the owner role (`TUTELA_OWNER_DATABASE_URL`, `TUTELA_ISSUER`) makes a tenant under `TUTELA_ISSUER`, its first org and its first owners (at least one), and prints `{"tid", "iss", "org", "owners", "rev"}`. `tutelad tenant restore <tid>` undoes a soft delete before the purge. Both are recorded in the tenant's audit chain and the deployment's.
+**Making and restoring a tenant** is the operator's, never the API's: `tutelad tenant create [--name <name>] [--org-name <name>] --admin <principal>… --admin-upstream <iss>=<sub>…` as the owner role (`TUTELA_OWNER_DATABASE_URL`, `TUTELA_ISSUER`) makes a tenant under `TUTELA_ISSUER`, its first org and its first owners (at least one), and prints `{"tid", "iss", "org", "owners", "rev"}`. `tutelad tenant restore <tid>` undoes a soft delete before the purge. Both are recorded in the tenant's audit chain and the deployment's. `tutelad tenant new-id` prints a fresh tenant id for the Helm chart, which makes the tenant with that id (7.13.9).
 
 **The purge.** After `purge_after`, every replica's sweep (`TUTELA_EXPIRY_SWEEP_SECS`) removes a deleted tenant's data, every row of its tables, and keeps its audit chain, its revision row and its directory row (`purged_at`), so a tenant id is never reused. A deleted org's purge removes its scopes, assignments and rules, and keeps its row and its groups. Each purge is recorded in the tenant's chain, a tenant's also in the deployment's. `tutelad_purges_total{operation, outcome}` counts them (`tenant`, `org`; `done`, `failed`).
 
@@ -1681,6 +1681,28 @@ A webhook is `{"id", "url", "types", "disabled", "created_by"}`. A webhook of an
 | `POST /v1/admin/apps/{id}/disable` | `DisableApp` | Ends every secret and disables the service account (4.9). Answers the app. |
 
 An app is `{"client_id", "name", "principal", "created_by", "created_at"?, "disabled_at"?}`. An app of another tenant is 404. Every call is recorded with who asked; a record names the key's id and display prefix (`tut_sk_<prefix>`), never the secret.
+
+#### 7.13.9 The bootstrap (`tutelad bootstrap`)
+
+**Built in part 4c** ([ADR-0056](DECISIONS.md#adr-0056-the-helm-chart-and-its-bootstrap-job-a-pre-install-hook-that-makes-only-what-is-missing)). Not a route: the operator's command, run by the Helm chart's job as the owner role (`TUTELA_OWNER_DATABASE_URL`, `TUTELA_SERVICE_ROLE`, `TUTELA_ISSUER`, `TUTELA_MASTER_KEY`, `TUTELA_KEY_PEPPER`). `tutelad bootstrap --plan <file> [--secrets-dir <dir>]` reads a plan:
+
+```json
+{
+  "tenant": {"id": "ten_<uuidv7>", "name"?, "org_name"?, "admin_upstream": ["<iss>=<sub>"…], "admins": ["user:…" | "sa:…"…]},
+  "apps": [{"name", "secret": "<Secret name>", "roles": [{"role", "scope": "org" | "<type>:<id>"}…]}…],
+  "webhooks": [{"app": "<an app of the plan>", "url", "types": [<event type>…], "secret": "<Secret name>"}…],
+  "console_url"?: "https://<host>/console/"
+}
+```
+
+It migrates, then makes what is missing, in order: the tenant with that id (`tutelad tenant new-id` prints a fresh one; an id under another issuer, soft-deleted or purged is refused), each app (found by name, the oldest enabled one), each role of an app's service account (`org` is the tenant's oldest live org; an assignment the subject has at that scope already is kept, whatever its role), each webhook (found by URL; the URL checked as at registration, 8.5). A secret goes to a Kubernetes Secret in the job's namespace (or `<dir>/<name>.json`, mode 0600):
+
+| Secret of | Keys |
+|---|---|
+| an app | `client_id`, `client_secret` (`tut_sk_…`), `principal` (`sa:sa_…`), `tenant` (`ten_…`), `issuer` (`TUTELA_ISSUER`), `token_url` (`<issuer>/oauth2/token`) |
+| a webhook | `webhook_id` (`whk_…`), `secret` (`whsec_…`), `url` |
+
+An app or webhook that is there while its Secret is missing, or names another app or webhook, gets a new secret by rotation (overlap 3600 s) written to the Secret. Each step prints one JSON line `{"step", "outcome", "about"}`, `outcome` one of `made`, `kept`, `rotated`, `given`, `left`, `done`; `about` names an id, never a secret. Every change is recorded in the tenant's chain by `tutelad` (`by: operator`); a webhook's registration names the app's service account as its actor.
 
 ## 8. Events
 

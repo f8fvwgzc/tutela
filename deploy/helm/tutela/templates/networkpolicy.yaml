@@ -1,0 +1,89 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- include "tutela.check" . -}}
+# The service: the API port from `apiFrom` (everyone when empty), the ops port
+# from `opsFrom` only (kubelet probes come from the node); out: DNS, the
+# database, and https (the realm's JWKS, webhooks and the ledger, each also
+# checked by tutela-safenet).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "tutela.fullname" . }}
+  labels:
+    {{- include "tutela.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "tutela.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: server
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports:
+        - port: 8080
+          protocol: TCP
+      {{- with .Values.networkPolicy.apiFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- with .Values.networkPolicy.opsFrom }}
+    - ports:
+        - port: 9090
+          protocol: TCP
+      from:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - ports:
+        - port: {{ .Values.networkPolicy.databasePort }}
+          protocol: TCP
+      {{- with .Values.networkPolicy.databaseTo }}
+      to:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    - ports:
+        - port: 443
+          protocol: TCP
+{{- if .Values.bootstrap.enabled }}
+---
+# The bootstrap job: no way in; out to DNS, the database and the API server.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "tutela.fullname" . }}-bootstrap
+  labels:
+    {{- include "tutela.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "tutela.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: bootstrap
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - ports:
+        - port: {{ .Values.networkPolicy.databasePort }}
+          protocol: TCP
+      {{- with .Values.networkPolicy.databaseTo }}
+      to:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    - ports:
+        {{- range .Values.networkPolicy.apiServerPorts }}
+        - port: {{ . }}
+          protocol: TCP
+        {{- end }}
+{{- end }}
+{{- end }}

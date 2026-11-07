@@ -1,0 +1,14 @@
+apiVersion: v2
+name: tutela
+description: Tutela's service (tutelad) with the Tutela Console, and the bootstrap job that makes the tenant and the products' apps (ADR-0056).
+type: application
+version: 0.2.0
+appVersion: "0.2.0"
+kubeVersion: ">=1.29.0-0"
+home: https://github.com/f8fvwgzc/tutela
+sources:
+  - https://github.com/f8fvwgzc/tutela
+keywords:
+  - authorization
+  - permissions
+  - oidc
