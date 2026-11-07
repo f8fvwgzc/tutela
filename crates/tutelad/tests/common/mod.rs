@@ -451,6 +451,18 @@ impl Running {
 
 pub async fn start(config: &Config, state: AppState) -> Running {
     let server = tutelad::Server::bind(config, state).await.unwrap();
+    serving(server)
+}
+
+/// [`start`] on an API listener the test bound already: its address was
+/// known, and given out, before the start (#147).
+pub async fn start_on(config: &Config, state: AppState, api: tokio::net::TcpListener) -> Running {
+    let ops = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let server = tutelad::Server::on(config, state, api, ops).await.unwrap();
+    serving(server)
+}
+
+fn serving(server: tutelad::Server) -> Running {
     let (api, ops) = (server.api_addr().unwrap(), server.ops_addr().unwrap());
     let (stop, stopped) = oneshot::channel();
     let task = tokio::spawn(server.serve(async move {
@@ -461,6 +473,64 @@ pub async fn start(config: &Config, state: AppState) -> Running {
         ops,
         stop,
         task,
+    }
+}
+
+/// The shipped `tutelad` binary, started by a test. It binds port 0 for both
+/// ports itself and says where in its `serving` log line, so no port is
+/// picked by the test, given up and taken by another test before the binary
+/// binds it (#147).
+pub struct Spawned {
+    pub child: tokio::process::Child,
+    pub api: SocketAddr,
+    pub ops: SocketAddr,
+    /// Its whole stdout: the lines read before `serving`, then the rest.
+    /// Read all the time: a pipe nobody reads fills up, and the binary then
+    /// stops at its next log line.
+    pub log: JoinHandle<String>,
+}
+
+/// Starts `cmd` (the binary with its environment set) on port 0, and waits
+/// for its `serving` line. Panics with what it logged when it stops first.
+pub async fn spawn_serving(mut cmd: tokio::process::Command, tag: &str) -> Spawned {
+    use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _};
+    cmd.env("TUTELA_LISTEN", "127.0.0.1:0")
+        .env("TUTELA_OPS_LISTEN", "127.0.0.1:0")
+        .stdout(std::process::Stdio::piped());
+    let mut child = cmd.spawn().unwrap();
+    let mut out = tokio::io::BufReader::new(child.stdout.take().unwrap());
+    let mut seen = String::new();
+    let found = tokio::time::timeout(Duration::from_secs(20), async {
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if out.read_line(&mut line).await.unwrap_or(0) == 0 {
+                return None;
+            }
+            seen.push_str(&line);
+            let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            if v["message"] == "serving" {
+                let addr = |k: &str| v[k].as_str()?.parse::<SocketAddr>().ok();
+                return Some((addr("api")?, addr("ops")?));
+            }
+        }
+    })
+    .await;
+    let Ok(Some((api, ops))) = found else {
+        panic!("tutelad {tag} did not start; its log:\n{seen}");
+    };
+    let log = tokio::spawn(async move {
+        let mut rest = String::new();
+        let _ = out.read_to_string(&mut rest).await;
+        seen + &rest
+    });
+    Spawned {
+        child,
+        api,
+        ops,
+        log,
     }
 }
 

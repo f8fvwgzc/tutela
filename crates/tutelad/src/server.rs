@@ -57,6 +57,23 @@ impl Server {
         let ops = TcpListener::bind(config.ops_listen)
             .await
             .with_context(|| format!("binding the ops port {}", config.ops_listen))?;
+        Self::on(config, state, api, ops).await
+    }
+
+    /// [`Server::bind`] on two listeners the caller bound already, so an
+    /// address known before the start is never given up in between (a test
+    /// that must name the API's address to someone first). `config.listen`
+    /// and `config.ops_listen` are not used.
+    ///
+    /// # Errors
+    ///
+    /// As [`Server::bind`], apart from binding.
+    pub async fn on(
+        config: &Config,
+        state: AppState,
+        api: TcpListener,
+        ops: TcpListener,
+    ) -> anyhow::Result<Self> {
         // The keys before the first request, where the database allows; the
         // job loads them again on its timer.
         if let Err(e) = keys::refresh(&state).await {

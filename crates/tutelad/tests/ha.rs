@@ -160,38 +160,27 @@ impl Replica {
         database_url: &str,
         env: &[(&str, &str)],
     ) -> Self {
-        let free = || {
-            std::net::TcpListener::bind("127.0.0.1:0")
-                .unwrap()
-                .local_addr()
-                .unwrap()
-        };
-        let (api, ops) = (free(), free());
         let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_tutelad"));
         cmd.env_clear()
             .env("TUTELA_DATABASE_URL", database_url)
             .env("TUTELA_TRUST_FILE", trust)
-            .env("TUTELA_LISTEN", api.to_string())
-            .env("TUTELA_OPS_LISTEN", ops.to_string())
             .env("TUTELA_SHUTDOWN_DRAIN_SECS", "0")
             .env("TUTELA_DEV_MODE", "1")
             .env("TUTELA_ISSUER", common::OWN_ISS)
             .env("TUTELA_MASTER_KEY", common::MASTER_KEY)
             .env("TUTELA_KEY_PEPPER", common::PEPPER)
-            .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::inherit())
             .kill_on_drop(true);
         for (k, v) in env {
             cmd.env(k, v);
         }
-        let mut child = cmd.spawn().unwrap();
-        let mut stdout = child.stdout.take().unwrap();
-        let log = tokio::spawn(async move {
-            use tokio::io::AsyncReadExt as _;
-            let mut text = String::new();
-            let _ = stdout.read_to_string(&mut text).await;
-            text
-        });
+        // The replica binds port 0 and says where (#147).
+        let common::Spawned {
+            child,
+            api,
+            ops,
+            log,
+        } = common::spawn_serving(cmd, tag).await;
         let c = http();
         let url = format!("http://{ops}/healthz");
         for _ in 0..200 {
@@ -205,7 +194,7 @@ impl Replica {
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        panic!("replica {tag} did not start");
+        panic!("replica {tag} did not answer on its ops port");
     }
 
     async fn ask(&self, token: &str, body: &Value) -> (StatusCode, Value) {

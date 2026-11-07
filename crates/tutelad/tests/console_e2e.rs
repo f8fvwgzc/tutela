@@ -88,13 +88,6 @@ fn admin_token(keys: &tutelad::keys::KeyRing, sub: &str, tid: &str, age: u64, li
     .unwrap()
 }
 
-fn free() -> std::net::SocketAddr {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_console_passes_the_exit_check_in_a_real_browser() {
     if std::env::var("TUTELA_CONSOLE_E2E").as_deref() != Ok("1") {
@@ -113,7 +106,9 @@ async fn the_console_passes_the_exit_check_in_a_real_browser() {
     let s = common::seed_of(&mut d.owner, OWN_ISS, common::USER, "reader").await;
 
     // tutelad's address first: the realm must know the Console's callback.
-    let api = free();
+    // The listener is kept and handed to the server, never given up (#147).
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let api = listener.local_addr().unwrap();
     let url = format!("http://{api}");
     let mut idp = Settings::new("tutela-authz");
     idp.redirect_uris = vec![format!("{url}/console/callback")];
@@ -169,7 +164,6 @@ async fn the_console_passes_the_exit_check_in_a_real_browser() {
     )
     .unwrap();
     let mut cfg = common::config(&d.service_url, trust);
-    cfg.listen = api;
     cfg.dev_mode = true;
     cfg.console = Some(
         tutelad::console::ConsoleConfig::from_values(
@@ -186,7 +180,7 @@ async fn the_console_passes_the_exit_check_in_a_real_browser() {
     let jwks: Arc<dyn tutela_sdk::JwksSource> = Arc::new(cfg.jwks_source().unwrap());
     let state = common::state_with_jwks(&cfg, jwks, true);
     let keys = Arc::clone(&state.keys);
-    let service = common::start(&cfg, state).await;
+    let service = common::start_on(&cfg, state, listener).await;
 
     let fixture = json!({
         "url": url,
