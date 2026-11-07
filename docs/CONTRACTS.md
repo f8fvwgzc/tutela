@@ -451,7 +451,7 @@ Example payload:
 
 Before Phase B there is no `tutelad`. A product verifies tokens from an external OIDC issuer directly with `tutela-sdk`. Keycloak 26.x is recommended: one realm per deployment, using Keycloak Organizations. Rules:
 - Header rules as in 4.1, except `typ`: `at+jwt` is preferred. `JWT` is accepted only from an issuer whose trust-list entry allows it.
-- Required claims: `iss` (exact), `sub`, `aud` (exactly one: set up the Keycloak client so its tokens carry exactly one audience), `exp` and `iat`. Time rules as in 4.2 (set the access-token lifespan to 10 minutes or less). `alg` allow-list as in 4.1.
+- Required claims: `iss` (exact), `sub`, `aud` (exactly one: set up the Keycloak client so its tokens carry exactly one audience, with "Full scope allowed" off, [ADR-0057](DECISIONS.md#adr-0057-a-real-keycloak-26-in-the-tests-a-pinned-image-a-realm-made-from-the-chart-and-a-client-without-full-scope)), `exp` and `iat`. Time rules as in 4.2 (set the access-token lifespan to 10 minutes or less). `alg` allow-list as in 4.1.
 - `azp` and `nbf` are checked when present. `jti`, `sid` and `amr` are not parsed as Tutela formats; the issuer owns them.
 - `tid` comes from the trust list (1.6), never from a token claim.
 - `sub` is mapped through `(iss, sub)` to a Tutela principal. Never through the e-mail claim.

@@ -2,6 +2,14 @@
 
 Each release is a git tag; depend on it by tag, never by path. What a consumer must change is in [docs/MIGRATION-0.2.md](docs/MIGRATION-0.2.md). The full record of decisions is [docs/DECISIONS.md](docs/DECISIONS.md).
 
+## Unreleased
+
+### Tested against a real Keycloak ([#87](https://github.com/f8fvwgzc/tutela/issues/87), [ADR-0057](docs/DECISIONS.md#adr-0057-a-real-keycloak-26-in-the-tests-a-pinned-image-a-realm-made-from-the-chart-and-a-client-without-full-scope))
+- `make keycloak` (`scripts/keycloak-check.mjs`, skipped unless `TUTELA_REQUIRE_KEYCLOAK=1`): Keycloak 26.8.1 pinned by digest, in dev mode on loopback; a realm with the step-up browser flow and the chart's Console client imported from its partial-import JSON. `crates/tutelad/tests/keycloak.rs` exchanges real Keycloak tokens at `POST /oauth2/token`; the Console's browser check runs against it too, signing in at Keycloak's own login and OTP pages.
+- **Fixed: the Helm chart's Console client gave two audiences.** A person with the realm's default roles got `aud: ["tutela-authz", "account"]` (Keycloak's full scope), which `tutelad` refuses. The client now has `fullScopeAllowed: false`. If you imported the v0.2.0 client into a realm, turn "Full scope allowed" off on it (its dedicated client scope), or import the new file over it.
+- JS-SDK.md, "Configure Keycloak for it": the steps that worked against Keycloak 26.8.1 (the browser flow's levels and max ages, `acr` and `amr` values, the hostname).
+- `tutela-sdk`: a test with a captured Keycloak 26.8.1 JWKS and two of its tokens, run without Docker.
+
 ## v0.2.0 (Phase B, the service): 2026-11-07
 
 **Pre-release.** GitHub Actions did not run (account billing); every merge was gated by local `make` with a real Postgres (`TUTELA_REQUIRE_DATABASE=1`): fmt, clippy `-D warnings`, tests, doc, cargo-deny, cargo-audit, the JavaScript gates (build, tsc, Biome, vitest, the integration test against a real `tutelad`, the Console's browser check in Playwright's Chromium, `pnpm audit`, licences), hadolint on the `Dockerfile` and the Helm chart check.

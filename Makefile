@@ -2,7 +2,8 @@
 #
 #   make            # = make all: the Rust gates (format check, clippy, tests, docs,
 #                   #   cargo-deny, cargo-audit), the JavaScript SDKs' gates (js)
-#                   #   the image's Dockerfile lint (image-lint) and the Helm chart (helm)
+#                   #   the image's Dockerfile lint (image-lint), the Helm chart (helm)
+#                   #   and, with TUTELA_REQUIRE_KEYCLOAK=1, the real Keycloak (keycloak)
 #
 # Requirements: Rust (pinned by rust-toolchain.toml), cargo-deny and cargo-audit;
 # node >= 22.12 and pnpm 10 for `make js` (ADR-0047). Plain `cargo build` and
@@ -15,14 +16,14 @@ LOCKED ?= --locked
 
 .DEFAULT_GOAL := all
 
-.PHONY: help all ci fmt fmt-check lint test doc deny audit clean image-lint helm \
+.PHONY: help all ci fmt fmt-check lint test doc deny audit clean image-lint helm keycloak \
 	js js-install js-build js-typecheck js-lint js-test js-it js-e2e js-audit js-licenses
 
 help:
-	@echo "Targets: all (fmt-check lint test doc deny audit js image-lint helm), fmt, fmt-check, lint, test, doc, deny, audit, clean"
+	@echo "Targets: all (fmt-check lint test doc deny audit js image-lint helm keycloak), fmt, fmt-check, lint, test, doc, deny, audit, clean"
 	@echo "         js (js-install js-build js-typecheck js-lint js-test js-it js-e2e js-audit js-licenses)"
 
-all: fmt-check lint test doc deny audit js image-lint helm
+all: fmt-check lint test doc deny audit js image-lint helm keycloak
 
 ci: all
 
@@ -68,6 +69,17 @@ image-lint:
 # unless TUTELA_REQUIRE_HELM=1, which fails it.
 helm:
 	node scripts/helm-check.mjs
+
+# Token exchange and the Console's browser check against a real Keycloak 26
+# (#87, ADR-0057): scripts/keycloak-check.mjs starts the pinned image on
+# loopback, makes the realm with the chart's Console client, and runs
+# crates/tutelad/tests/keycloak.rs and console_e2e.rs against it. It pulls an
+# image and starts a container, so it says it is skipped unless
+# TUTELA_REQUIRE_KEYCLOAK=1, which runs it and fails it when docker, helm,
+# the image or the database is missing. Like js-e2e it needs
+# TUTELA_TEST_DATABASE_URL and the built Console (js-build runs first in all).
+keycloak:
+	node scripts/keycloak-check.mjs
 
 # ---------- The JavaScript SDKs: sdk/js and sdk/react (ADR-0047) ----------
 

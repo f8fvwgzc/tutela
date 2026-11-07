@@ -1,18 +1,36 @@
 // The Phase B exit check in a real browser (ROADMAP, ADR-0053): sign-in,
 // the UI permission map and runtime role editing pass end to end, against
-// a real tutelad on a real Postgres and the test OpenID provider. The Rust
-// test `crates/tutelad/tests/console_e2e.rs` makes the world and runs this.
+// a real tutelad on a real Postgres and the test OpenID provider, or a real
+// Keycloak 26 (`make keycloak`, #87): people then sign in at Keycloak's own
+// login and OTP pages. The Rust test `crates/tutelad/tests/console_e2e.rs`
+// makes the world and runs this.
 
+import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { type Browser, type BrowserContext, expect, type Page, test } from "@playwright/test";
 
+/** How a person signs in at Keycloak's form; null with the test provider. */
+interface Login {
+  username: string;
+  password: string;
+  /** The TOTP secret: Keycloak keys HMAC-SHA1 with its bytes. */
+  totp: string;
+}
+
+interface Person {
+  principal: string;
+  name: string;
+  login: Login | null;
+}
+
 interface Fixture {
   url: string;
   realm: string;
+  provider: "test-idp" | "keycloak";
   org: string;
-  owner: { principal: string; name: string };
-  member: { principal: string; name: string };
+  owner: Person;
+  member: Person;
   stale_admin: string[];
   fresh_admin: string;
   shots: string;
@@ -70,22 +88,90 @@ async function shot(page: Page, name: string) {
 
 const rail = (page: Page) => page.getByRole("navigation", { name: "Pages" });
 
+/** RFC 6238, as Keycloak computes it: 6 digits, 30 s steps. */
+function totp(secret: string, step: number): string {
+  const counter = Buffer.alloc(8);
+  counter.writeBigUInt64BE(BigInt(step));
+  const h = createHmac("sha1", Buffer.from(secret, "utf8")).update(counter).digest();
+  const at = (h[19] ?? 0) & 0x0f;
+  const bin = h.readUInt32BE(at) & 0x7fffffff;
+  return String(bin % 1_000_000).padStart(6, "0");
+}
+
+/** Codes given once: Keycloak refuses a code it accepted before. */
+const usedCodes = new Set<string>();
+
+/** Fills Keycloak's OTP form; a code refused (used by another test in this step) waits for the next. */
+async function keycloakOtp(page: Page, login: Login) {
+  for (let i = 0; i < 3; i++) {
+    let step = Math.floor(Date.now() / 30_000);
+    while (usedCodes.has(`${login.username}:${String(step)}`)) {
+      await page.waitForTimeout((step + 1) * 30_000 - Date.now() + 200);
+      step = Math.floor(Date.now() / 30_000);
+    }
+    usedCodes.add(`${login.username}:${String(step)}`);
+    await shot(page, "keycloak-otp");
+    await page.locator("#otp").fill(totp(login.totp, step));
+    await page.locator("#kc-login").click();
+    const left = await page
+      .waitForURL((u) => !u.href.startsWith(`${f.realm}/`), { timeout: 8_000 })
+      .then(
+        () => true,
+        () => false,
+      );
+    if (left) return;
+  }
+  throw new Error("Keycloak refused three OTP codes");
+}
+
+/** Keycloak's login form: the password, then the OTP form when the Console's acr_values asks for MFA. */
+async function keycloakForm(page: Page, who: Person, mfa: boolean) {
+  if (who.login === null) throw new Error("no Keycloak login in the fixture");
+  await shot(page, "keycloak-login");
+  await page.locator("#username").fill(who.login.username);
+  await page.locator("#password").fill(who.login.password);
+  await page.locator("#kc-login").click();
+  if (mfa) await keycloakOtp(page, who.login);
+}
+
+/**
+ * Keycloak asks for OTP whenever the Console asks for the MFA level, as it
+ * always does. A sign-in without step-up drops `acr_values` from the
+ * authorization request, as a realm that does not step up would answer.
+ */
+async function withoutStepUp(page: Page) {
+  await page.route(
+    (u) => u.href.startsWith(`${f.realm}/protocol/openid-connect/auth?`),
+    (route) => {
+      const u = new URL(route.request().url());
+      if (!u.searchParams.has("acr_values")) return route.continue();
+      u.searchParams.delete("acr_values");
+      return route.fulfill({ status: 302, headers: { location: u.toString() } });
+    },
+  );
+}
+
 /** Signs `who` in at the realm through the Console, with or without MFA. */
-async function signIn(page: Page, who: string, mfa: boolean) {
+async function signIn(page: Page, who: Person, mfa: boolean) {
   const res = await page.goto(`${f.url}/console/`);
   const csp = res?.headers()["content-security-policy"] ?? "";
   expect(csp).toContain("script-src 'self';");
   expect(csp).toContain("frame-ancestors 'none'");
   expect(res?.headers()["x-content-type-options"]).toBe("nosniff");
   expect(res?.headers()["referrer-policy"]).toBe("no-referrer");
+  if (f.provider === "keycloak" && !mfa) await withoutStepUp(page);
   await page.getByRole("button", { name: "Sign in" }).click();
   // The realm's form.
   await page.waitForURL(`${f.realm}/**`);
-  await page.getByLabel(who).check();
-  const box = page.getByLabel(/Use MFA/);
-  if (mfa) await box.check();
-  else await box.uncheck();
-  await page.getByRole("button", { name: "Sign in" }).click();
+  if (f.provider === "keycloak") {
+    await keycloakForm(page, who, mfa);
+  } else {
+    await page.getByLabel(who.name).check();
+    const box = page.getByLabel(/Use MFA/);
+    if (mfa) await box.check();
+    else await box.uncheck();
+    await page.getByRole("button", { name: "Sign in" }).click();
+  }
   await expect(rail(page)).toBeVisible();
   // The code left the address bar.
   expect(page.url()).not.toContain("code=");
@@ -108,7 +194,11 @@ async function nothingStored(page: Page) {
     };
   });
   expect(kept).toEqual({ cookie: "", local: "", session: "", databases: [] });
-  expect(await page.context().cookies()).toEqual([]);
+  // No cookie reaches the Console or tutelad. A real Keycloak keeps its own
+  // SSO session in cookies under its realm's path; they are the realm's,
+  // never sent to the Console's paths, and hold no token of tutelad.
+  const ours = ["/console/", "/v1/", "/oauth2/token", "/access/v1/"].map((p) => `${f.url}${p}`);
+  expect(await page.context().cookies(ours)).toEqual([]);
 }
 
 /** The status of an admin call with `token`, sent from the page. */
@@ -131,7 +221,7 @@ test("sign-in, the permission map and runtime role editing, end to end", async (
   watch(member, "member");
 
   await test.step("an owner signs in with MFA and sees the pages the map allows", async () => {
-    await signIn(owner, f.owner.name, true);
+    await signIn(owner, f.owner, true);
     for (const page of [
       "Overview",
       "Scopes",
@@ -152,11 +242,11 @@ test("sign-in, the permission map and runtime role editing, end to end", async (
   });
 
   await test.step("a second person sees only what they hold", async () => {
-    await signIn(member, f.member.name, true);
+    await signIn(member, f.member, true);
     await expect(member.getByTestId("no-admin-keys")).toBeVisible();
     await expect(rail(member).getByRole("link")).toHaveCount(1);
     await member.goto(`${f.url}/console/scopes`);
-    await signInAgainIfAsked(member, f.member.name);
+    await signInAgainIfAsked(member, f.member);
     await expect(member.getByText("You do not hold the admin keys this page needs.")).toBeVisible();
     await member.getByRole("link", { name: "Overview" }).click();
   });
@@ -272,7 +362,7 @@ test("sign-in, the permission map and runtime role editing, end to end", async (
         new URL(r.url()).pathname === "/oauth2/token" &&
         r.request().postData()?.includes("audience=tutela-admin") === true,
     );
-    await signIn(plain, f.owner.name, false);
+    await signIn(plain, f.owner, false);
     const res = await refused;
     expect(res.status()).toBe(400);
     expect(await res.json()).toMatchObject({
@@ -301,13 +391,24 @@ test("sign-in, the permission map and runtime role editing, end to end", async (
 });
 
 /** A direct visit loads the page again: the tokens were in memory, so sign in again. */
-async function signInAgainIfAsked(page: Page, who: string) {
+async function signInAgainIfAsked(page: Page, who: Person) {
   const button = page.getByRole("button", { name: "Sign in" });
   if ((await button.count()) === 0) return;
   await button.click();
-  await page.waitForURL(`${f.realm}/**`);
-  await page.getByLabel(who).check();
-  await page.getByLabel(/Use MFA/).check();
-  await page.getByRole("button", { name: "Sign in" }).click();
+  if (f.provider === "keycloak") {
+    // Keycloak's SSO session signs the person in again without a form
+    // while the MFA level's max age holds; else it asks again.
+    const form = page.locator("#username").or(page.locator("#otp"));
+    await expect(rail(page).or(form)).toBeVisible();
+    if (await page.locator("#username").isVisible()) await keycloakForm(page, who, true);
+    else if ((await page.locator("#otp").isVisible()) && who.login !== null) {
+      await keycloakOtp(page, who.login);
+    }
+  } else {
+    await page.waitForURL(`${f.realm}/**`);
+    await page.getByLabel(who.name).check();
+    await page.getByLabel(/Use MFA/).check();
+    await page.getByRole("button", { name: "Sign in" }).click();
+  }
   await expect(rail(page)).toBeVisible();
 }

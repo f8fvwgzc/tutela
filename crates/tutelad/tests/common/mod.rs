@@ -29,6 +29,8 @@ use tutelad::config::{Config, TrustFile};
 use tutelad::db::Db;
 use tutelad::telemetry::Metrics;
 
+pub mod keycloak;
+
 pub const ISS: &str = "https://auth.example.test";
 /// `tutelad`'s own issuer in the tests.
 pub const OWN_ISS: &str = "https://tutela.example.test";

@@ -9,6 +9,12 @@
 //! `console/e2e/exit-check.spec.ts` in Chromium, and checks the audit
 //! chain afterwards.
 //!
+//! With `TUTELA_E2E_KEYCLOAK_FIXTURE` set, the realm is a real Keycloak 26
+//! instead (#87, ADR-0057): `scripts/keycloak-check.mjs` (`make keycloak`)
+//! starts it, makes the realm with the Console's client from the Helm chart
+//! and runs this test, and the people sign in at Keycloak's own login and
+//! OTP pages. Everything else is the same check.
+//!
 //! It needs node, pnpm, the built Console and Playwright's Chromium, so it
 //! runs only with `TUTELA_CONSOLE_E2E=1` (`make js-e2e`, part of `make`).
 //! With it set, a missing database fails under `TUTELA_REQUIRE_DATABASE=1`,
@@ -41,6 +47,53 @@ fn manifest() -> String {
 grants = { project = "read", invoice = "read", "org:read_audit" = true }
 "#
     )
+}
+
+/// The realm the Console signs in at.
+enum Realm {
+    /// The test provider shaped like Keycloak 26 (ADR-0051).
+    TestIdp(tutela_test_idp::Running),
+    /// A real Keycloak (#87).
+    Keycloak(common::keycloak::Kc),
+}
+
+impl Realm {
+    fn issuer(&self) -> String {
+        match self {
+            Self::TestIdp(idp) => idp.issuer().to_owned(),
+            Self::Keycloak(kc) => kc.f["realm"]["issuer"].as_str().unwrap().to_owned(),
+        }
+    }
+
+    fn jwks_uri(&self) -> String {
+        match self {
+            Self::TestIdp(idp) => idp.jwks_uri(),
+            Self::Keycloak(_) => format!("{}/protocol/openid-connect/certs", self.issuer()),
+        }
+    }
+
+    /// The realm's subject of a person of the check, and how they sign in
+    /// at Keycloak's form (the test provider's form picks them by name).
+    fn person(&self, who: &str, test_idp_sub: &str) -> (String, serde_json::Value) {
+        match self {
+            Self::TestIdp(_) => (test_idp_sub.to_owned(), serde_json::Value::Null),
+            Self::Keycloak(kc) => {
+                let p = kc.person(who);
+                (
+                    p["sub"].as_str().unwrap().to_owned(),
+                    json!({
+                        "username": p["username"], "password": p["password"], "totp": p["totp"],
+                    }),
+                )
+            }
+        }
+    }
+
+    async fn stop(self) {
+        if let Self::TestIdp(idp) = self {
+            idp.stop().await;
+        }
+    }
 }
 
 fn repo() -> PathBuf {
@@ -110,20 +163,28 @@ async fn the_console_passes_the_exit_check_in_a_real_browser() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let api = listener.local_addr().unwrap();
     let url = format!("http://{api}");
-    let mut idp = Settings::new("tutela-authz");
-    idp.redirect_uris = vec![format!("{url}/console/callback")];
-    idp.post_logout_redirect_uris = vec![format!("{url}/console/")];
-    idp.people = vec![
-        Person::new("kc-owner", "Olivia Owner"),
-        Person::new("kc-member", "Max Member"),
-    ];
-    let idp = tutela_test_idp::start(idp).await.unwrap();
-    let realm = idp.issuer().to_owned();
+    let idp = if let Some(f) = common::keycloak::fixture("TUTELA_E2E_KEYCLOAK_FIXTURE") {
+        let kc = common::keycloak::Kc::new(f);
+        kc.allow_console(&url).await;
+        Realm::Keycloak(kc)
+    } else {
+        let mut idp = Settings::new("tutela-authz");
+        idp.redirect_uris = vec![format!("{url}/console/callback")];
+        idp.post_logout_redirect_uris = vec![format!("{url}/console/")];
+        idp.people = vec![
+            Person::new("kc-owner", "Olivia Owner"),
+            Person::new("kc-member", "Max Member"),
+        ];
+        Realm::TestIdp(tutela_test_idp::start(idp).await.unwrap())
+    };
+    let realm = idp.issuer();
+    let (owner_sub, owner_login) = idp.person("owner", "kc-owner");
+    let (member_sub, member_login) = idp.person("member", "kc-member");
 
     // The owner owns the org; the second person only views it, through a
     // group, so the owner can still give them a role of their own there.
-    let owner = person(&mut d.owner, &s, &realm, "kc-owner").await;
-    let member = person(&mut d.owner, &s, &realm, "kc-member").await;
+    let owner = person(&mut d.owner, &s, &realm, &owner_sub).await;
+    let member = person(&mut d.owner, &s, &realm, &member_sub).await;
     assign(&mut d.owner, &s, &owner, "owner").await;
     {
         let staff = tutela_pdp::model::GroupKey::parse("staff").unwrap();
@@ -185,9 +246,10 @@ async fn the_console_passes_the_exit_check_in_a_real_browser() {
     let fixture = json!({
         "url": url,
         "realm": realm,
+        "provider": if matches!(idp, Realm::Keycloak(_)) { "keycloak" } else { "test-idp" },
         "org": s.org.id.to_string(),
-        "owner": { "principal": owner, "name": "Olivia Owner" },
-        "member": { "principal": member, "name": "Max Member" },
+        "owner": { "principal": owner, "name": "Olivia Owner", "login": owner_login },
+        "member": { "principal": member, "name": "Max Member", "login": member_login },
         // Six minutes old: expired a minute ago; and one whose life is
         // above the 300 s limit of tutela-admin. A fresh one as control.
         "stale_admin": [

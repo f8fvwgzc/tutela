@@ -774,3 +774,61 @@ mod layers {
         assert_eq!(report.len(), 1, "{report:?}");
     }
 }
+
+/// A real Keycloak 26.8.1 (#87, ADR-0057), captured in `testdata`: its JWKS
+/// (two RS256 signing keys and an RSA-OAEP encryption key, each with `x5c`,
+/// `x5t` and `x5t#S256`, and `kid`s that are not RFC 7638 thumbprints) and
+/// two access tokens of one person (`typ: JWT`, `typ: Bearer` in the
+/// claims, a `jti` like `onrtac:<id>`, no `nbf`). The token of the chart's
+/// Console client verifies as an external token; the same sign-in through a
+/// client with Keycloak's default full scope has `aud: [.., "account"]` and
+/// is refused.
+#[tokio::test]
+async fn a_real_keycloak_token_verifies_and_its_full_scope_twin_is_refused() {
+    let doc: Value = serde_json::from_str(include_str!("testdata/keycloak-26.8.1.json")).unwrap();
+    let iss = doc["issuer"].as_str().unwrap();
+    let keys = jwks::parse_jwks(&serde_json::to_vec(&doc["certs"]).unwrap()).unwrap();
+    assert_eq!(keys.len(), 2, "the encryption key is skipped");
+    for (kid, key) in &keys {
+        assert!(matches!(key, Key::Rsa { .. }));
+        assert_ne!(&key.thumbprint(), kid);
+    }
+
+    let mut cfg = config(vec![Alg::Rs256]);
+    cfg.audience = "tutela-authz".parse().unwrap();
+    cfg.trust = TrustList::dev_mode()
+        .with(iss.parse().unwrap(), EXT_TID.parse().unwrap())
+        .unwrap();
+    cfg.issuers = vec![IssuerConfig {
+        iss: iss.parse().unwrap(),
+        jwks_uri: format!("{iss}/protocol/openid-connect/certs"),
+        algs: vec![Alg::Rs256],
+        external: true,
+        allow_typ_jwt: true,
+    }];
+    let src = Arc::new(Memory {
+        body: Mutex::new(Some(serde_json::to_vec(&doc["certs"]).unwrap())),
+        fetches: AtomicUsize::new(0),
+    });
+    let (v, clock) = verifier(cfg, &src);
+    let token = doc["console_token"].as_str().unwrap();
+    let iat: u64 = {
+        let p = token.split('.').nth(1).unwrap();
+        let c: Value = serde_json::from_slice(&B64.decode(p).unwrap()).unwrap();
+        c["iat"].as_u64().unwrap()
+    };
+    clock.0.store(iat + 10, Ordering::SeqCst);
+    let Ok(Identity::External(t)) = v.verify(token).await else {
+        panic!("the Keycloak token was refused");
+    };
+    assert_eq!(t.tenant.tid.to_string(), EXT_TID);
+    assert_eq!(t.azp.as_deref(), Some("tutela-console"));
+    assert_eq!(t.exp, iat + 300);
+    let full = doc["full_scope_token"].as_str().unwrap();
+    assert_eq!(step(&v, full).await, Some(Step::Claims));
+    // And both are refused once expired, past the skew.
+    clock
+        .0
+        .store(iat + 300 + CLOCK_SKEW_SECS + 1, Ordering::SeqCst);
+    assert_eq!(step(&v, token).await, Some(Step::Claims));
+}
