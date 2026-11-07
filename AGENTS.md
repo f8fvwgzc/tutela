@@ -64,7 +64,7 @@ tutela/
 │   ├── node/                @f8fvwgzc/tutela-node                                         A
 │   ├── js/                  @f8fvwgzc/tutela-js                                           now (B: the tutelad client)
 │   └── python/              tutela-py (import name `tutela`)                              A
-├── console/                 Tutela Console web UI                                         B
+├── console/                 Tutela Console web UI, served by tutelad under /console/      now (ADR-0050, ADR-0052)
 └── templates/product/       a template product that uses Tutela                          A
 ```
 
@@ -125,7 +125,7 @@ corepack enable   # or install pnpm 10.18 another way
 | `make test` | `cargo test --workspace --all-features --locked` | test |
 | `make deny` | `cargo deny check` (licences, bans, sources, advisories) | supply-chain |
 | `make audit` | `cargo audit --deny warnings` | supply-chain |
-| `make js` | the JavaScript SDKs: `pnpm install --frozen-lockfile`, build, `tsc` typecheck, `biome ci` (format and lint), vitest, `pnpm audit`, production licences | js |
+| `make js` | the JavaScript SDKs and the Console: `pnpm install --frozen-lockfile`, build, `tsc` typecheck, `biome ci` (format and lint), vitest, the JS integration test, the Console's browser check (`make js-e2e`, Playwright's Chromium 1243), `pnpm audit`, production licences | js |
 | `make fmt` | formats the code (not a gate) | none |
 
 Notes:

@@ -1,6 +1,6 @@
 # Tutela's JavaScript SDKs
 
-**Status: Phase B, part 4b1, built.** Two npm packages in `sdk/`:
+**Status: Phase B, parts 4b1 and 4b2, built.** Two npm packages in `sdk/`, and the Tutela Console built on them ([The Console](#the-console)):
 
 | Package | What | Runs in |
 |---|---|---|
@@ -9,7 +9,7 @@
 
 The decisions are [ADR-0047](DECISIONS.md#adr-0047-the-javascript-sdks-a-pnpm-workspace-under-sdk-checked-by-make) (the toolchain), [ADR-0048](DECISIONS.md#adr-0048-tutela-js-the-browser-token-flow-in-memory-typed-errors-and-a-retry-that-never-makes-twice) (the client) and [ADR-0049](DECISIONS.md#adr-0049-tutela-react-embeddable-admin-components-scoped-css-variables-and-the-host-names-the-people) (the components). The routes and shapes are [CONTRACTS.md](CONTRACTS.md) 4.8, 7.1, 7.5, 7.9, 7.10 and 7.13. The packages are not published yet (see [Releasing](#releasing)).
 
-Contents: [Embed MembersTable behind your own sign-in](#embed-memberstable-behind-your-own-sign-in) · [The token flow](#the-token-flow) · [Service mode](#service-mode) · [The client](#the-client) · [Errors](#errors) · [The components](#the-components) · [Develop and test](#develop-and-test) · [Releasing](#releasing)
+Contents: [Embed MembersTable behind your own sign-in](#embed-memberstable-behind-your-own-sign-in) · [The token flow](#the-token-flow) · [Service mode](#service-mode) · [The client](#the-client) · [Errors](#errors) · [The components](#the-components) · [The Console](#the-console) · [Develop and test](#develop-and-test) · [Releasing](#releasing)
 
 ## Embed MembersTable behind your own sign-in
 
@@ -168,17 +168,87 @@ Hooks: `useTutela`, `useCan(action, resource)`, `usePermissionMap(resource, acti
 
 **Accessible.** Real tables with headers, labelled inputs, buttons named for what they act on, a polite status for each success and an alert for each refusal, visible focus, keyboard use, and no animation under `prefers-reduced-motion`. axe-core runs on each component in the tests.
 
+## The Console
+
+**Status: Phase B, part 4b2, built.** The Tutela Console is `console/` in this workspace: a single-page app (React 19, TypeScript strict, built by Vite) on `@f8fvwgzc/tutela-js` and `@f8fvwgzc/tutela-react`. `tutelad` serves it under `/console/` on its API port ([ADR-0050](DECISIONS.md#adr-0050-the-console-is-served-by-tutelad-under-console-from-files-read-at-start)); the decisions are [ADR-0052](DECISIONS.md#adr-0052-the-console-a-vite-app-on-the-sdks-sign-in-by-code-with-pkce-the-permission-map-asked-again-every-half-second) and, for its browser check, [ADR-0053](DECISIONS.md#adr-0053-the-exit-check-in-a-real-browser-playwrights-chromium-a-real-tutelad-and-the-test-provider-run-by-make).
+
+- **Sign-in:** the authorization code flow with PKCE (S256) at the realm `/console/config.json` names, as a public client, asking for the step-up `acr`. Tokens stay in memory; a reload signs in again. Without MFA a banner offers "Sign in with MFA".
+- **What you see** follows your permission map: the orgs you can see (a resource search for `org:read`) and your admin keys at each, asked again every 500 ms while the tab is visible. A page you may not use is not in the rail. The server checks every call again.
+- **Pages:** Overview; Scopes (the tree, `MembersTable`, the private flag, boundaries); Roles (`PermissionMatrix` into `RoleEditor`: the impact before you publish or propose); Model history (versions, proposals, approve and reject, two-person publish); Groups; People and agents; Apps and Webhooks (a secret is shown once); Tenant and orgs; Explain and simulate.
+
+### Run it locally against the test provider
+
+The repo has a test OpenID provider shaped like Keycloak 26 (`crates/tutela-test-idp`, [ADR-0051](DECISIONS.md#adr-0051-a-test-openid-provider-shaped-like-keycloak-a-dev-only-crate-on-loopback)). It has no passwords: a form picks a test person, with or without MFA. Loopback only, never in production.
+
+1. Build the Console: `pnpm install && pnpm -r run build` (writes `console/dist`).
+2. Start a Postgres, and migrate it as the owner role: `TUTELA_OWNER_DATABASE_URL=<owner url> TUTELA_SERVICE_ROLE=<service role> cargo run -p tutelad -- migrate`.
+3. Start the provider. It prints its issuer:
+   ```sh
+   cargo run -p tutela-test-idp -- --listen 127.0.0.1:18555 \
+     --redirect-uri http://127.0.0.1:8080/console/callback \
+     --person kc-owner="Olivia Owner" --person kc-member="Max Member"
+   # {"issuer":"http://127.0.0.1:18555/realms/tutela", ...}
+   ```
+4. Make a tenant whose first owner is the provider's `kc-owner`: `TUTELA_DEV_MODE=1 TUTELA_OWNER_DATABASE_URL=<owner url> TUTELA_ISSUER=http://127.0.0.1:8080 cargo run -p tutelad -- tenant create --name Demo --admin-upstream http://127.0.0.1:18555/realms/tutela=kc-owner`. It prints the `tid`.
+5. A trust file for the realm:
+   ```toml
+   [[issuer]]
+   iss = "http://127.0.0.1:18555/realms/tutela"
+   jwks_uri = "http://127.0.0.1:18555/realms/tutela/protocol/openid-connect/certs"
+   algs = ["RS256"]
+   tenants = ["<tid>"]
+   external = true
+   allow_typ_jwt = true
+   ```
+6. Start `tutelad` in dev mode (loopback `http` issuers) with the Console on:
+   ```sh
+   TUTELA_DEV_MODE=1 TUTELA_LISTEN=127.0.0.1:8080 TUTELA_OPS_LISTEN=127.0.0.1:9090 \
+   TUTELA_DATABASE_URL=<service url> TUTELA_TRUST_FILE=trust.toml \
+   TUTELA_ISSUER=http://127.0.0.1:8080 TUTELA_MASTER_KEY=<test key> TUTELA_KEY_PEPPER=<test pepper> \
+   TUTELA_ADMIN_ACR=mfa \
+   TUTELA_CONSOLE_DIR=console/dist \
+   TUTELA_CONSOLE_ISSUER=http://127.0.0.1:18555/realms/tutela \
+   TUTELA_CONSOLE_CLIENT_ID=tutela-console \
+   cargo run -p tutelad
+   ```
+7. Open `http://127.0.0.1:8080/console/`, sign in as Olivia Owner with "Use MFA" ticked. The Console is read once at start: restart `tutelad` after a new build.
+
+### Configure Keycloak for it
+
+One public client per deployment, in the realm `TUTELA_CONSOLE_ISSUER` names (an external issuer of the trust file, written exactly as there):
+
+| Setting | Value |
+|---|---|
+| Client id | `TUTELA_CONSOLE_CLIENT_ID`, for example `tutela-console` |
+| Client authentication | off (public client) |
+| Flows | standard flow only; no implicit flow, no direct access grants |
+| PKCE | `S256` required (advanced settings, "Proof Key for Code Exchange Code Challenge Method") |
+| Valid redirect URIs | `https://<tutelad host>/console/callback` |
+| Web origins | `https://<tutelad host>` (CORS for discovery and the token endpoint) |
+| Valid post-logout redirect URIs | `https://<tutelad host>/console/` |
+| Audience | an "Audience" mapper that adds `TUTELA_AUDIENCE` (`tutela-authz`) to the access token |
+| Step-up | an ACR-to-LoA mapping whose MFA level is named as the first value of `TUTELA_ADMIN_ACR` (for example `{"mfa": 2}`), and a browser flow that asks for OTP at that level; the Console asks for it with `acr_values` |
+
+Each Keycloak access token must have a `jti` (Keycloak's do): `tutelad` exchanges each one once.
+
+### The browser check
+
+`make js-e2e` (part of `make`) runs the Phase B exit check in Playwright's Chromium against a real `tutelad`, a real Postgres and the test provider (ADR-0053). It needs `TUTELA_TEST_DATABASE_URL` like every database test, and Chromium build 1243, which `@playwright/test` 1.63.0 uses: install it once with `pnpm --filter @f8fvwgzc/tutela-console exec playwright install chromium` if your machine does not have it. Set `TUTELA_E2E_SHOTS=<dir>` to keep screenshots of the main pages.
+
 ## Develop and test
 
 ```sh
 pnpm install          # node >= 22.12, pnpm 10
-make js               # build, tsc, Biome, vitest, the integration test, pnpm audit, licences
+make js               # build, tsc, Biome, vitest, the integration test, the browser check, pnpm audit, licences
 make js-it            # only the integration test: needs TUTELA_TEST_DATABASE_URL
+make js-e2e           # only the Console's browser check: needs TUTELA_TEST_DATABASE_URL and Chromium 1243
 ```
 
 - `sdk/js/test`: unit tests against a mocked `fetch`, one per error path, and a jsdom test that no storage API is touched.
 - `sdk/js/test-integration`: the client against a real `tutelad` on a real Postgres. `crates/tutelad/tests/js_client.rs` makes two tenants with Keycloak-shaped realms, people and roles, starts the service, writes the upstream tokens to a fixture file and runs the file with vitest. It runs only with `TUTELA_JS_INTEGRATION=1` (`make js-it`), so plain `cargo test` needs no node.
 - `sdk/react/test`: Testing Library in jsdom against a fake `tutelad`, and axe-core.
+- `console/test`: the Console's sign-in states and every page's error paths, in jsdom against a fake realm and a fake `tutelad`, and axe-core.
+- `console/e2e`: the Phase B exit check in Playwright's Chromium, run by `crates/tutelad/tests/console_e2e.rs` against a real `tutelad` ([The browser check](#the-browser-check)).
 
 ## Releasing
 
