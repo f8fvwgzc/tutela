@@ -1,6 +1,6 @@
 {
   "name": "@f8fvwgzc/tutela-js",
-  "version": "0.0.0",
+  "version": "0.2.0",
   "description": "The framework-free client of tutelad: the browser token flow, the admin API and the permission map.",
   "license": "MIT",
   "repository": {

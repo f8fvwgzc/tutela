@@ -1,8 +1,24 @@
 # Migrating to Tutela v0.2
 
-v0.2.0 is not tagged yet. attache and texc-symphony stay pinned to `v0.1.0` until they choose to bump. This note lists what breaks for a consumer, and the change to make. The reasons are in [ADR-0017](DECISIONS.md#adr-0017-opaque-public-errors-for-the-crates-that-touch-the-outside-world).
+v0.2.0 is tagged (2026-11-07, a pre-release, the end of Phase B). attache and texc-symphony stay pinned to `v0.1.0` until they bump ([#44](https://github.com/f8fvwgzc/tutela/issues/44)). This note lists what breaks for a consumer of v0.1.0, and the change to make. The reasons are in the ADRs it links, first [ADR-0017](DECISIONS.md#adr-0017-opaque-public-errors-for-the-crates-that-touch-the-outside-world).
 
-Other docs: [README](../README.md) · [DECISIONS](DECISIONS.md) · [ROADMAP](ROADMAP.md)
+Other docs: [README](../README.md) · [DECISIONS](DECISIONS.md) · [ROADMAP](ROADMAP.md) · [CHANGELOG](../CHANGELOG.md)
+
+## The short list for a v0.1.0 user
+
+Library mode (attache, texc-symphony today) must change these to build and run on v0.2.0:
+
+1. **Depend on the tag**: `tag = "v0.2.0"` instead of `"v0.1.0"`. The crates now say `version = "0.2.0"` (v0.1.0 was tagged with `0.0.0`); Rust 1.99 as before.
+2. **Errors are opaque**: branch on `kind()` of `StoreError`, `SqlError`, `SafenetError` and `VaultError`; `From<tokio_postgres::Error>` is gone (below).
+3. **Print the chain**: an error's own text leaves its cause out; use `tutela_contracts::error_chain(&e)` (below).
+4. **One tenant per transaction**: a second tenant in one `tutela-store` transaction is `TenantMismatch` (below).
+5. **Run the migrations** (`tutela migrate`, or `tutelad migrate` for the service) as the owner role, then `grant_service`: migrations 3 to 14 are new since v0.1.0, and `check_isolation` checks more.
+6. **Struct literals and signatures**: `AuditEventV1` has `details`; `provision_user` returns `(PrincipalState, bool)`; `TenantBundle` has `next_expiry`; `tutelad::ledger::LedgerConfig` changed (part 4a). Each is below, by part.
+7. **Every store write emits an event** in your transaction (part 3b): prune them in library mode with `prune_events`.
+
+Moving to the service (`tutelad`) is optional and bigger: authenticate as an app (part 4a), trust `tutelad`'s issuer, and run the image with the Helm chart (part 4c). What attache and texc-symphony do for each is in the sections below, marked "when they bump", and summed up in [ROADMAP.md, Notes for after Phase B](ROADMAP.md#notes-for-after-phase-b).
+
+**New since v0.1.0:** the crates `tutelad` (the service) and `tutela-test-idp` (a test OpenID provider, a dev-dependency only, never shipped); the npm packages `@f8fvwgzc/tutela-js` and `@f8fvwgzc/tutela-react` (not published to a registry yet; [JS-SDK.md](JS-SDK.md)); the Tutela Console; the OCI image and the Helm chart (built, not pushed: the release step is ADR-0055 item 8 and ADR-0056 item 14).
 
 ## Public errors are opaque
 
@@ -248,4 +264,24 @@ These matter to whoever runs `tutelad`, and to a product that verifies its token
 - **For texc-symphony, when it bumps:** its pipeline authenticates as an app (above), takes its `client_credentials` token, and runs `tutela apply --server` per tenant. The app's service account needs `manage_access` and `manage_fields` at every org to publish, and `read_audit` at every org for the report (the seeded `owner` role at each org has all three).
 - **New commands:** `tutela apps create | list | rotate | disable` (the tenant's owner's token; a secret printed once) and `tutela keys list | rotate [--audit] | deny <kid> | rewrap` (the operator: `TUTELA_DATABASE_URL`, `TUTELA_MASTER_KEY`, `TUTELA_ISSUER`).
 - **`tutela-cli`:** `CliError` has two new variants, `Service` and `Network` (it is `#[non_exhaustive]`); new modules `service` and `keys`.
+
+## The JavaScript SDKs (part 4b1)
+
+- **New packages** `@f8fvwgzc/tutela-js` and `@f8fvwgzc/tutela-react`, version 0.2.0 like the crates ([JS-SDK.md](JS-SDK.md), [ADR-0047](DECISIONS.md#adr-0047-the-javascript-sdks-a-pnpm-workspace-under-sdk-checked-by-make) to [ADR-0049](DECISIONS.md#adr-0049-tutela-react-embeddable-admin-components-scoped-css-variables-and-the-host-names-the-people)). Nothing changes for a Rust consumer.
+- **New route** `GET /v1/models/active` (`GetActiveModel`, CONTRACTS.md 7.9): the active model's text.
+- **`tutela-pdp`**: `grant_excess` now holds a group change that makes an `in_group` condition hold to the narrow-only rule ([#127](https://github.com/f8fvwgzc/tutela/issues/127)).
+
+## The Console, CORS and the test provider (part 4b2)
+
+- **The Console** is served by `tutelad` under `/console/` when `TUTELA_CONSOLE_DIR` is set, with `TUTELA_CONSOLE_ISSUER` (the realm, an external issuer of the trust file) and `TUTELA_CONSOLE_CLIENT_ID`; `TUTELA_ADMIN_ACR` is then required ([ADR-0050](DECISIONS.md#adr-0050-the-console-is-served-by-tutelad-under-console-from-files-read-at-start), [ADR-0052](DECISIONS.md#adr-0052-the-console-a-vite-app-on-the-sdks-sign-in-by-code-with-pkce-the-permission-map-asked-again-every-half-second)). Its Keycloak client: [JS-SDK.md, "Configure Keycloak for it"](JS-SDK.md#configure-keycloak-for-it).
+- **CORS**: `TUTELA_CORS_ORIGINS`, exact origins, off by default ([ADR-0054](DECISIONS.md#adr-0054-cors-exact-origins-from-configuration-off-by-default-never-credentials)).
+- **`tutela-pdp`**: a resource search for `org` names orgs (it failed with 503).
+- **New crate `tutela-test-idp`** ([ADR-0051](DECISIONS.md#adr-0051-a-test-openid-provider-shaped-like-keycloak-a-dev-only-crate-on-loopback)): loopback only, for tests and a local demo. Never depend on it outside `[dev-dependencies]`.
+
+## The image, the Helm chart and the bootstrap job (part 4c)
+
+- **The OCI image** `ghcr.io/f8fvwgzc/tutelad:<version>` ([ADR-0055](DECISIONS.md#adr-0055-the-oci-image-three-stages-a-distroless-runtime-the-console-on-and-publishing-left-to-a-release)) is built from the repo's `Dockerfile`; v0.2.0's image is not pushed yet (a release step for the owner). It sets `TUTELA_CONSOLE_DIR=/srv/tutela/console`, so the Console is on: set its three settings, or set `TUTELA_CONSOLE_DIR` empty. `deploy/tutelad.env` now sets it empty, so Compose keeps the Console off.
+- **The Helm chart** `deploy/helm/tutela` ([ADR-0056](DECISIONS.md#adr-0056-the-helm-chart-and-its-bootstrap-job-a-pre-install-hook-that-makes-only-what-is-missing)): make the Secrets it names (the service and owner database URLs, the master key, the pepper), a tenant id with `tutelad tenant new-id`, and set `keycloak.realm`, `tenant.owners` and `issuer`. Its pre-install and pre-upgrade job runs `tutelad bootstrap`: it migrates and makes the tenant, each product's app (its secret in the Kubernetes Secret you name), the app's roles and webhooks, and only what is missing. A product's chart reads `client_id`, `client_secret`, `tenant`, `issuer` and `token_url` from its Secret (CONTRACTS.md 7.13.9). The Console's Keycloak client is a partial-import file in the ConfigMap `<release>-keycloak-client`, imported once by a realm admin.
+- **`tutela-store`**: new `create_tenant_with_id`, `directory_entry` and `DirectoryEntry`. **`tutelad`**: new `bootstrap` module, `lifecycle::create_tenant_with_id`, `Server::on` (a server on listeners the caller bound), the commands `tutelad bootstrap` and `tutelad tenant new-id`.
+- **`tower-http` 0.7** in `tutelad` (Dependabot #131): no change for consumers.
 

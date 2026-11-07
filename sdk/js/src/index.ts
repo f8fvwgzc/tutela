@@ -74,4 +74,4 @@ export { PermissionMap, PermissionStore, resourceKey } from "./permissions.js";
 export * from "./types.js";
 
 /** The version of this package. Every artifact of a release has the same one. */
-export const VERSION = "0.0.0";
+export const VERSION = "0.2.0";

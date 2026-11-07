@@ -1,0 +1,69 @@
+# Changelog
+
+Each release is a git tag; depend on it by tag, never by path. What a consumer must change is in [docs/MIGRATION-0.2.md](docs/MIGRATION-0.2.md). The full record of decisions is [docs/DECISIONS.md](docs/DECISIONS.md).
+
+## v0.2.0 (Phase B, the service): 2026-11-07
+
+**Pre-release.** GitHub Actions did not run (account billing); every merge was gated by local `make` with a real Postgres (`TUTELA_REQUIRE_DATABASE=1`): fmt, clippy `-D warnings`, tests, doc, cargo-deny, cargo-audit, the JavaScript gates (build, tsc, Biome, vitest, the integration test against a real `tutelad`, the Console's browser check in Playwright's Chromium, `pnpm audit`, licences), hadolint on the `Dockerfile` and the Helm chart check.
+
+```toml
+tutela-contracts = { git = "ssh://git@github.com/f8fvwgzc/tutela.git", tag = "v0.2.0" }
+```
+
+### Breaking for v0.1.0 users
+- Public errors are opaque structs with a `kind()` (`StoreError`, `SqlError`, `SafenetError`, `VaultError`); `From<tokio_postgres::Error>` is gone ([ADR-0017](docs/DECISIONS.md#adr-0017-opaque-public-errors-for-the-crates-that-touch-the-outside-world)).
+- A `tutela-store` transaction belongs to one tenant (`TenantMismatch`).
+- Migrations 3 to 14; every store write emits an outbox event; `AuditEventV1.details`, `provision_user` returning `(PrincipalState, bool)`, `TenantBundle.next_expiry`.
+- The list and the code changes: [docs/MIGRATION-0.2.md](docs/MIGRATION-0.2.md).
+
+### The service: `tutelad` (new crate)
+- Two ports (API: HTTP and gRPC; ops: health, readiness, metrics), JSON logs, graceful shutdown, `tutelad migrate` as the owner role.
+- Tenants under forced row-level security, the tenant only from the verified token; a cross-tenant read fails at RLS even with an injected bug.
+- The check API (AuthZEN-shaped evaluation, evaluations, searches; gRPC `tutela.authz.v1`), the permission map with ETag/304, `write_check` with moves and links, signed bundles for offline checks.
+- Model versions per tenant, the impact report, explain and simulate, two-person publish.
+- Its own issuer: signing keys sealed by `tutela-vault`, a JWKS without a token, rotation and a `kid` deny-list. Token exchange (RFC 8693) with just-in-time provisioning; admin tokens after step-up; delegated agent tokens (`act`, `typ: agent+jwt`).
+- Apps with hashed client secrets, `client_credentials`, `azp` bound to the authenticated client.
+- The admin API `tutela.admin.v1` over HTTP and gRPC (agents, people, scopes, assignments, groups, the model, tenants, orgs, webhooks, apps), held to the narrow-only rule.
+- A local hash-chained audit log per tenant, a transactional outbox, Standard Webhooks delivery, SSE `GET /v1/events`, forwarding to attache's evidence ledger with a sealed, rotatable producer key.
+- The lifecycle of tenants, orgs and people: soft delete with a grace, a purge that keeps the audit chain.
+- CORS for exact origins, off by default.
+
+### The Console and the JavaScript SDKs (new)
+- `@f8fvwgzc/tutela-js` (the browser token flow in memory, every admin route, typed errors) and `@f8fvwgzc/tutela-react` (`MembersTable`, `RoleEditor`, `PermissionMatrix`), version 0.2.0. Not published to a registry yet.
+- The Tutela Console, served by `tutelad` under `/console/` with a strict CSP: sign-in by code with PKCE, the pages the permission map allows, role editing with the impact first.
+
+### Deploy (new)
+- The OCI image: a `Dockerfile` with the Console, a distroless non-root runtime, base images pinned by digest ([ADR-0055](docs/DECISIONS.md#adr-0055-the-oci-image-three-stages-a-distroless-runtime-the-console-on-and-publishing-left-to-a-release)). Built and run locally (linux/arm64, 62 MB); **not pushed** to `ghcr.io/f8fvwgzc/tutelad`.
+- The Helm chart `deploy/helm/tutela` with its bootstrap job (`tutelad bootstrap`: migrate, the tenant, each product's app and its Secret, roles, webhooks; only what is missing) and the Console's Keycloak client as an import file ([ADR-0056](docs/DECISIONS.md#adr-0056-the-helm-chart-and-its-bootstrap-job-a-pre-install-hook-that-makes-only-what-is-missing)). Checked by `helm lint`, `helm template` and a manifest check in `make`, and by hand in a kind cluster; **not pushed** to `oci://ghcr.io/f8fvwgzc/charts`.
+
+### Phase B's exit checks
+- Sign-in, the permission map and runtime role editing, end to end: in a real browser against a test provider shaped like Keycloak 26 (`make js-e2e`).
+- A cross-tenant read fails at RLS even with an injected code bug; a revoked role takes effect within the documented 1.5 s on replicas; 2+ replicas run (two `tutelad` processes on one Postgres in `make`; two pods in kind).
+
+### Not in this release
+- A test against a real Keycloak ([#87](https://github.com/f8fvwgzc/tutela/issues/87)); the realm's step-up flow is the realm admin's step.
+- Published packages: crates, npm packages, the image and the chart are built from the tag by the owner.
+- OTLP export of traces; the JavaScript toolchain bump of Dependabot #153 ([#156](https://github.com/f8fvwgzc/tutela/issues/156)).
+- Phase C (own login server) and Phase D (hardening).
+
+## v0.1.0 (Phase A, library mode): 2026-10-28
+
+**Pre-release.** CI did not run (GitHub billing); every merge was gated by local `make`: fmt, clippy `-D warnings`, doc, tests (with Postgres), cargo-deny and cargo-audit. The crates carried version `0.0.0`.
+
+```toml
+tutela-contracts = { git = "ssh://git@github.com/f8fvwgzc/tutela.git", tag = "v0.1.0" }
+```
+
+### Crates
+- **tutela-contracts**: wire types (ids, principals, claims, Decision, `audit.v1`, the event envelope).
+- **tutela-pdp**: the model compiler for `tutela.resources.toml` (MANIFEST v1, the narrowing/neutral/widening diff) and the evaluator (`check`, `batch`, `list_filter`, `write_check`).
+- **tutela-store**: the Postgres schema and migrations for library mode: forced row-level security, checked writes in the product's transaction, scope paths, published manifests (ADR-0014).
+- **tutela-sdk**: the token verifier, an auth layer for axum and tonic, route guards, a decision cache, and the `list_filter` SQL adapter.
+- **tutela-vault**: envelope encryption with a KMS trait.
+- **tutela-safenet**: SSRF-safe outbound HTTP, on rustls with aws-lc-rs.
+
+### CLI (`tutela`)
+`init`, `check`, `codegen`, `migrate`, `apply` (a widening diff needs an Ed25519 approval token, ADR-0015), `approve`, `approvers keygen|add|list|revoke`.
+
+### Not in this release
+Fuzzing; the JS and Python SDKs and the template product; everything in Phase B (`tutelad`).

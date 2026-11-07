@@ -56,7 +56,8 @@ tutela/
 │   │                        for tests and a local demo; never shipped (ADR-0051)
 │   └── tutelad/             the service: config, ports, health, metrics, logs, shutdown,  now
 │                            the check API, the permission map, the admin API (Console: B)
-├── deploy/                  production settings for tutelad                               now
+├── Dockerfile               the OCI image ghcr.io/f8fvwgzc/tutelad (ADR-0055)             now
+├── deploy/                  production settings for tutelad; helm/tutela, the chart       now
 ├── package.json, pnpm-workspace.yaml, pnpm-lock.yaml, biome.json, tsconfig.base.json
 │                            the JavaScript workspace (ADR-0047)                           now
 ├── sdk/
@@ -126,6 +127,8 @@ corepack enable   # or install pnpm 10.18 another way
 | `make deny` | `cargo deny check` (licences, bans, sources, advisories) | supply-chain |
 | `make audit` | `cargo audit --deny warnings` | supply-chain |
 | `make js` | the JavaScript SDKs and the Console: `pnpm install --frozen-lockfile`, build, `tsc` typecheck, `biome ci` (format and lint), vitest, the JS integration test, the Console's browser check (`make js-e2e`, Playwright's Chromium 1243), `pnpm audit`, production licences | js |
+| `make image-lint` | `hadolint Dockerfile` (skipped without hadolint unless `TUTELA_REQUIRE_HADOLINT=1`) | none |
+| `make helm` | the Helm chart: `helm lint`, `helm template` and checks on the manifests (skipped without helm unless `TUTELA_REQUIRE_HELM=1`) | none |
 | `make fmt` | formats the code (not a gate) | none |
 
 Notes:

@@ -1,6 +1,6 @@
 {
   "name": "@f8fvwgzc/tutela-console",
-  "version": "0.0.0",
+  "version": "0.2.0",
   "private": true,
   "description": "The Tutela Console: a single-page app served by tutelad under /console/ (ADR-0050, ADR-0052).",
   "license": "MIT",
