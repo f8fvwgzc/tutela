@@ -19,7 +19,7 @@ A product lets its customers' admins manage who may do what, inside the product'
 
 **2. `tutelad`.** Its trust file maps the realm to the product's tenant, with `external = true` (CONTRACTS.md 1.6, 4.6). Set `TUTELA_ADMIN_ACR`. The person's account in Tutela is made the first time it signs in (just-in-time, keyed by `(iss, sub)`); an owner gives it roles.
 
-**3. Reach `tutelad` from the page.** `tutelad` sends no CORS headers yet ([#135](https://github.com/f8fvwgzc/tutela/issues/135)), so the page must reach it on its own origin: proxy `/tutela/` to `tutelad`'s API port, at least `POST /oauth2/token`, `/v1/admin/`, `/v1/models/`, `/v1/authz/` and `GET /v1/whoami`. The proxy passes the `Authorization` header and the body as they are, adds no cookie, and keeps `ETag`, `If-None-Match`, `Retry-After` and `x-request-id`. The Console of part 4b2 is served by `tutelad` itself and needs no proxy.
+**3. Reach `tutelad` from the page.** Either list the page's origin in `tutelad`'s `TUTELA_CORS_ORIGINS` (exact origins, `https`; [ADR-0054](DECISIONS.md#adr-0054-cors-exact-origins-from-configuration-off-by-default-never-credentials)) and give the client `tutelad`'s URL as `baseUrl`, or reach it on the page's own origin: proxy `/tutela/` to `tutelad`'s API port, at least `POST /oauth2/token`, `/v1/admin/`, `/v1/models/`, `/v1/authz/` and `GET /v1/whoami`. The proxy passes the `Authorization` header and the body as they are, adds no cookie, and keeps `ETag`, `If-None-Match`, `Retry-After` and `x-request-id`. The Console of part 4b2 is served by `tutelad` itself and needs no proxy.
 
 **4. The page.**
 

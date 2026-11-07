@@ -119,6 +119,9 @@ pub struct Config {
     /// `TUTELA_CONSOLE_CLIENT_ID`: the Tutela Console, served under
     /// `/console/` (ADR-0050). `None`: not served.
     pub console: Option<crate::console::ConsoleConfig>,
+    /// `TUTELA_CORS_ORIGINS`: the exact origins a page may call the HTTP
+    /// API from (ADR-0054). Empty: CORS is off.
+    pub cors: crate::cors::Cors,
 }
 
 /// The secrets `tutelad` needs at start-up. `Debug` shows none of them.
@@ -429,6 +432,8 @@ impl Config {
                 )?)
             }
         };
+        let cors =
+            crate::cors::Cors::parse(&get("TUTELA_CORS_ORIGINS").unwrap_or_default(), dev_mode)?;
         Ok(Self {
             database_url: need("TUTELA_DATABASE_URL")?,
             listen: parsed(&get, "TUTELA_LISTEN", "0.0.0.0:8080")?,
@@ -459,6 +464,7 @@ impl Config {
             audit_verify,
             ledger,
             console,
+            cors,
         })
     }
 

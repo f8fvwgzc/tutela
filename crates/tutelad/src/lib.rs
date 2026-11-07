@@ -5,6 +5,7 @@
 //!
 //! - [`config`]: `TUTELA_*` variables and the trust file.
 //! - [`console`]: the Tutela Console's files, under `/console/` (ADR-0050).
+//! - [`cors`]: CORS for listed origins, off by default (ADR-0054).
 //! - [`api`]: the API port (HTTP and gRPC on one listener, every request
 //!   behind [`tutela_sdk::http::AuthLayer`]) and the ops port (`/healthz`,
 //!   `/readyz`, `/metrics`).
@@ -42,6 +43,7 @@ pub mod bundle;
 pub mod cache;
 pub mod config;
 pub mod console;
+pub mod cors;
 pub mod db;
 pub mod events;
 pub mod exchange;

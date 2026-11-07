@@ -151,7 +151,12 @@ impl Server {
         Ok(Self {
             forwarder,
             relay,
-            api_router: api::api_router(&state, grpc, config.request_timeout, console),
+            api_router: api::api_router(&state, grpc, config.request_timeout, console).layer(
+                axum::middleware::from_fn_with_state(
+                    Arc::new(config.cors.clone()),
+                    crate::cors::layer,
+                ),
+            ),
             ops_router: api::ops_router(&state),
             api,
             ops,

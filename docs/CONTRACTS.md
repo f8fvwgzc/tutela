@@ -1499,6 +1499,8 @@ Paths of the API port that need no token ([ADR-0030](DECISIONS.md#adr-0030-tutel
 
 gRPC health (`grpc.health.v1.Health`) is on the API port, behind the same token check. It says `NOT_SERVING` as soon as a shutdown starts.
 
+**CORS** ([ADR-0054](DECISIONS.md#adr-0054-cors-exact-origins-from-configuration-off-by-default-never-credentials)) is off unless `TUTELA_CORS_ORIGINS` names exact origins (`https://host[:port]`; `http` only on loopback in dev mode; never `*`). A request whose `Origin` is listed gets `Access-Control-Allow-Origin: <that origin>`, `Access-Control-Expose-Headers: etag, retry-after, x-request-id, www-authenticate` and `Vary: Origin`; its preflight (`OPTIONS` with `Access-Control-Request-Method`) is answered 204 without a token, with `Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE`, `Access-Control-Allow-Headers: authorization, content-type, if-none-match, x-request-id, traceparent` and `Access-Control-Max-Age: 600`. `Access-Control-Allow-Credentials` is never sent. Any other origin gets no CORS header, and its preflight needs a token like any request. gRPC and `/console/` are left alone.
+
 Every answer on the API port has `x-request-id`: the one the caller sent (AuthZEN 1.0 section 10.1.3), when it is 1 to 128 visible ASCII characters, else a new one. `traceparent` is read and its trace id logged; a malformed one is ignored.
 
 `GET /metrics` counts every question in `tutelad_decisions_total`, labelled `operation` and `outcome` (`allow`, `deny`, `error`). Logs of a decision hold no subject and no resource, at any level.

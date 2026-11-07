@@ -326,6 +326,7 @@ pub fn config(database_url: &str, trust: TrustFile) -> Config {
         audit_verify: Duration::ZERO,
         ledger: None,
         console: None,
+        cors: tutelad::cors::Cors::default(),
     }
 }
 
