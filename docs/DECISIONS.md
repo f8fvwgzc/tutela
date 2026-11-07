@@ -69,6 +69,7 @@ Other docs: [README](../README.md) · [AGENTS](../AGENTS.md) · [SECURITY](../SE
 | [0050](#adr-0050-the-console-is-served-by-tutelad-under-console-from-files-read-at-start) | The Console is served by `tutelad` under `/console/`, from files read at start | Accepted |
 | [0051](#adr-0051-a-test-openid-provider-shaped-like-keycloak-a-dev-only-crate-on-loopback) | A test OpenID provider shaped like Keycloak: a dev-only crate on loopback | Accepted |
 | [0052](#adr-0052-the-console-a-vite-app-on-the-sdks-sign-in-by-code-with-pkce-the-permission-map-asked-again-every-half-second) | The Console: a Vite app on the SDKs, sign-in by code with PKCE, the permission map asked again every half second | Accepted |
+| [0053](#adr-0053-the-exit-check-in-a-real-browser-playwrights-chromium-a-real-tutelad-and-the-test-provider-run-by-make) | The exit check in a real browser: Playwright's Chromium, a real `tutelad` and the test provider, run by `make` | Accepted |
 
 ---
 
@@ -1895,4 +1896,38 @@ M, L and W ran 200 times, because they read a whole tenant or a whole group. Raw
 - **A popup sign-in that keeps the verifier in memory.** Popups are blocked unless clicked, and `Cross-Origin-Opener-Policy: same-origin` cuts the popup from its opener once it visits the realm.
 - **Listing orgs with `GET /v1/admin/orgs`.** It needs `read_audit` at every org, and every refusal is audited: polling it would fill the audit chain.
 - **Server-sent events for browsers.** ADR-0037 keeps the stream for services.
+
+---
+
+## ADR-0053: The exit check in a real browser: Playwright's Chromium, a real `tutelad` and the test provider, run by `make`
+
+**Status:** Accepted, 2026-11-03. Phase B, part 4b2. It builds the Phase B exit check "sign-in, the UI permission map and runtime role editing pass end to end" and the browser test of TM-06, on the Console (ADR-0052), its serving (ADR-0050) and the test provider (ADR-0051).
+
+**Context.** The check must run in a real browser against a real `tutelad` on a real Postgres. GitHub Actions cannot run, so `make` is the gate. Docker image pulls hang on the owner's Mac, but Playwright's Chromium build 1243 is already installed there (nexc-engine pins `@playwright/test` 1.63.0). TM-06 asks for an admin token six minutes old to be refused, which a browser test cannot wait for.
+
+**Decision.**
+
+1. **A Rust test makes the world and runs Playwright**, as `js_client.rs` does for the client: `crates/tutelad/tests/console_e2e.rs` publishes a manifest, makes a tenant under `tutelad`'s own issuer, starts the test provider as the tenant's realm, provisions an owner (`owner` at the org) and a second person (who sees the org through the group `staff` with `viewer`, because a subject has one assignment per scope and the owner must still be able to give them a role there), and starts `tutelad` with the Console on (`console/dist`), in dev mode for the loopback realm, fetching the realm's JWKS over HTTP through `tutela-safenet` as production does. Then it runs `pnpm exec playwright test` in `console/` with a fixture file, and afterwards checks the tenant's audit chain for the owner's assignment, removal and publish.
+2. **In `make`.** `make js-e2e` (part of `make js`, after `js-build` and `js-it`) runs it with `TUTELA_CONSOLE_E2E=1`. Without a database it says it is skipped, unless `TUTELA_REQUIRE_DATABASE=1`, which fails it, as for every database test. A missing built Console or a missing browser fails it; nothing is skipped in that mode.
+3. **The browser is pinned, never downloaded.** `@playwright/test` is pinned at 1.63.0, whose `browsers.json` names Chromium 1243; Playwright finds it in its cache (`~/Library/Caches/ms-playwright` on macOS). Another machine installs it once with `pnpm --filter @f8fvwgzc/tutela-console exec playwright install chromium`.
+4. **What it checks**, in one run (`console/e2e/exit-check.spec.ts`):
+   - the owner signs in with MFA through the Console and the realm's form; the strict headers are on the page; the rail shows every page the permission map allows;
+   - the second person, in another browser context, sees only the overview and is told a page needs keys they lack;
+   - the owner gives them `auditor` (`org:read_audit`) in `MembersTable`; their Console shows the new pages within the documented revocation delay (1.5 s; measured from the answer of the write to the page changing), and no admin action they do not hold (no "Give role", no "Remove", no "Edit" in the matrix, no Apps page); the owner removes it and the pages go, within the delay;
+   - the owner edits the role `reader` in the permission matrix, the RoleEditor shows the impact sentence ("…lose…", "This change narrows access."), and publishes; Model history shows the new version;
+   - TM-06: in every context, `document.cookie`, `localStorage`, `sessionStorage`, IndexedDB and the context's cookies hold nothing;
+   - an admin token six minutes old is refused (401): the test mints, with `tutelad`'s own signing key, one issued 360 s ago that expired 60 s ago and one with a 420 s life; a fresh one with the same claims is accepted (200), so the refusal is the age;
+   - a sign-in without MFA: the admin exchange answers `invalid_grant` "step-up authentication is required", the Console shows the step-up banner, an admin page gets nothing, and the person's `tutela-authz` token is refused on the admin API (403);
+   - no Content-Security-Policy violation (a `securitypolicyviolation` listener in every page) and no page error.
+5. **Screenshots** of the main pages, light and dark, are written when `TUTELA_E2E_SHOTS` names a directory; never into the repo.
+
+**Consequences.**
+- `make` needs Playwright's Chromium 1243 besides node and pnpm.
+- The check proves the Console against a provider shaped like Keycloak 26, not Keycloak itself: a real Keycloak stays [#87](https://github.com/f8fvwgzc/tutela/issues/87).
+- The measured delay is printed in the run's log.
+
+**Alternatives considered.**
+- **The installed Google Chrome (`channel: "chrome"`).** It works, but its version moves under the test; the pinned build does not.
+- **Wait six minutes for a real admin token to age.** It would make `make` six minutes longer for one assertion.
+- **The `tutelad` binary as a separate process.** `ha.rs` already runs it; in-process gives the test the key ring for the minted tokens, and the library is the binary's code.
 
