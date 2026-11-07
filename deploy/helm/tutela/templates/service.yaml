@@ -1,0 +1,72 @@
+{{- include "tutela.check" . -}}
+# The API port only (HTTP and gRPC). The ops port (health, readiness,
+# metrics) stays off the Service: probes and scrapers reach the pods.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "tutela.fullname" . }}
+  labels:
+    {{- include "tutela.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "tutela.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+      appProtocol: http
+{{- if .Values.podDisruptionBudget.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "tutela.fullname" . }}
+  labels:
+    {{- include "tutela.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "tutela.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: server
+{{- end }}
+{{- if .Values.ingress.enabled }}
+---
+# Every path to the API port: /console/ (and /console), /oauth2/token, the
+# JWKS, /access/v1/ and /v1/. No annotation here adds or loosens a header:
+# tutelad sends the Console's Content-Security-Policy itself (ADR-0050).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "tutela.fullname" . }}
+  labels:
+    {{- include "tutela.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if .Values.ingress.tlsSecretName }}
+  tls:
+    - hosts:
+        - {{ required "ingress.host is required with the ingress" .Values.ingress.host | quote }}
+      secretName: {{ .Values.ingress.tlsSecretName }}
+  {{- end }}
+  rules:
+    - host: {{ required "ingress.host is required with the ingress" .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "tutela.fullname" . }}
+                port:
+                  name: http
+{{- end }}

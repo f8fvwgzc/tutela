@@ -1,0 +1,23 @@
+tutelad {{ .Chart.AppVersion }}: {{ .Values.replicaCount }} replicas, issuer {{ .Values.issuer }}, tenant {{ .Values.tenant.id }}.
+{{- if or (contains "example.com" .Values.issuer) (contains "example.com" .Values.keycloak.realm) (eq .Values.tenant.id "ten_01a1b4a2-0000-7000-8000-000000000000") }}
+
+WARNING: example values are in use (issuer, keycloak.realm or tenant.id).
+Replace every example.com value and make your own tenant id before real use.
+{{- end }}
+{{- if .Values.bootstrap.enabled }}
+
+The bootstrap job ran before the pods started. Its steps (never a secret):
+  kubectl -n {{ .Release.Namespace }} logs job/{{ include "tutela.fullname" . }}-bootstrap
+{{- range .Values.apps }}
+  app {{ .name }}: Secret {{ .secretName }} (client_id, client_secret, principal, tenant, issuer, token_url)
+{{- end }}
+{{- range .Values.webhooks }}
+  webhook of {{ .app }}: Secret {{ .secretName }} (webhook_id, secret, url)
+{{- end }}
+{{- end }}
+{{- if .Values.console.enabled }}
+
+The Console: https://{{ include "tutela.consoleHost" . }}/console/
+Its Keycloak client (import once into {{ .Values.keycloak.realm }}):
+  kubectl -n {{ .Release.Namespace }} get configmap {{ include "tutela.fullname" . }}-keycloak-client -o jsonpath='{.data.partial-import\.json}'
+{{- end }}

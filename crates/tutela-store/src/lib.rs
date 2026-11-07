@@ -85,9 +85,9 @@ pub use events::{
 };
 pub use isolation::{check_isolation, grant_service};
 pub use lifecycle::{
-    MAX_NAME, OrgInfo, TenantInfo, delete_org, delete_tenant, delete_user, due_org_purges,
-    due_tenant_purges, org, orgs, purge_org, purge_tenant, restore_org, restore_tenant,
-    set_org_name, set_tenant_name, tenant_info,
+    DirectoryEntry, MAX_NAME, OrgInfo, TenantInfo, delete_org, delete_tenant, delete_user,
+    directory_entry, due_org_purges, due_tenant_purges, org, orgs, purge_org, purge_tenant,
+    restore_org, restore_tenant, set_org_name, set_tenant_name, tenant_info,
 };
 pub use load::{ScopePathSnapshot, TenantBundle, load, lock, rev};
 pub use manifest::{Publish, StoredManifest, applied_manifest, digest, manifest, publish_manifest};
@@ -112,9 +112,9 @@ pub use signing_keys::{
 pub use tokio_postgres;
 pub use write::{
     Expired, add_member, add_org, assign, assign_until, create_group, create_tenant,
-    delete_field_rule, delete_group, delete_scope, expire_assignments, move_scope, put_field_rule,
-    put_scope, remove_member, remove_principal, set_assignment_expiry, set_boundary, set_private,
-    unassign,
+    create_tenant_with_id, delete_field_rule, delete_group, delete_scope, expire_assignments,
+    move_scope, put_field_rule, put_scope, remove_member, remove_principal, set_assignment_expiry,
+    set_boundary, set_private, unassign,
 };
 
 /// What kind of failure a [`StoreError`] is.

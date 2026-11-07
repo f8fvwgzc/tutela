@@ -1,0 +1,140 @@
+# A production-like deployment, for `make helm` (scripts/helm-check.mjs): every
+# option the chart has, with test values only. No secret is here: the chart
+# names Secrets.
+image:
+  repository: ghcr.io/f8fvwgzc/tutelad
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+imagePullSecrets:
+  - name: ghcr-pull
+
+replicaCount: 3
+issuer: https://tutela.acme.test
+
+tenant:
+  id: ten_01a1b4b0-1234-7abc-8def-0123456789ab
+  name: Acme
+  orgName: Head office
+  owners:
+    - 4f8c7a52-1d3e-4b6a-9f21-6c0d8e5b7a13
+
+keycloak:
+  realm: https://keycloak.acme.internal/realms/acme
+  privateNetwork: true
+  stepUpLevel: 2
+
+console:
+  enabled: true
+  clientId: tutela-console
+  keycloakClient: true
+
+trust:
+  privateHosts:
+    - keycloak.acme.internal
+  issuers:
+    - iss: https://embassy.prod-eu1.attache.acme.test
+      jwks_uri: https://embassy.prod-eu1.attache.acme.test/keys
+      algs: [ES256]
+      tenants: [ten_01a1b4b0-1234-7abc-8def-0123456789ab]
+      external: true
+      allow_typ_jwt: true
+      workloads: true
+  audiences:
+    - name: symphony
+      delegation_aware: true
+    - name: crm-api
+      delegation_aware: false
+
+apps:
+  - name: attache
+    secretName: attache-tutela-client
+    roles:
+      - role: owner
+        scope: org
+  - name: texc-symphony
+    secretName: symphony-tutela-client
+    roles:
+      - role: auditor
+        scope: org
+
+webhooks:
+  - app: attache
+    url: https://attache.acme.test/hooks/tutela
+    types:
+      - tutela.permissions.changed.v1
+      - tutela.principal.disabled.v1
+    secretName: attache-tutela-webhook
+
+secrets:
+  database:
+    name: tutela-database
+    key: url
+  ownerDatabase:
+    name: tutela-owner-database
+    key: url
+  masterKey:
+    name: tutela-keys
+    key: master-key
+  keyPepper:
+    name: tutela-keys
+    key: key-pepper
+  masterKeyPrevious:
+    name: tutela-keys
+    key: master-key-previous
+  ledgerToken:
+    name: tutela-ledger
+    key: token
+  databaseCA:
+    name: tutela-database-ca
+    key: ca.crt
+
+config:
+  log: info,tutelad=debug
+  adminAcr: mfa,gold
+  corsOrigins:
+    - https://crm.acme.test
+    - https://admin.acme.test
+  ledgerUrl: https://embassy.prod-eu1.attache.acme.test/api/v1/ledger/append
+
+ingress:
+  enabled: true
+  className: nginx
+  host: tutela.acme.test
+  tlsSecretName: tutela-tls
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: 1m
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    memory: 1Gi
+
+networkPolicy:
+  enabled: true
+  apiFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+    - namespaceSelector:
+        matchLabels:
+          tutela/client: "true"
+  opsFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
+  databasePort: 5432
+  databaseTo:
+    - ipBlock:
+        cidr: 10.20.0.0/24
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9090"
+nodeSelector:
+  kubernetes.io/os: linux
+tolerations:
+  - key: dedicated
+    operator: Equal
+    value: tutela
+    effect: NoSchedule

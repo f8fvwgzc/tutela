@@ -39,6 +39,7 @@ pub mod api;
 pub mod apps;
 pub mod audit;
 pub mod authz;
+pub mod bootstrap;
 pub mod bundle;
 pub mod cache;
 pub mod config;

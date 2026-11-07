@@ -1,0 +1,53 @@
+{{- if and .Values.console.enabled .Values.console.keycloakClient }}
+{{- include "tutela.check" . -}}
+{{- $host := include "tutela.consoleHost" . -}}
+{{- $acr := include "tutela.stepUpAcr" . -}}
+{{- $client := dict
+  "clientId" .Values.console.clientId
+  "name" "Tutela Console"
+  "description" "The Tutela Console: a public client, standard flow with PKCE S256 only (ADR-0052, ADR-0056)"
+  "enabled" true
+  "protocol" "openid-connect"
+  "publicClient" true
+  "standardFlowEnabled" true
+  "implicitFlowEnabled" false
+  "directAccessGrantsEnabled" false
+  "serviceAccountsEnabled" false
+  "frontchannelLogout" true
+  "redirectUris" (list (printf "https://%s/console/callback" $host))
+  "webOrigins" (list (printf "https://%s" $host))
+  "attributes" (dict
+    "pkce.code.challenge.method" "S256"
+    "post.logout.redirect.uris" (printf "https://%s/console/" $host)
+    "acr.loa.map" (toJson (dict $acr (int .Values.keycloak.stepUpLevel)))
+    "oauth2.device.authorization.grant.enabled" "false"
+    "oidc.ciba.grant.enabled" "false")
+  "protocolMappers" (list (dict
+    "name" "tutela-audience"
+    "protocol" "openid-connect"
+    "protocolMapper" "oidc-audience-mapper"
+    "consentRequired" false
+    "config" (dict
+      "included.custom.audience" .Values.config.audience
+      "access.token.claim" "true"
+      "id.token.claim" "false"
+      "introspection.token.claim" "true")))
+-}}
+# The Console's client in the tenant's realm (the notes for part 4c), as a
+# partial import (ADR-0056): the chart never holds a Keycloak admin
+# credential. A realm admin imports it once:
+#   kubectl get configmap {{ include "tutela.fullname" . }}-keycloak-client -o jsonpath='{.data.partial-import\.json}' > client.json
+#   kcadm.sh create partialImport -r <realm> -s ifResourceExists=SKIP -o -f client.json
+# The realm's browser flow must also ask for OTP at level {{ .Values.keycloak.stepUpLevel }}
+# ("Condition - Level of Authentication"): a partial import cannot carry a flow.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "tutela.fullname" . }}-keycloak-client
+  labels:
+    {{- include "tutela.labels" . | nindent 4 }}
+    app.kubernetes.io/component: keycloak-client
+data:
+  partial-import.json: |
+    {{- toPrettyJson (dict "ifResourceExists" "SKIP" "clients" (list $client)) | nindent 4 }}
+{{- end }}

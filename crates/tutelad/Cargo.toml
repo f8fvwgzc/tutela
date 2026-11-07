@@ -26,6 +26,7 @@ deadpool-postgres = "0.14.2"
 futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
 prometheus-client = "0.25.2"
 prost = "0.14.4"
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 serde_urlencoded = "0.7.1"

@@ -28,6 +28,21 @@ enum Command {
     /// TUTELA_KEY_PEPPER.
     #[command(subcommand)]
     Apps(AppsCommand),
+    /// The Helm chart's bootstrap job (ADR-0056), as the owner role:
+    /// migrate, then make the tenant, the products' apps, their roles and
+    /// webhooks of a plan, unless they are there, and write each secret to
+    /// a Kubernetes Secret (or a file). Reads TUTELA_OWNER_DATABASE_URL,
+    /// TUTELA_SERVICE_ROLE, TUTELA_ISSUER, TUTELA_MASTER_KEY and
+    /// TUTELA_KEY_PEPPER. Prints one JSON line per step, never a secret.
+    Bootstrap {
+        /// The plan, a JSON file the chart writes from its values.
+        #[arg(long)]
+        plan: std::path::PathBuf,
+        /// Write secrets as files in this directory instead of Kubernetes
+        /// Secrets in the pod's namespace.
+        #[arg(long)]
+        secrets_dir: Option<std::path::PathBuf>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -63,6 +78,9 @@ enum TenantCommand {
         #[arg(long = "admin-upstream")]
         upstream: Vec<String>,
     },
+    /// Print a new tenant id, `ten_<uuidv7>`, for the Helm chart's
+    /// `tenant.id` (ADR-0056). It touches no database.
+    NewId,
     /// Undo a tenant's soft delete before its purge.
     Restore {
         /// The tenant id, `ten_<uuidv7>`.
@@ -85,6 +103,7 @@ async fn main() -> ExitCode {
         Some(Command::Migrate) => migrate().await,
         Some(Command::Tenant(t)) => tenant(t).await,
         Some(Command::Apps(a)) => apps(a).await,
+        Some(Command::Bootstrap { plan, secrets_dir }) => bootstrap(&plan, secrets_dir).await,
         Some(Command::Serve) | None => serve().await,
     };
     match result {
@@ -111,6 +130,16 @@ async fn migrate() -> anyhow::Result<()> {
 
 async fn tenant(command: TenantCommand) -> anyhow::Result<()> {
     use anyhow::Context as _;
+    if matches!(command, TenantCommand::NewId) {
+        println!(
+            "{}",
+            tutela_contracts::tenant::TenantId::new(
+                tutela_contracts::id::Uuid7::from_uuid(uuid::Uuid::now_v7())
+                    .map_err(|_| anyhow::anyhow!("a new id is not a UUIDv7"))?
+            )
+        );
+        return Ok(());
+    }
     tutelad::telemetry::init_logs("info")?;
     let var = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
     let url = var("TUTELA_OWNER_DATABASE_URL").context("TUTELA_OWNER_DATABASE_URL is not set")?;
@@ -156,6 +185,7 @@ async fn tenant(command: TenantCommand) -> anyhow::Result<()> {
             );
             Ok(())
         }
+        TenantCommand::NewId => Ok(()),
         TenantCommand::Restore { tid } => {
             let tid = tid
                 .parse()
@@ -203,6 +233,47 @@ async fn apps(command: AppsCommand) -> anyhow::Result<()> {
             Ok(())
         }
     }
+}
+
+async fn bootstrap(
+    plan: &std::path::Path,
+    secrets_dir: Option<std::path::PathBuf>,
+) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    use tutelad::bootstrap::{Env, Plan, Sink, kube::Kube};
+    tutelad::telemetry::init_logs("info")?;
+    let var = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
+    let plan = Plan::parse(&std::fs::read_to_string(plan).context("reading the plan")?)?;
+    let env = Env {
+        owner_url: var("TUTELA_OWNER_DATABASE_URL")
+            .context("TUTELA_OWNER_DATABASE_URL is not set")?,
+        service_role: var("TUTELA_SERVICE_ROLE").context("TUTELA_SERVICE_ROLE is not set")?,
+        own: var("TUTELA_ISSUER")
+            .context("TUTELA_ISSUER is not set")?
+            .parse()
+            .map_err(|_| anyhow::anyhow!("TUTELA_ISSUER is not an issuer"))?,
+        secrets: tutelad::config::Secrets::from_values(
+            var("TUTELA_MASTER_KEY").as_deref(),
+            var("TUTELA_MASTER_KEY_PREVIOUS").as_deref(),
+            var("TUTELA_KEY_PEPPER").as_deref(),
+            var("TUTELA_KEY_PEPPER_VERSION").as_deref(),
+        )?,
+        policy: if var("TUTELA_DEV_MODE").as_deref() == Some("1") {
+            tutela_safenet::Policy::new().dev_loopback()
+        } else {
+            tutela_safenet::Policy::new()
+        },
+    };
+    let sink = match secrets_dir {
+        Some(dir) => Sink::Dir(dir),
+        None => Sink::Kubernetes(Kube::in_cluster(std::path::Path::new(
+            tutelad::bootstrap::kube::ACCOUNT_DIR,
+        ))?),
+    };
+    for step in tutelad::bootstrap::run(&plan, &env, &sink).await? {
+        println!("{}", serde_json::to_string(&step)?);
+    }
+    Ok(())
 }
 
 /// Resolves on SIGTERM or Ctrl-C. If the handlers cannot be installed, the
