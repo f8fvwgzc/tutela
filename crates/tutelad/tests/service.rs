@@ -261,6 +261,7 @@ struct Binary {
     child: tokio::process::Child,
     api: std::net::SocketAddr,
     trust_path: std::path::PathBuf,
+    log: tokio::task::JoinHandle<String>,
 }
 
 impl Binary {
@@ -269,30 +270,25 @@ impl Binary {
         let trust_path =
             std::env::temp_dir().join(format!("tutelad-bin-{}-{name}.toml", std::process::id()));
         std::fs::write(&trust_path, trust).unwrap();
-        let free = || {
-            std::net::TcpListener::bind("127.0.0.1:0")
-                .unwrap()
-                .local_addr()
-                .unwrap()
-        };
-        let (api, ops) = (free(), free());
-        let child = tokio::process::Command::new(env!("CARGO_BIN_EXE_tutelad"))
-            .env_clear()
+        let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_tutelad"));
+        cmd.env_clear()
             .env("RUST_BACKTRACE", "1")
             .env("RUST_LIB_BACKTRACE", "0")
             .env("TUTELA_DATABASE_URL", database_url)
             .env("TUTELA_TRUST_FILE", &trust_path)
-            .env("TUTELA_LISTEN", api.to_string())
-            .env("TUTELA_OPS_LISTEN", ops.to_string())
             .env("TUTELA_SHUTDOWN_DRAIN_SECS", "0")
             .env("TUTELA_DEV_MODE", if dev_mode { "1" } else { "0" })
             .env("TUTELA_ISSUER", common::OWN_ISS)
             .env("TUTELA_MASTER_KEY", common::MASTER_KEY)
             .env("TUTELA_KEY_PEPPER", common::PEPPER)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::inherit())
-            .spawn()
-            .unwrap();
+            .stderr(std::process::Stdio::inherit());
+        // The binary binds port 0 and says where (#147).
+        let common::Spawned {
+            child,
+            api,
+            ops,
+            log,
+        } = common::spawn_serving(cmd, name).await;
         let c = http();
         let url = format!("http://{ops}/healthz");
         let mut up = false;
@@ -308,6 +304,7 @@ impl Binary {
             child,
             api,
             trust_path,
+            log,
         }
     }
 
@@ -323,8 +320,6 @@ impl Binary {
 
     /// [`Binary::stop`], with several secrets.
     async fn stop_with(mut self, secrets: &[&str]) -> Vec<Value> {
-        use tokio::io::{AsyncBufReadExt as _, BufReader};
-
         let pid = self.child.id().unwrap().to_string();
         let killed = tokio::process::Command::new("kill")
             .args(["-TERM", &pid])
@@ -338,16 +333,16 @@ impl Binary {
             .unwrap();
         assert_eq!(status.code(), Some(0));
         std::fs::remove_file(&self.trust_path).unwrap();
-        let mut lines = BufReader::new(self.child.stdout.take().unwrap()).lines();
+        let log = self.log.await.unwrap();
         let mut out = Vec::new();
-        while let Some(line) = lines.next_line().await.unwrap() {
+        for line in log.lines() {
             for secret in secrets {
                 assert!(!line.contains(secret), "a token reached the log: {line}");
             }
             for key in [common::MASTER_KEY, common::PEPPER] {
                 assert!(!line.contains(key), "a secret reached the log: {line}");
             }
-            out.push(serde_json::from_str(&line).unwrap_or_else(|_| panic!("not JSON: {line}")));
+            out.push(serde_json::from_str(line).unwrap_or_else(|_| panic!("not JSON: {line}")));
         }
         out
     }
