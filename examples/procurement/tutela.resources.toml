@@ -1,0 +1,191 @@
+# ERP purchasing: purchase orders and their lines, with prices and bank
+# details hidden by role.
+#
+# Tree: org -> company -> plant -> purchase_order -> po_line.
+# Who gets which role, and where (assignments are data in tutela-store):
+#   - buyer             at a plant: edits only their own orders;
+#   - approver          at a company: sees and approves submitted orders only;
+#   - warehouse         at a plant: records received goods, never sees prices;
+#   - accounts_payable  at a company: sees prices and the supplier's bank account;
+#   - auditor           at the org: reads everything, changes nothing.
+# A condition reads only the item's own fields. So each line carries its
+# order's `buyer` and `status` (the product copies them), and the line's
+# conditions read those copies.
+# Tests: crates/tutela-pdp/src/tests_examples.rs. Format: docs/MANIFEST.md.
+
+version = 1
+
+[app]
+name = "procurement"
+
+[types.company]
+parent    = "org"
+container = true
+label     = "Company"
+
+[types.plant]
+parent    = "company"
+container = true
+label     = "Plant"
+
+[types.purchase_order]
+parent    = "plant"
+container = true
+features  = ["chat", "files"]
+label     = "Purchase order"
+
+[types.purchase_order.fields]
+number                = { sensitivity = "internal" }
+supplier              = { sensitivity = "internal" }
+status                = { sensitivity = "internal", grants_access = true }
+buyer                 = { sensitivity = "internal", type = "principal", grants_access = true }
+total_amount          = { sensitivity = "confidential", type = "integer" }
+payment_terms         = { sensitivity = "confidential" }
+supplier_bank_account = { sensitivity = "secret" }
+
+[types.purchase_order.actions]
+approve = { needs = "read" }   # needs the grant on the role
+
+[types.po_line]
+parent = "purchase_order"
+label  = "Order line"
+
+[types.po_line.fields]
+item              = { sensitivity = "internal" }
+quantity          = { sensitivity = "internal", type = "integer" }
+received_quantity = { sensitivity = "internal", type = "integer" }
+unit_price        = { sensitivity = "confidential", type = "integer" }
+buyer             = { sensitivity = "internal", type = "principal", grants_access = true }
+status            = { sensitivity = "internal", grants_access = true }
+
+[roles.buyer]
+label  = "Buyer"
+grants = { plant = "read", purchase_order = "write", po_line = "write" }
+assignable_to = ["user", "group"]
+
+[[conditions]]
+role = "buyer"
+type = "purchase_order"
+when = { is_principal = "buyer" }
+else = "read"
+
+[[conditions]]
+role = "buyer"
+type = "po_line"
+when = { is_principal = "buyer" }
+else = "read"
+
+[roles.approver]
+label  = "Approver"
+grants = { company = "read", plant = "read", purchase_order = "read", po_line = "read", "purchase_order:approve" = true }
+assignable_to = ["user", "group"]
+
+# Drafts stay with the buyer until they are submitted.
+[[conditions]]
+role = "approver"
+type = "purchase_order"
+when = { in = { field = "status", values = ["submitted", "approved"] } }
+else = "none"
+
+[[conditions]]
+role = "approver"
+type = "po_line"
+when = { in = { field = "status", values = ["submitted", "approved"] } }
+else = "none"
+
+# The warehouse counts goods in: it may change only `received_quantity`.
+[roles.warehouse]
+label  = "Warehouse"
+grants = { plant = "read", purchase_order = "read", po_line = "write", "po_line.item" = "read", "po_line.quantity" = "read", "po_line.buyer" = "read", "po_line.status" = "read" }
+assignable_to = ["user", "group"]
+
+[roles.accounts_payable]
+label  = "Accounts payable"
+grants = { company = "read", plant = "read", purchase_order = "read", po_line = "read" }
+assignable_to = ["user", "group"]
+
+[roles.auditor]
+label  = "Auditor"
+grants = { company = "read", plant = "read", purchase_order = "read", po_line = "read" }
+assignable_to = ["user"]
+
+# Prices and payment data, role by role. The warehouse gets no rule: None.
+[[field_rules]]
+field = "purchase_order.total_amount"
+role  = "buyer"
+max   = "write"
+
+[[field_rules]]
+field = "purchase_order.payment_terms"
+role  = "buyer"
+max   = "read"
+
+[[field_rules]]
+field = "po_line.unit_price"
+role  = "buyer"
+max   = "write"
+
+[[field_rules]]
+field = "purchase_order.total_amount"
+role  = "approver"
+max   = "read"
+
+[[field_rules]]
+field = "purchase_order.payment_terms"
+role  = "approver"
+max   = "read"
+
+[[field_rules]]
+field = "po_line.unit_price"
+role  = "approver"
+max   = "read"
+
+[[field_rules]]
+field = "purchase_order.total_amount"
+role  = "accounts_payable"
+max   = "read"
+
+[[field_rules]]
+field = "purchase_order.payment_terms"
+role  = "accounts_payable"
+max   = "read"
+
+[[field_rules]]
+field = "purchase_order.supplier_bank_account"
+role  = "accounts_payable"
+max   = "read"
+
+[[field_rules]]
+field = "po_line.unit_price"
+role  = "accounts_payable"
+max   = "read"
+
+[[field_rules]]
+field = "purchase_order.total_amount"
+role  = "auditor"
+max   = "read"
+
+[[field_rules]]
+field = "purchase_order.payment_terms"
+role  = "auditor"
+max   = "read"
+
+[[field_rules]]
+field = "purchase_order.supplier_bank_account"
+role  = "auditor"
+max   = "read"
+
+[[field_rules]]
+field = "po_line.unit_price"
+role  = "auditor"
+max   = "read"
+
+[ui."orders.approve_button"]
+actions     = ["purchase_order:approve"]
+routes      = ["POST /api/purchase-orders/{id}/approve"]
+when_denied = "hide"
+
+[ui."orders.total_amount"]
+fields      = ["purchase_order.total_amount"]
+routes      = ["GET /api/purchase-orders/{id}"]
+when_denied = "readonly"
