@@ -4,6 +4,9 @@ Each release is a git tag; depend on it by tag, never by path. What a consumer m
 
 ## Unreleased
 
+### Example manifests
+- `examples/`: four manifests to start from: `tracker` (the owner's access-blueprint: workspace → team → project → issue → task), `hr`, `crm` and `procurement` (ERP purchasing). Each one compiles with `tutela check`, and `tutela-pdp`'s `tests_examples` prove its data hiding: hidden fields per role, conditions, private scopes, the agent overlap. [examples/README.md](examples/README.md) lists the modelling patterns they use and the limits of manifest v1.
+
 ### Tested against a real Keycloak ([#87](https://github.com/f8fvwgzc/tutela/issues/87), [ADR-0057](docs/DECISIONS.md#adr-0057-a-real-keycloak-26-in-the-tests-a-pinned-image-a-realm-made-from-the-chart-and-a-client-without-full-scope))
 - `make keycloak` (`scripts/keycloak-check.mjs`, skipped unless `TUTELA_REQUIRE_KEYCLOAK=1`): Keycloak 26.8.1 pinned by digest, in dev mode on loopback; a realm with the step-up browser flow and the chart's Console client imported from its partial-import JSON. `crates/tutelad/tests/keycloak.rs` exchanges real Keycloak tokens at `POST /oauth2/token`; the Console's browser check runs against it too, signing in at Keycloak's own login and OTP pages.
 - **Fixed: the Helm chart's Console client gave two audiences.** A person with the realm's default roles got `aud: ["tutela-authz", "account"]` (Keycloak's full scope), which `tutelad` refuses. The client now has `fullScopeAllowed: false`. If you imported the v0.2.0 client into a realm, turn "Full scope allowed" off on it (its dedicated client scope), or import the new file over it.

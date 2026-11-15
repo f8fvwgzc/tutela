@@ -1,0 +1,144 @@
+# A CRM: regions, accounts and deals, with money hidden by role.
+#
+# Tree: org -> region -> account -> deal.
+# Who gets which role, and where (assignments are data in tutela-store):
+#   - sales_rep      at a region: every deal there, but edits only their own;
+#   - sales_manager  at a region: edits every deal there, approves discounts;
+#   - finance        at the org: reads all the money, changes nothing;
+#   - partner        on one account: a reseller sees only deals shared with it,
+#                    and never the money.
+# Tests: crates/tutela-pdp/src/tests_examples.rs. Format: docs/MANIFEST.md.
+
+version = 1
+
+[app]
+name = "crm"
+
+[types.region]
+parent    = "org"
+container = true
+label     = "Region"
+
+[types.account]
+parent    = "region"
+container = true
+features  = ["files", "ai"]
+label     = "Account"
+
+[types.account.fields]
+name         = { sensitivity = "internal" }
+industry     = { sensitivity = "internal" }
+credit_limit = { sensitivity = "confidential", type = "integer" }
+
+[types.deal]
+parent   = "account"
+features = ["chat", "files", "ai"]
+label    = "Deal"
+
+[types.deal.fields]
+title            = { sensitivity = "internal" }
+stage            = { sensitivity = "internal" }
+owner            = { sensitivity = "internal", type = "principal", grants_access = true }
+labels           = { sensitivity = "internal", type = "string_list", grants_access = true }
+amount           = { sensitivity = "confidential", type = "integer" }
+discount_percent = { sensitivity = "confidential", type = "integer" }
+margin           = { sensitivity = "secret", type = "integer" }
+
+[types.deal.actions]
+approve_discount = { needs = "write" }
+export           = { needs = "read" }
+
+[roles.sales_rep]
+label  = "Sales rep"
+grants = { region = "read", account = "read", deal = "write", "deal:export" = true }
+assignable_to = ["user", "group"]
+
+# A rep edits only the deals they own; other deals in the region are read only.
+[[conditions]]
+role = "sales_rep"
+type = "deal"
+when = { is_principal = "owner" }
+else = "read"
+
+[roles.sales_manager]
+label  = "Sales manager"
+grants = { region = "read", account = "write", deal = "full", "deal:approve_discount" = true, "deal:export" = true }
+assignable_to = ["user", "group"]
+
+[roles.finance]
+label  = "Finance"
+grants = { region = "read", account = "read", deal = "read", "deal:export" = true }
+assignable_to = ["user", "group"]
+
+[roles.partner]
+label  = "Partner"
+grants = { account = "read", deal = "read" }
+assignable_to = ["user"]
+
+[[conditions]]
+role = "partner"
+type = "deal"
+when = { contains = { field = "labels", value = "partner_shared" } }
+else = "none"
+
+# Money, role by role. A partner gets no rule, so the money stays at None.
+[[field_rules]]
+field = "deal.amount"
+role  = "sales_rep"
+max   = "write"
+
+[[field_rules]]
+field = "deal.discount_percent"
+role  = "sales_rep"
+max   = "write"
+
+[[field_rules]]
+field = "deal.amount"
+role  = "sales_manager"
+max   = "full"
+
+[[field_rules]]
+field = "deal.discount_percent"
+role  = "sales_manager"
+max   = "full"
+
+[[field_rules]]
+field = "deal.margin"
+role  = "sales_manager"
+max   = "read"
+
+[[field_rules]]
+field = "account.credit_limit"
+role  = "sales_manager"
+max   = "read"
+
+[[field_rules]]
+field = "deal.amount"
+role  = "finance"
+max   = "read"
+
+[[field_rules]]
+field = "deal.discount_percent"
+role  = "finance"
+max   = "read"
+
+[[field_rules]]
+field = "deal.margin"
+role  = "finance"
+max   = "read"
+
+[[field_rules]]
+field = "account.credit_limit"
+role  = "finance"
+max   = "read"
+
+[ui."deals.approve_discount_button"]
+actions     = ["deal:approve_discount"]
+routes      = ["POST /api/deals/{id}/discount/approve"]
+when_denied = "disable"
+reason      = "Only sales managers approve discounts."
+
+[ui."deals.export_button"]
+actions     = ["deal:export"]
+routes      = ["POST /api/deals/export"]
+when_denied = "hide"

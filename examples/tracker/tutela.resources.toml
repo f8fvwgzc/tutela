@@ -1,0 +1,106 @@
+# A Linear-style work tracker: the owner's access-blueprint as a manifest.
+#
+# Tree: org (the workspace) -> team -> project -> issue -> task.
+# What it shows:
+#   - members start at Full (the seeded `member` role); owners narrow it later
+#     with field rules at one project (data in tutela-store, not here);
+#   - a secret field (`contract_terms`) starts hidden for every role;
+#   - guests see only issues labelled `client_visible`;
+#   - AI agents write only the tasks assigned to them, never see the budget,
+#     and stay inside their own project.
+# Tests: crates/tutela-pdp/src/tests_examples.rs. Format: docs/MANIFEST.md.
+
+version = 1
+
+[app]
+name = "tracker"
+
+[types.team]
+parent    = "org"
+container = true
+features  = ["chat"]
+label     = "Team"
+
+[types.project]
+parent    = "team"
+container = true
+starts    = "open"        # the blueprint: new projects start open
+ai_reach  = "project"     # agents stay inside their project
+features  = ["chat", "files", "ai"]
+label     = "Project"
+
+[types.issue]
+parent    = "project"
+container = true
+features  = ["chat", "files", "ai"]
+label     = "Issue"
+
+[types.issue.fields]
+title          = { sensitivity = "internal" }
+status         = { sensitivity = "internal" }
+labels         = { sensitivity = "internal", type = "string_list", grants_access = true }
+contract_terms = { sensitivity = "secret" }          # starts hidden for every role
+
+[types.task]
+parent   = "issue"
+features = ["chat", "files", "ai"]
+label    = "Task"
+
+[types.task.fields]
+title    = { sensitivity = "internal" }
+status   = { sensitivity = "internal" }
+assignee = { sensitivity = "internal", type = "principal", grants_access = true }
+budget   = { sensitivity = "internal", type = "integer" } # open; a project owner may hide it
+
+# Guests are invited to one project. They see only client-visible issues and
+# no tasks.
+[roles.guest]
+label  = "Guest"
+grants = { team = "read", project = "read", issue = "read", "issue.@chat" = "read" }
+
+[[conditions]]
+role = "guest"
+type = "issue"
+when = { contains = { field = "labels", value = "client_visible" } }
+else = "none"
+
+# AI agents read the project and write only the tasks assigned to them.
+[roles.agent]
+label  = "AI agent"
+grants = { project = "read", issue = "read", task = "write" }
+
+[[conditions]]
+role = "agent"
+type = "task"
+when = { is_principal = "assignee" }
+else = "read"
+
+# Agents never see the budget, and the field is removed, not shown as
+# "Restricted".
+[[field_rules]]
+field   = "task.budget"
+role    = "agent"
+max     = "none"
+display = "remove"
+
+# Owners may read and change the contract terms. Everyone else: None.
+[[field_rules]]
+field = "issue.contract_terms"
+role  = "owner"
+max   = "full"
+
+[ui."tasks.budget_field"]
+fields      = ["task.budget"]
+routes      = ["PATCH /api/tasks/{id}"]
+when_denied = "readonly"
+
+[ui."issues.delete_button"]
+actions     = ["issue:delete"]
+routes      = ["DELETE /api/issues/{id}"]
+when_denied = "hide"
+
+[ui."projects.data_protection_page"]
+actions     = ["project:manage_fields"]
+routes      = ["PUT /api/projects/{id}/field-rules"]
+when_denied = "hide"
+reason      = "Only project owners can protect fields."

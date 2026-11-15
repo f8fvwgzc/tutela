@@ -117,7 +117,7 @@ export function InvoiceActions({ invoice }: { invoice: Invoice }) {
 }
 ```
 
-This only changes what the user sees. The generated guard on `POST /api/invoices/{id}/approve` checks again on the server, and the server removes `amount` from the response when the user may not read it. The SDK refuses to start if a declared route has no guard. Full steps are in [docs/INTEGRATION.md](docs/INTEGRATION.md).
+This only changes what the user sees. The generated guard on `POST /api/invoices/{id}/approve` checks again on the server, and the server removes `amount` from the response when the user may not read it. The SDK refuses to start if a declared route has no guard. Full steps are in [docs/INTEGRATION.md](docs/INTEGRATION.md). Ready-made manifests for a work tracker, an HR system, a CRM and ERP purchasing, each with tests that prove its data hiding, are in [examples/](examples/README.md).
 
 ## Where Tutela sits
 
@@ -223,6 +223,7 @@ The repo is under the MIT licence ([LICENSE](LICENSE)). The SDKs, crates and con
 | [docs/PERMISSION-MODEL.md](docs/PERMISSION-MODEL.md) | Levels, inheritance, field rules, agents and delegation |
 | [docs/CONTRACTS.md](docs/CONTRACTS.md) | APIs, tokens, events and audit records |
 | [docs/MANIFEST.md](docs/MANIFEST.md) | The `tutela.resources.toml` format and the model compiler |
+| [examples/README.md](examples/README.md) | Example manifests: a work tracker (the access-blueprint), HR, CRM and ERP purchasing |
 | [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) | Threats and how Tutela answers them |
 | [docs/INTEGRATION.md](docs/INTEGRATION.md) | How cores and products adopt Tutela |
 | [docs/JS-SDK.md](docs/JS-SDK.md) | The JavaScript SDKs: embedding the admin components, the token flow, the errors |

@@ -19,6 +19,8 @@ Role assignments, groups, and rules at one scope (a field rule on one project, a
 
 The model compiler reads the manifest and either returns a compiled model or a list of every problem it found. It never repairs input and never guesses.
 
+Worked examples for a work tracker, an HR system, a CRM and ERP purchasing are in [examples/](../examples/README.md). Tests in `tutela-pdp` (`tests_examples`) prove what each one hides.
+
 ## 2. General rules
 
 - The file is TOML 1.1 (parsed by the `toml` crate 1.1.x). It is at most 4 MiB.
