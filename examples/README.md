@@ -51,6 +51,7 @@ cargo test -p tutela-pdp tests_examples
 ## Limits of manifest v1
 
 - Every resource has exactly one parent. A record that belongs to two departments does not fit.
-- Conditions come from a fixed list: `eq`, `in`, `contains`, `is_principal`, `in_group`, `and`, `or`, `not` ([docs/MANIFEST.md §8](../docs/MANIFEST.md#8-conditions)). There is no "greater than" yet, so "hide the amount when it is over 10,000" is not possible.
+- Conditions come from a fixed list: `eq`, `in`, `contains`, `is_principal`, `in_group`, `and`, `or`, `not` ([docs/MANIFEST.md §8](../docs/MANIFEST.md#8-conditions)). There is no "greater than".
+- A condition may not read a confidential or secret field: people could learn its value from what they may do. So "hide orders over 10,000" cannot read `total_amount`. Instead, store a band that is not confidential (for example `size = "large"`, set by your product) and use `in` on it.
 
 These are starting points, not a product. No product uses them as they are.
