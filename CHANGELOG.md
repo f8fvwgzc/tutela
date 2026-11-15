@@ -4,6 +4,12 @@ Each release is a git tag; depend on it by tag, never by path. What a consumer m
 
 ## Unreleased
 
+### `<Protect>`, `<Can>` and `<Field>` in `@f8fvwgzc/tutela-react` (Phase A item 10, PERMISSION-MODEL.md 14.3)
+- `Protect` loads one permission map for a resource, with the UI keys and fields the parts inside need, and shows its children only when the action is allowed. `Can` shows a part by a UI key's mode or one action; `Field` shows a value, "Restricted" or nothing by the field's level. Hooks `useUi` and `useField`. A UI hint only: every server route checks again ([JS-SDK.md](docs/JS-SDK.md#show-disable-or-hide-parts-of-your-own-pages)).
+- `usePermissionMap(resource, actions, { uiKeys?, fields? }?)`: a third, optional argument. `PermissionStore.ui(key, resource)` in `@f8fvwgzc/tutela-js`. Both additive.
+- The styles add one rule for `<Can>`'s wrapper, `fieldset.tutela-can`, so no inline style is needed.
+- Not built: the map from the embedded engine in library mode (Phase A).
+
 ### Tested against a real Keycloak ([#87](https://github.com/f8fvwgzc/tutela/issues/87), [ADR-0057](docs/DECISIONS.md#adr-0057-a-real-keycloak-26-in-the-tests-a-pinned-image-a-realm-made-from-the-chart-and-a-client-without-full-scope))
 - `make keycloak` (`scripts/keycloak-check.mjs`, skipped unless `TUTELA_REQUIRE_KEYCLOAK=1`): Keycloak 26.8.1 pinned by digest, in dev mode on loopback; a realm with the step-up browser flow and the chart's Console client imported from its partial-import JSON. `crates/tutelad/tests/keycloak.rs` exchanges real Keycloak tokens at `POST /oauth2/token`; the Console's browser check runs against it too, signing in at Keycloak's own login and OTP pages.
 - **Fixed: the Helm chart's Console client gave two audiences.** A person with the realm's default roles got `aud: ["tutela-authz", "account"]` (Keycloak's full scope), which `tutelad` refuses. The client now has `fullScopeAllowed: false`. If you imported the v0.2.0 client into a realm, turn "Full scope allowed" off on it (its dedicated client scope), or import the new file over it.

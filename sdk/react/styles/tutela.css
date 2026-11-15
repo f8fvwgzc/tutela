@@ -1,6 +1,7 @@
 /*
  * @f8fvwgzc/tutela-react: small default styles. Every rule is scoped under
- * the components' root class `.tutela`: nothing here styles the host page.
+ * the components' root class `.tutela`, or `<Can>`'s own wrapper
+ * `fieldset.tutela-can`: nothing here styles the host page.
  * Override any --tutela-* variable on `.tutela` (or an ancestor) to match
  * the host's design. Light by default; dark follows prefers-color-scheme,
  * or `data-theme="dark"` / `"light"` on the root (the `theme` prop).
@@ -459,4 +460,12 @@
   .tutela .tutela-button {
     transition: none;
   }
+}
+
+/* <Can>'s wrapper for a disabled or read-only part: no box of its own. */
+fieldset.tutela-can {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
 }

@@ -74,6 +74,11 @@ export class PermissionStore {
     return this.get(resource)?.field(key) ?? "none";
   }
 
+  /** A UI key's mode on `resource`; `hide` when not loaded. */
+  ui(key: string, resource: ScopeRef): UiEntry {
+    return this.get(resource)?.ui(key) ?? { mode: "hide" };
+  }
+
   /** Forgets every map, for example after a sign-out. */
   clear(): void {
     this.#maps.clear();

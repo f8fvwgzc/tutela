@@ -358,6 +358,10 @@ describe("the permission map", () => {
     expect(client.can("project:manage_access", SCOPE)).toBe(true);
     expect(client.can("project:manage_access", { type: "project", id: "other" })).toBe(false);
     expect(client.can("project:delete", SCOPE)).toBe(false);
+    const store = client.permissionStore;
+    expect(store.field("project.title", SCOPE)).toBe("read");
+    expect(store.ui("x", SCOPE).mode).toBe("hide");
+    expect(store.ui("x", { type: "project", id: "other" })).toEqual({ mode: "hide" });
   });
 });
 

@@ -66,14 +66,24 @@ export function useLoad<T>(key: string, load: (signal: AbortSignal) => Promise<T
   return { ...state, reload };
 }
 
+/** More keys for {@link usePermissionMap} to ask about. */
+export interface PermissionMapKeys {
+  /** UI keys from the manifest, for example `invoices.approve_button`. */
+  uiKeys?: string[];
+  /** Field or feature keys, for example `invoice.amount` or `invoice.@ai`. */
+  fields?: string[];
+}
+
 /**
  * The permission map of the caller on `resource` for `actions` (CONTRACTS.md
- * 7.5), loaded with the client's `tutela-authz` token, again after each of
- * the client's writes (at least as new as the write).
+ * 7.5), and for the UI keys and fields in `more`, loaded with the client's
+ * `tutela-authz` token, again after each of the client's writes (at least as
+ * new as the write).
  */
 export function usePermissionMap(
   resource: CheckResource,
   actions: string[],
+  more?: PermissionMapKeys,
 ): Loaded<PermissionMap> {
   const client = useTutela();
   const rev = useSyncExternalStore(
@@ -81,8 +91,20 @@ export function usePermissionMap(
     () => client.revision,
     () => 0,
   );
-  const key = JSON.stringify([resource, actions, rev]);
-  return useLoad(key, (signal) => client.permissions({ resource, actions }, { signal }));
+  const uiKeys = more?.uiKeys;
+  const fields = more?.fields;
+  const key = JSON.stringify([resource, actions, uiKeys ?? null, fields ?? null, rev]);
+  return useLoad(key, (signal) =>
+    client.permissions(
+      {
+        resource,
+        actions,
+        ...(uiKeys === undefined ? {} : { uiKeys }),
+        ...(fields === undefined ? {} : { fields }),
+      },
+      { signal },
+    ),
+  );
 }
 
 /**
