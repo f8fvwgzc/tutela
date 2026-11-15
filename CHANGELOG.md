@@ -4,6 +4,9 @@ Each release is a git tag; depend on it by tag, never by path. What a consumer m
 
 ## Unreleased
 
+### Example manifests
+- `examples/`: four manifests to start from: `tracker` (the owner's access-blueprint: workspace → team → project → issue → task), `hr`, `crm` and `procurement` (ERP purchasing). Each one compiles with `tutela check`, and `tutela-pdp`'s `tests_examples` prove its data hiding: hidden fields per role, conditions, private scopes, the agent overlap. [examples/README.md](examples/README.md) lists the modelling patterns they use and the limits of manifest v1.
+
 ### `<Protect>`, `<Can>` and `<Field>` in `@f8fvwgzc/tutela-react` (Phase A item 10, PERMISSION-MODEL.md 14.3)
 - `Protect` loads one permission map for a resource, with the UI keys and fields the parts inside need, and shows its children only when the action is allowed. `Can` shows a part by a UI key's mode or one action; `Field` shows a value, "Restricted" or nothing by the field's level. Hooks `useUi` and `useField`. A UI hint only: every server route checks again ([JS-SDK.md](docs/JS-SDK.md#show-disable-or-hide-parts-of-your-own-pages)).
 - `usePermissionMap(resource, actions, { uiKeys?, fields? }?)`: a third, optional argument. `PermissionStore.ui(key, resource)` in `@f8fvwgzc/tutela-js`. Both additive.

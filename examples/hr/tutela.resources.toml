@@ -1,0 +1,166 @@
+# An HR system: people records with pay and private data.
+#
+# Tree: org -> company -> department (departments may nest) -> employee.
+# Who gets which role, and where (assignments are data in tutela-store):
+#   - colleague        at the company, for every employee: the staff directory;
+#   - self_service     on the person's own employee record;
+#   - line_manager     on each direct report's record;
+#   - hr_manager       at the company (or one department, for an HR partner);
+#   - payroll          at the company.
+# The closest assignment wins, so on your own record `self_service` decides,
+# on a report's record `line_manager` decides, and elsewhere `colleague`.
+# What it shows: pay and private data start hidden (confidential and secret
+# fields start at None), and each role opens only what it needs.
+# Tests: crates/tutela-pdp/src/tests_examples.rs. Format: docs/MANIFEST.md.
+
+version = 1
+
+[app]
+name = "hr"
+
+[types.company]
+parent    = "org"
+container = true
+label     = "Company"
+
+[types.department]
+parent    = ["company", "department"]
+container = true
+label     = "Department"
+
+[types.employee]
+parent = "department"
+label  = "Employee"
+
+[types.employee.fields]
+name         = { sensitivity = "internal" }
+job_title    = { sensitivity = "internal" }
+work_email   = { sensitivity = "internal" }
+salary       = { sensitivity = "confidential", type = "integer" }
+bonus        = { sensitivity = "confidential", type = "integer" }
+performance  = { sensitivity = "confidential" }
+national_id  = { sensitivity = "secret" }
+bank_account = { sensitivity = "secret" }
+home_address = { sensitivity = "secret" }
+
+[types.employee.actions]
+approve_leave = { needs = "read" }   # needs the grant on the role
+
+# The staff directory: names, titles and work e-mail. Nothing private.
+[roles.colleague]
+label  = "Colleague"
+grants = { company = "read", department = "read", employee = "read" }
+
+# Your own record: everything about you, read only.
+[roles.self_service]
+label  = "Self service"
+grants = { employee = "read" }
+assignable_to = ["user"]
+
+# A manager writes the review of a direct report and approves leave. No pay.
+[roles.line_manager]
+label  = "Line manager"
+grants = { employee = "write", "employee.name" = "read", "employee.job_title" = "read", "employee.work_email" = "read", "employee:approve_leave" = true }
+assignable_to = ["user"]
+
+[roles.hr_manager]
+label  = "HR manager"
+grants = { company = "read", department = "write", employee = "full", "employee:approve_leave" = true }
+assignable_to = ["user", "group"]
+
+# Payroll changes pay. It never sees performance reviews.
+[roles.payroll]
+label  = "Payroll"
+grants = { company = "read", department = "read", employee = "write", "employee.name" = "read", "employee.job_title" = "read", "employee.work_email" = "read" }
+assignable_to = ["user", "group"]
+
+# Open the hidden fields, role by role.
+[[field_rules]]
+field = "employee.salary"
+role  = "self_service"
+max   = "read"
+
+[[field_rules]]
+field = "employee.bonus"
+role  = "self_service"
+max   = "read"
+
+[[field_rules]]
+field = "employee.performance"
+role  = "self_service"
+max   = "read"
+
+[[field_rules]]
+field = "employee.national_id"
+role  = "self_service"
+max   = "read"
+
+[[field_rules]]
+field = "employee.bank_account"
+role  = "self_service"
+max   = "read"
+
+[[field_rules]]
+field = "employee.home_address"
+role  = "self_service"
+max   = "read"
+
+[[field_rules]]
+field = "employee.performance"
+role  = "line_manager"
+max   = "write"
+
+[[field_rules]]
+field = "employee.salary"
+role  = "hr_manager"
+max   = "full"
+
+[[field_rules]]
+field = "employee.bonus"
+role  = "hr_manager"
+max   = "full"
+
+[[field_rules]]
+field = "employee.performance"
+role  = "hr_manager"
+max   = "full"
+
+[[field_rules]]
+field = "employee.national_id"
+role  = "hr_manager"
+max   = "read"
+
+[[field_rules]]
+field = "employee.home_address"
+role  = "hr_manager"
+max   = "read"
+
+[[field_rules]]
+field = "employee.salary"
+role  = "payroll"
+max   = "write"
+
+[[field_rules]]
+field = "employee.bonus"
+role  = "payroll"
+max   = "write"
+
+[[field_rules]]
+field = "employee.national_id"
+role  = "payroll"
+max   = "read"
+
+[[field_rules]]
+field = "employee.bank_account"
+role  = "payroll"
+max   = "read"
+
+[ui."employees.pay_panel"]
+fields      = ["employee.salary", "employee.bonus"]
+routes      = ["GET /api/employees/{id}/pay"]
+when_denied = "hide"
+
+[ui."employees.approve_leave_button"]
+actions     = ["employee:approve_leave"]
+routes      = ["POST /api/employees/{id}/leave/{leave_id}/approve"]
+when_denied = "hide"

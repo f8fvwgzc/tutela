@@ -40,6 +40,8 @@ mod testref;
 #[cfg(test)]
 mod tests_check;
 #[cfg(test)]
+mod tests_examples;
+#[cfg(test)]
 mod tests_explain;
 #[cfg(test)]
 mod tests_filter;
