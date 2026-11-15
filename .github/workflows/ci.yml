@@ -146,5 +146,13 @@ jobs:
           node-version: 22.22.2
           cache: pnpm
 
+      # The Console's browser check (make js-e2e) needs Chromium build 1243,
+      # the one @playwright/test 1.63.0 names. A new machine installs it once
+      # (ADR-0053 item 3); --with-deps adds the runner's system libraries.
+      - name: Install Playwright's Chromium
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter @f8fvwgzc/tutela-console exec playwright install --with-deps chromium
+
       - name: make js
         run: make js
