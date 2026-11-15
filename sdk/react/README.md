@@ -36,7 +36,15 @@ export function ProjectAccess({ project, org }: { project: string; org: string }
 | `PermissionMatrix` | Roles × types from `GET /v1/admin/roles`, field rows under their type (never above the item level), custom actions and admin keys. `editable` lets a person change one role's column and hands the draft to `onReview` for a `RoleEditor`. |
 | `ErrorNotice` | Any typed error of `tutela-js`, said plainly, with the next step. |
 
-Hooks: `useTutela`, `useCan(action, resource)`, `usePermissionMap(resource, actions)`, `useAssignments(scope)`, `useRoles(scope?)`, `useModel()`, `useSessionState()`.
+For a product's own pages:
+
+| Component | What it does |
+|---|---|
+| `Protect` | Loads one permission map for a resource (with the UI keys and fields inside) and shows its children only when the action is allowed; otherwise `fallback`. |
+| `Can` | Shows a part by a UI key's mode (`show`, `disable`, `readonly`, `hide`) or by one action. Disabled parts sit in a disabled `<fieldset class="tutela-can">`; a function child gets the mode and draws the part itself. |
+| `Field` | Shows one field's value when the person may read it, else "Restricted" (or nothing with `whenHidden="remove"`). A function child gets `read` or `write`. |
+
+Hooks: `useTutela`, `useCan(action, resource)`, `usePermissionMap(resource, actions, { uiKeys?, fields? }?)`, `useUi(uiKey, resource)`, `useField(name, resource)`, `useAssignments(scope)`, `useRoles(scope?)`, `useModel()`, `useSessionState()`.
 
 Theme: `theme="light" | "dark" | "system"` (default `system`). Override any `--tutela-*` variable on `.tutela`, for example `--tutela-accent`, `--tutela-font`, `--tutela-row`.
 

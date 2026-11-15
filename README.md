@@ -37,7 +37,7 @@ Nothing is published to a registry yet. Other repos depend on the Rust crates by
 | Rust crate | `tutela-store` | Postgres schema and migrations for bindings, field rules and groups (library mode and `tutelad`) | A |
 | Rust crate | `tutela-vault` | Envelope encryption with a KMS trait | A |
 | Rust crate | `tutela-safenet` | SSRF-safe outbound HTTP | A |
-| npm | `@f8fvwgzc/tutela-react` | `<Can>`, `<Field>`, `<Protect>`, `useCan`; the embeddable admin parts (RoleEditor, MembersTable, permission matrix) | A (admin parts and `useCan`: built, B part 4b1) |
+| npm | `@f8fvwgzc/tutela-react` | `<Can>`, `<Field>`, `<Protect>`, `useCan`; the embeddable admin parts (RoleEditor, MembersTable, permission matrix) | A (admin parts and `useCan`: built, B part 4b1; `<Can>`, `<Field>`, `<Protect>`: built, with a map from `tutelad`) |
 | npm | `@f8fvwgzc/tutela-node` | Server middleware and check client for Node | A |
 | npm | `@f8fvwgzc/tutela-js` | Browser helper | A |
 | Python | `tutela-py` (import `tutela`) | Token verifier, FastAPI dependency, check client | A |
@@ -49,7 +49,7 @@ Delivery while the repo is private: Rust crates as git dependencies pinned to a 
 
 ## Quick look: how a product uses it
 
-> **Planned API.** None of this works yet. Names and shapes may change during Phase A.
+> **Status: built, pre-release.** The manifest, `tutela apply`, `tutela codegen` and the React parts below work (v0.2.0 and later). Names and shapes may still change before v1.
 
 A product declares its resource types, roles and UI keys in `tutela.resources.toml`:
 
@@ -100,19 +100,18 @@ when_denied = "hide"
 In React:
 
 ```tsx
-// Planned API (Phase A). Package: @f8fvwgzc/tutela-react
-import { Can, Field } from "@f8fvwgzc/tutela-react";
-import { ui } from "./generated/tutela"; // written by `tutela codegen`
+// Built: @f8fvwgzc/tutela-react (docs/JS-SDK.md). The map comes from tutelad (service mode).
+import { Can, Field, Protect } from "@f8fvwgzc/tutela-react";
 
 export function InvoiceActions({ invoice }: { invoice: Invoice }) {
-  const resource = { type: "invoice", id: invoice.id };
+  const resource = { type: "invoice", id: invoice.id, path: invoice.path }; // path loaded on the server
   return (
-    <>
+    <Protect resource={resource} action="invoice:read" uiKeys={["invoices.approve_button"]} fields={["amount"]}>
       <Field resource={resource} name="amount">{invoice.amount}</Field>
-      <Can component={ui.INVOICES_APPROVE_BUTTON} resource={resource}>
-        <button onClick={() => approve(invoice.id)}>Approve</button>
+      <Can uiKey="invoices.approve_button" resource={resource}>
+        <button type="button" onClick={() => approve(invoice.id)}>Approve</button>
       </Can>
-    </>
+    </Protect>
   );
 }
 ```
@@ -181,7 +180,7 @@ Phase B: parts 1, 2a, 2b, 3a, 3b, 3c, 4a, 4b1 and 4b2 are merged: tenants, the b
 | The audit producer key sealed in the database and rotated with its old keys kept ([ADR-0045](docs/DECISIONS.md#adr-0045-the-audit-producer-key-sealed-in-the-database-rotated-with-its-old-keys-kept)) | Done (Phase B, part 4a) |
 | `tutela apply` against `tutelad` with the impact report, `tutela apps`, `tutela keys` ([ADR-0046](docs/DECISIONS.md#adr-0046-the-cli-against-tutelad-apply-with-the-impact-report-apps-and-keys-through-the-key-store)) | Done (Phase B, part 4a) |
 | The admin API `tutela.admin.v1` over gRPC and HTTP: agent principals, people, the model, `PutResourceTypes`, boundary rules, tenants and orgs with soft delete and purge, webhooks ([ADR-0040](docs/DECISIONS.md#adr-0040-tutelaadminv1-one-code-path-the-admin-token-rule-on-grpc-and-keys-at-every-org) to [ADR-0042](docs/DECISIONS.md#adr-0042-the-audit-logs-leftovers-a-chain-check-on-a-timer-the-callers-trace-in-each-record)). Scopes, role assignments and groups over it are not built ([#107](https://github.com/f8fvwgzc/tutela/issues/107)) | Built (Phase B, part 3c) |
-| The JavaScript SDKs: `@f8fvwgzc/tutela-js` and the admin components of `@f8fvwgzc/tutela-react` ([ADR-0047](docs/DECISIONS.md#adr-0047-the-javascript-sdks-a-pnpm-workspace-under-sdk-checked-by-make) to [ADR-0049](docs/DECISIONS.md#adr-0049-tutela-react-embeddable-admin-components-scoped-css-variables-and-the-host-names-the-people), [docs/JS-SDK.md](docs/JS-SDK.md)) | Built (Phase B, part 4b1). Not published |
+| The JavaScript SDKs: `@f8fvwgzc/tutela-js`, the admin components of `@f8fvwgzc/tutela-react`, and its `<Protect>`, `<Can>` and `<Field>` for a product's own pages ([ADR-0047](docs/DECISIONS.md#adr-0047-the-javascript-sdks-a-pnpm-workspace-under-sdk-checked-by-make) to [ADR-0049](docs/DECISIONS.md#adr-0049-tutela-react-embeddable-admin-components-scoped-css-variables-and-the-host-names-the-people), [docs/JS-SDK.md](docs/JS-SDK.md)) | Built (Phase B, part 4b1). Not published |
 | The Tutela Console (`console/`), served by `tutelad` under `/console/`, and the exit check in a real browser ([ADR-0050](docs/DECISIONS.md#adr-0050-the-console-is-served-by-tutelad-under-console-from-files-read-at-start) to [ADR-0053](docs/DECISIONS.md#adr-0053-the-exit-check-in-a-real-browser-playwrights-chromium-a-real-tutelad-and-the-test-provider-run-by-make); how to run it: [docs/JS-SDK.md, The Console](docs/JS-SDK.md#the-console)) | Built (Phase B, part 4b2) |
 | The OCI image (`Dockerfile`: the service and the Console, distroless, non-root) and the Helm chart `deploy/helm/tutela` with its bootstrap job (`tutelad bootstrap`) ([ADR-0055](docs/DECISIONS.md#adr-0055-the-oci-image-three-stages-a-distroless-runtime-the-console-on-and-publishing-left-to-a-release), [ADR-0056](docs/DECISIONS.md#adr-0056-the-helm-chart-and-its-bootstrap-job-a-pre-install-hook-that-makes-only-what-is-missing)) | Built and run locally (Phase B, part 4c); not pushed |
 | Everything else | Planned, see [docs/ROADMAP.md](docs/ROADMAP.md) |

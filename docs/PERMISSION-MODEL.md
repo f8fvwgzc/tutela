@@ -696,6 +696,7 @@ Then:
 - `<Field>`: render one field by its level: hidden, "Restricted", read-only or editable.
 - `<Protect>`: guard a whole page or section.
 - `useCan`: the same check as a hook.
+- **Built** in `@f8fvwgzc/tutela-react` on the map from `tutelad`, with `useUi` and `useField` ([JS-SDK.md](JS-SDK.md#show-disable-or-hide-parts-of-your-own-pages)). The map from the embedded engine in library mode is not built yet (Phase A).
 - The UI gets its permission map from `POST /v1/authz/permissions` (ETag/304), or from the embedded engine in library mode.
 - **Embeddable admin parts** (Phase B): RoleEditor, MembersTable and a permission matrix (role × field, with the four levels). A product's own customers manage roles at runtime with them. They use a separate token with `aud=tutela-admin`, a 5-minute TTL and step-up MFA.
 

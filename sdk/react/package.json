@@ -1,7 +1,7 @@
 {
   "name": "@f8fvwgzc/tutela-react",
   "version": "0.2.0",
-  "description": "React admin components for Tutela: MembersTable, RoleEditor and the permission matrix, on @f8fvwgzc/tutela-js.",
+  "description": "React components for Tutela, on @f8fvwgzc/tutela-js: Protect, Can and Field for a product's own pages; MembersTable, RoleEditor and the permission matrix for admins.",
   "license": "MIT",
   "repository": {
     "type": "git",

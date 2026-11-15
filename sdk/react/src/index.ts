@@ -4,6 +4,8 @@
  *
  * - {@link TutelaProvider}, {@link useTutela}, {@link useCan}, {@link usePermissionMap},
  *   {@link useAssignments}, {@link useRoles}, {@link useModel}, {@link useSessionState}.
+ * - {@link Protect}, {@link Can}, {@link Field}, {@link useUi}, {@link useField}: show,
+ *   disable or hide parts of a product's own pages. A UI hint only: servers check again.
  * - {@link MembersTable}, {@link RoleEditor}, {@link PermissionMatrix}, {@link ErrorNotice}.
  *
  * Import the default styles once: `import "@f8fvwgzc/tutela-react/styles.css"`.
@@ -16,8 +18,20 @@ export { CellView, LevelView } from "./cells.js";
 export { TutelaProvider, type TutelaProviderProps, useSessionState, useTutela } from "./context.js";
 export { describeError, ErrorNotice, type ErrorNoticeProps } from "./ErrorNotice.js";
 export {
+  Can,
+  type CanProps,
+  type CanState,
+  Field,
+  type FieldProps,
+  Protect,
+  type ProtectProps,
+  useField,
+  useUi,
+} from "./gates.js";
+export {
   type AssignmentsState,
   type Loaded,
+  type PermissionMapKeys,
   useAssignments,
   useCan,
   useCountdown,

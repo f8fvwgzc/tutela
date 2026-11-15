@@ -162,9 +162,49 @@ Every `ProblemError` has `status`, `code`, `title`, `detail`, `retryAfter` and `
 | `PermissionMatrix` | `scope?`, `detail?`, `editable?`, `onReview?`, `theme?` |
 | `ErrorNotice` | `error`, `onRetry?`, `onAskAdmin?`, `onStepUp?`, `onDismiss?` |
 
-Hooks: `useTutela`, `useCan(action, resource)`, `usePermissionMap(resource, actions)`, `useAssignments(scope, pageSize?)`, `useRoles(scope?)`, `useModel()`, `useSessionState()`.
+Hooks: `useTutela`, `useCan(action, resource)`, `usePermissionMap(resource, actions, { uiKeys?, fields? }?)`, `useUi(uiKey, resource)`, `useField(name, resource)`, `useAssignments(scope, pageSize?)`, `useRoles(scope?)`, `useModel()`, `useSessionState()`.
 
-**Looks.** Import `@f8fvwgzc/tutela-react/styles.css` once. It styles only the components' `.tutela` root and what is inside it. Override `--tutela-*` variables (`--tutela-accent`, `--tutela-font`, `--tutela-size`, `--tutela-row`, `--tutela-bg`, `--tutela-fg`, …) on `.tutela` or an ancestor. `theme="light" | "dark" | "system"` (default `system`). No inline styles, so a strict Content-Security-Policy needs no exception.
+### Show, disable or hide parts of your own pages
+
+`<Protect>`, `<Can>` and `<Field>` show a product's own pages by the caller's permission map ([CONTRACTS.md 7.5](CONTRACTS.md#75-post-v1authzpermissions-ui-permission-map), [PERMISSION-MODEL.md 14](PERMISSION-MODEL.md#14-ui-components)). They change only what the person sees. **Every server route checks again**, and the server removes hidden fields from its responses.
+
+| Component | Props (main) | What it does |
+|---|---|---|
+| `Protect` | `resource` (with its `path`), `action`, `uiKeys?`, `fields?`, `fallback?`, `loading?` | Loads one permission map for `resource`, with the UI keys and fields the parts inside need, and shows `children` only when `action` is allowed. `fallback` shows when it is denied or the map cannot be loaded. |
+| `Can` | `resource`, and `uiKey` **or** `action`; `fallback?`, `reasonText?` | A UI key takes its mode from the map: `show` as normal; `disable` and `readonly` inside a disabled `<fieldset class="tutela-can">` (its `title` is `reasonText`, usually `UI[key].reason` from `tutela codegen`); `hide` shows `fallback`. An action is shown when allowed and hidden when not. Children may be a function that gets `{ allowed, mode, reason }` and draws the part itself. |
+| `Field` | `resource`, `name` (`amount`, or a feature such as `@ai`), `whenHidden?` (`restricted` or `remove`), `restrictedText?` | The value when the person may read the field. Otherwise "Restricted" (default, so people know whom to ask) or nothing. Children may be a function that gets the level (`read` or `write`), for example to draw an input only for `write`. |
+
+```tsx
+import { Can, Field, Protect } from "@f8fvwgzc/tutela-react";
+import { UI } from "./perms"; // written by `tutela codegen --ts src/perms.ts`
+
+export function InvoicePage({ invoice }: { invoice: Invoice }) {
+  const resource = { type: "invoice", id: invoice.id, path: invoice.path }; // loaded on the server
+  return (
+    <Protect
+      resource={resource}
+      action="invoice:read"
+      uiKeys={["invoices.approve_button"]}
+      fields={["amount", "status"]}
+      fallback={<NoAccess />}
+    >
+      <Field resource={resource} name="amount">{invoice.amount}</Field>
+      <Field resource={resource} name="status">
+        {(level) => (level === "write" ? <StatusPicker invoice={invoice} /> : invoice.status)}
+      </Field>
+      <Can uiKey="invoices.approve_button" resource={resource} reasonText={UI["invoices.approve_button"].reason ?? undefined}>
+        <button type="button" onClick={() => approve(invoice.id)}>Approve</button>
+      </Can>
+    </Protect>
+  );
+}
+```
+
+- One map per resource. `<Protect>` (or `usePermissionMap`) must ask for every UI key and field the parts inside use. A key that was not asked for is hidden, and a field that was not asked for is "Restricted": what is not known is not shown.
+- The map is loaded again after each of the client's own writes, at least as new as the write.
+- In library mode (no `tutelad`), the product's backend builds the map with `tutela-pdp` and serves it to the page; a client for that comes with the library-mode map (Phase A, not built).
+
+**Looks.** Import `@f8fvwgzc/tutela-react/styles.css` once. It styles only the components' `.tutela` root and what is inside it, and `<Can>`'s wrapper `fieldset.tutela-can` (no border, margin or padding). Override `--tutela-*` variables (`--tutela-accent`, `--tutela-font`, `--tutela-size`, `--tutela-row`, `--tutela-bg`, `--tutela-fg`, …) on `.tutela` or an ancestor. `theme="light" | "dark" | "system"` (default `system`). No inline styles, so a strict Content-Security-Policy needs no exception.
 
 **Accessible.** Real tables with headers, labelled inputs, buttons named for what they act on, a polite status for each success and an alert for each refusal, visible focus, keyboard use, and no animation under `prefers-reduced-motion`. axe-core runs on each component in the tests.
 
